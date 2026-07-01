@@ -1762,13 +1762,8 @@ async fn run_ratatui_app(
     let bypass_hook_trust_for_startup_review = config.bypass_hook_trust && !is_persistent_resume;
     let hooks_request_handle = app_server.request_handle();
     let hooks_cwd = config.cwd.to_path_buf();
-    let startup_prefetch_started_at = Instant::now();
-    let (startup_bootstrap, startup_hooks_entry) = tokio::join!(
-        app_server.bootstrap(&config),
-        load_startup_hooks_review_entry(hooks_request_handle, hooks_cwd),
-    );
-    let startup_bootstrap = Some(startup_bootstrap?);
-    let startup_elapsed_before_app = startup_prefetch_started_at.elapsed();
+    let (startup_elapsed_before_app, startup_hooks_entry, startup_bootstrap) =
+        load_pre_app_startup_state(hooks_request_handle, hooks_cwd).await;
     let startup_hooks_browser = match maybe_run_startup_hooks_review(
         &mut app_server,
         &mut tui,
@@ -1810,6 +1805,20 @@ async fn run_ratatui_app(
     session_log::log_session_end();
     // ignore error when collecting usage – report underlying error instead
     app_result
+}
+
+async fn load_pre_app_startup_state(
+    hooks_request_handle: codex_app_server_client::AppServerRequestHandle,
+    hooks_cwd: PathBuf,
+) -> (
+    std::time::Duration,
+    codex_app_server_protocol::HooksListEntry,
+    Option<app_server_session::AppServerBootstrap>,
+) {
+    let started_at = Instant::now();
+    let startup_hooks_entry =
+        load_startup_hooks_review_entry(hooks_request_handle, hooks_cwd).await;
+    (started_at.elapsed(), startup_hooks_entry, None)
 }
 
 #[expect(
@@ -2143,6 +2152,27 @@ mod tests {
             Arc::new(EnvironmentManager::default_for_tests()),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn pre_app_startup_state_does_not_eagerly_bootstrap() -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_config(&temp_dir).await?;
+        let app_server = AppServerSession::new(
+            AppServerClient::InProcess(start_test_embedded_app_server(config.clone()).await?),
+            ThreadParamsMode::Embedded,
+        );
+
+        let (_elapsed, startup_hooks_entry, startup_bootstrap) =
+            load_pre_app_startup_state(app_server.request_handle(), config.cwd.to_path_buf()).await;
+
+        assert_eq!(startup_hooks_entry.cwd, config.cwd.to_path_buf());
+        assert!(
+            startup_bootstrap.is_none(),
+            "bootstrap should run after App::run starts, not before the app handoff"
+        );
+        app_server.shutdown().await?;
+        Ok(())
     }
 
     #[test]
