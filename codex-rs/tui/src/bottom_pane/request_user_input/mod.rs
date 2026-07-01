@@ -307,19 +307,15 @@ impl RequestUserInputOverlay {
             AutoResolutionTiming::VisibleCountdown { remaining } => {
                 Some(remaining.min(Duration::from_secs(/*secs*/ 1)))
             }
-            AutoResolutionTiming::Due => Some(Duration::ZERO),
+            AutoResolutionTiming::Due => None,
         }
     }
 
-    fn maybe_auto_resolve_at(&mut self, now: Instant) -> bool {
-        if !matches!(
+    fn auto_resolution_expired_at(&mut self, now: Instant) -> bool {
+        matches!(
             self.auto_resolution_timing_at(now),
             AutoResolutionTiming::Due
-        ) {
-            return false;
-        }
-        self.submit_empty_auto_resolution(now);
-        true
+        )
     }
 
     fn auto_resolution_countdown_text_at(&self, now: Instant) -> Option<String> {
@@ -926,25 +922,6 @@ impl RequestUserInputOverlay {
         self.advance_queue_or_complete_at(Instant::now());
     }
 
-    fn submit_empty_auto_resolution(&mut self, now: Instant) {
-        self.confirm_unanswered = None;
-        let answers: HashMap<String, ToolRequestUserInputAnswer> = HashMap::new();
-        self.app_event_tx.user_input_answer(
-            self.request.turn_id.clone(),
-            ToolRequestUserInputResponse {
-                answers: answers.clone(),
-            },
-        );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::RequestUserInputResultCell {
-                questions: self.request.questions.clone(),
-                answers,
-                interrupted: false,
-            },
-        )));
-        self.advance_queue_or_complete_at(now);
-    }
-
     fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
         let ResolvedAppServerRequest::UserInput { call_id } = request else {
             return false;
@@ -1490,7 +1467,7 @@ impl BottomPaneView for RequestUserInputOverlay {
     }
 
     fn pre_draw_tick(&mut self, now: Instant) -> bool {
-        self.maybe_auto_resolve_at(now)
+        self.auto_resolution_expired_at(now)
     }
 
     fn next_frame_delay(&self) -> Option<Duration> {
@@ -1904,7 +1881,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_resolution_expiry_emits_empty_answer() {
+    fn auto_resolution_expiry_does_not_emit_answer() {
         let (tx, mut rx) = test_sender();
         let mut overlay = RequestUserInputOverlay::new(
             request_event_with_auto_resolution(
@@ -1921,20 +1898,9 @@ mod tests {
         overlay.request_started_at = now - total_timeout;
 
         assert!(overlay.pre_draw_tick(now));
-        assert!(overlay.done);
-
-        let event = rx.try_recv().expect("expected UserInputAnswer event");
-        let AppEvent::CodexOp(Op::UserInputAnswer { id, response }) = event else {
-            panic!("expected UserInputAnswer event");
-        };
-        assert_eq!(id, "turn-1");
-        assert_eq!(response.answers, HashMap::new());
-
-        let event = rx.try_recv().expect("expected history cell event");
-        assert!(
-            matches!(event, AppEvent::InsertHistoryCell(_)),
-            "expected history cell event"
-        );
+        assert!(!overlay.done);
+        assert_eq!(overlay.auto_resolution_next_frame_delay_at(now), None);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -2014,16 +1980,9 @@ mod tests {
 
         assert!(overlay.pre_draw_tick(now));
 
-        assert_eq!(overlay.request.turn_id, "turn-2");
-        assert!(!overlay.auto_resolution_snoozed);
-        assert_eq!(
-            overlay.auto_resolution_timing_at(now),
-            AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE
-            }
-        );
+        assert_eq!(overlay.request.turn_id, "turn-1");
         assert!(!overlay.done);
-        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
