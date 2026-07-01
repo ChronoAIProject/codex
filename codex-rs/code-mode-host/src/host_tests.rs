@@ -25,7 +25,6 @@ use tokio_util::task::TaskTracker;
 use super::HostState;
 use super::MAX_ACTIVE_CELLS;
 use super::MAX_IN_FLIGHT_REQUESTS;
-use super::MAX_RECENT_REQUEST_IDS;
 use super::RequestKind;
 use super::RequestRegistry;
 use super::SeenSessionIds;
@@ -304,29 +303,21 @@ async fn session_id_cannot_be_reused_after_shutdown() {
 }
 
 #[test]
-fn request_cancellation_tombstones_are_bounded() {
+fn request_ids_can_be_reused_after_completion() {
     let mut requests = RequestRegistry::default();
-    let duplicate = request_id(/*value*/ -1);
+    let id = request_id(/*value*/ 1);
+
     requests
-        .start(duplicate, RequestKind::OpenSession)
-        .expect("start duplicate probe");
-    assert!(requests.start(duplicate, RequestKind::OpenSession).is_err());
-    requests.finish(duplicate);
-    for value in 1..=MAX_RECENT_REQUEST_IDS as i64 + 100 {
-        let id = request_id(value);
-        requests
-            .start(id, RequestKind::Wait)
-            .expect("start request");
-        requests.cancel(id);
-        requests.finish(id);
-    }
-    for value in 10_000..20_000 {
-        requests.cancel(request_id(value));
-    }
+        .start(id, RequestKind::OpenSession)
+        .expect("start request");
+    assert!(requests.start(id, RequestKind::OpenSession).is_err());
+    requests.finish(id);
+    requests
+        .start(id, RequestKind::ShutdownSession)
+        .expect("reuse completed request ID");
+    requests.finish(id);
 
     assert!(requests.active.is_empty());
-    assert_eq!(requests.recent.len(), MAX_RECENT_REQUEST_IDS);
-    assert_eq!(requests.recent_order.len(), MAX_RECENT_REQUEST_IDS);
 }
 
 #[tokio::test]

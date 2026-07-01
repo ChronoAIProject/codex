@@ -40,7 +40,6 @@ mod peer;
 
 const MAX_IN_FLIGHT_REQUESTS: usize = 256;
 const MAX_ACTIVE_CELLS: usize = 128;
-const MAX_RECENT_REQUEST_IDS: usize = 4096;
 const MAX_RECENT_SESSION_IDS: usize = 4096;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -527,8 +526,6 @@ struct ActiveRequest {
 #[derive(Default)]
 struct RequestRegistry {
     active: HashMap<RequestId, ActiveRequest>,
-    recent: HashSet<RequestId>,
-    recent_order: VecDeque<RequestId>,
 }
 
 impl RequestRegistry {
@@ -537,7 +534,7 @@ impl RequestRegistry {
         request_id: RequestId,
         kind: RequestKind,
     ) -> Result<CancellationToken, anyhow::Error> {
-        if self.active.contains_key(&request_id) || self.recent.contains(&request_id) {
+        if self.active.contains_key(&request_id) {
             anyhow::bail!("duplicate code-mode request ID {request_id:?}");
         }
         let cancellation = CancellationToken::new();
@@ -560,16 +557,7 @@ impl RequestRegistry {
     }
 
     fn finish(&mut self, request_id: RequestId) {
-        if self.active.remove(&request_id).is_none() {
-            return;
-        }
-        self.recent.insert(request_id);
-        self.recent_order.push_back(request_id);
-        while self.recent_order.len() > MAX_RECENT_REQUEST_IDS {
-            if let Some(expired) = self.recent_order.pop_front() {
-                self.recent.remove(&expired);
-            }
-        }
+        self.active.remove(&request_id);
     }
 
     fn cancel_all(&self) {
