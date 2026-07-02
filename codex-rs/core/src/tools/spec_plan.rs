@@ -96,6 +96,7 @@ use tracing::instrument;
 use tracing::warn;
 
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
+const MULTI_AGENT_V2_ENCRYPTED_TOOLS_CAPABILITY: &str = "multi_agent_v2_encrypted_tools";
 const IMAGE_GEN_NAMESPACE: &str = "image_gen";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
@@ -345,6 +346,11 @@ fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
 
 fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
     turn_context.multi_agent_version == MultiAgentVersion::V2
+        && turn_context
+            .model_info
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == MULTI_AGENT_V2_ENCRYPTED_TOOLS_CAPABILITY)
 }
 
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {

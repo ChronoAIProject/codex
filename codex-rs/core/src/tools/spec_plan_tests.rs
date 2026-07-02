@@ -226,6 +226,12 @@ fn set_features(turn: &mut TurnContext, features: &[Feature]) {
     }
 }
 
+fn support_multi_agent_v2_encrypted_tools(turn: &mut TurnContext) {
+    turn.model_info
+        .experimental_supported_tools
+        .push("multi_agent_v2_encrypted_tools".to_string());
+}
+
 fn zsh_fork_config_for_spec_plan_tests() -> codex_tools::ZshForkConfig {
     let placeholder_exe = codex_utils_absolute_path::AbsolutePathBuf::try_from(
         std::env::current_exe().expect("current exe path"),
@@ -1227,6 +1233,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
 
     let v2 = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        support_multi_agent_v2_encrypted_tools(turn);
         update_config(turn, |config| {
             config.multi_agent_v2.max_concurrent_threads_per_session = 17;
         });
@@ -1288,6 +1295,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
                 Feature::MultiAgentV2,
             ],
         );
+        support_multi_agent_v2_encrypted_tools(turn);
         update_config(turn, |config| {
             config.multi_agent_v2.non_code_mode_only = true;
         });
@@ -1306,6 +1314,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
 async fn multi_agent_v2_message_schemas_are_encrypted() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        support_multi_agent_v2_encrypted_tools(turn);
     })
     .await;
     let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
@@ -1331,6 +1340,36 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
                 .and_then(|schema| schema.encrypted),
             Some(true)
         );
+    }
+}
+
+#[tokio::test]
+async fn multi_agent_v2_tools_require_model_encrypted_tool_support() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+    })
+    .await;
+
+    plan.assert_visible_lacks(&[
+        MULTI_AGENT_V2_NAMESPACE,
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "interrupt_agent",
+        "list_agents",
+    ]);
+    for tool_name in [
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "interrupt_agent",
+        "list_agents",
+    ] {
+        plan.assert_registered_lacks(&[
+            &ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool_name).to_string()
+        ]);
     }
 }
 
@@ -1396,6 +1435,7 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 async fn multi_agent_v2_can_use_configured_tool_namespace() {
     let namespaced = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        support_multi_agent_v2_encrypted_tools(turn);
         update_config(turn, |config| {
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
         });
@@ -1452,6 +1492,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
 async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        support_multi_agent_v2_encrypted_tools(turn);
         update_config(turn, |config| {
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
         });
@@ -1483,6 +1524,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
                 Feature::MultiAgentV2,
             ],
         );
+        support_multi_agent_v2_encrypted_tools(turn);
         update_config(turn, |config| {
             config.multi_agent_v2.non_code_mode_only = true;
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
@@ -1620,6 +1662,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     let code_mode_only = probe(|turn| {
         use_chatgpt_auth(turn);
         set_features(turn, &[Feature::CodeModeOnly, Feature::MultiAgentV2]);
+        support_multi_agent_v2_encrypted_tools(turn);
         set_web_search_mode(turn, WebSearchMode::Live);
         turn.model_info.input_modalities = vec![InputModality::Image];
     })
