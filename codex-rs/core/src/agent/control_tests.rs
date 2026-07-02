@@ -2202,6 +2202,47 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
 }
 
 #[tokio::test]
+async fn completion_watcher_prefers_child_nickname_for_notification_reference() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let child_thread_id = ThreadId::new();
+
+    harness.control.maybe_start_completion_watcher(
+        child_thread_id,
+        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: Some("Aristotle".to_string()),
+            agent_role: Some("explorer".to_string()),
+        })),
+        child_thread_id.to_string(),
+        /*child_agent_path*/ None,
+    );
+
+    assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);
+
+    let history_items = parent_thread
+        .codex
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert_eq!(
+        history_contains_text(&history_items, "\"agent_path\":\"Aristotle\""),
+        true
+    );
+    assert_eq!(
+        history_contains_text(
+            &history_items,
+            &format!("\"agent_path\":\"{child_thread_id}\"")
+        ),
+        false
+    );
+}
+
+#[tokio::test]
 async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;

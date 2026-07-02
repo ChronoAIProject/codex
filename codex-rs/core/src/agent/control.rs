@@ -421,9 +421,17 @@ impl AgentControl {
     ) {
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
-        })) = session_source
+        })) = session_source.as_ref()
         else {
             return;
+        };
+        let parent_thread_id = *parent_thread_id;
+        let child_reference = match session_source {
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_nickname: Some(agent_nickname),
+                ..
+            })) if !agent_nickname.is_empty() => agent_nickname,
+            _ => child_reference,
         };
         let control = self.clone();
         tokio::spawn(async move {
