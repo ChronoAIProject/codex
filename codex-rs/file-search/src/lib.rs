@@ -361,6 +361,57 @@ enum WorkSignal {
     Shutdown,
 }
 
+struct ParsedQuery {
+    pattern: String,
+    path_scope: Option<PathBuf>,
+}
+
+fn parse_query(query: &str, search_directories: &[PathBuf]) -> ParsedQuery {
+    let has_path_separator = query.contains('/') || query.contains('\\');
+    let mut parts = Vec::new();
+    let normalized = query.replace('\\', "/");
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|last| last != "..") {
+                    parts.pop();
+                } else {
+                    parts.push(part.to_string());
+                }
+            }
+            _ => parts.push(part.to_string()),
+        }
+    }
+
+    let pattern = parts.join("/");
+    let path_scope = if pattern.is_empty() {
+        None
+    } else if search_directories
+        .iter()
+        .any(|root| root.join(&pattern).is_dir())
+    {
+        Some(PathBuf::from(&pattern))
+    } else if has_path_separator {
+        let scope = if query.ends_with(['/', '\\']) {
+            PathBuf::from(&pattern)
+        } else {
+            Path::new(&pattern)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .to_path_buf()
+        };
+        (!scope.as_os_str().is_empty()).then_some(scope)
+    } else {
+        None
+    };
+
+    ParsedQuery {
+        pattern,
+        path_scope,
+    }
+}
+
 fn build_override_matcher(
     search_directory: &Path,
     exclude: &[String],
@@ -492,6 +543,8 @@ fn matcher_worker(
     let shutdown_requested = || inner.shutdown.load(Ordering::Relaxed);
 
     let mut last_query = String::new();
+    let mut last_pattern = String::new();
+    let mut path_scope: Option<PathBuf> = None;
     let mut next_notify = never();
     let mut will_notify = false;
     let mut walk_complete = false;
@@ -504,14 +557,17 @@ fn matcher_worker(
                 };
                 match signal {
                     WorkSignal::QueryUpdated(query) => {
-                        let append = query.starts_with(&last_query);
+                        let parsed_query = parse_query(&query, &inner.search_directories);
+                        let append = parsed_query.pattern.starts_with(&last_pattern);
                         nucleo.pattern.reparse(
                             0,
-                            &query,
+                            &parsed_query.pattern,
                             CaseMatching::Ignore,
                             Normalization::Smart,
                             append,
                         );
+                        last_pattern = parsed_query.pattern;
+                        path_scope = parsed_query.path_scope;
                         last_query = query;
                         will_notify = true;
                         next_notify = after(Duration::from_millis(0));
@@ -539,45 +595,58 @@ fn matcher_worker(
                 let status = nucleo.tick(TICK_TIMEOUT_MS);
                 if status.changed {
                     let snapshot = nucleo.snapshot();
-                    let limit = inner.limit.min(snapshot.matched_item_count() as usize);
                     let pattern = snapshot.pattern().column_pattern(0);
-                    let matches: Vec<_> = snapshot
-                        .matches()
-                        .iter()
-                        .take(limit)
-                        .filter_map(|match_| {
-                            let item = snapshot.get_item(match_.idx)?;
-                            let full_path = item.data.as_ref();
-                            let (root_idx, relative_path) = get_file_path(Path::new(full_path), &inner.search_directories)?;
-                            let indices = if let Some(indices_matcher) = indices_matcher.as_mut() {
-                                let mut idx_vec = Vec::<u32>::new();
-                                let haystack = item.matcher_columns[0].slice(..);
-                                let _ = pattern.indices(haystack, indices_matcher, &mut idx_vec);
-                                idx_vec.sort_unstable();
-                                idx_vec.dedup();
-                                Some(idx_vec)
-                            } else {
-                                None
-                            };
-                            let match_type = if Path::new(full_path).is_dir() {
-                                MatchType::Directory
-                            } else {
-                                MatchType::File
-                            };
-                            Some(FileMatch {
+                    let mut matches = Vec::new();
+                    let mut total_match_count = 0;
+                    for match_ in snapshot.matches().iter() {
+                        let Some(item) = snapshot.get_item(match_.idx) else {
+                            continue;
+                        };
+                        let full_path = item.data.as_ref();
+                        let Some((root_idx, relative_path)) =
+                            get_file_path(Path::new(full_path), &inner.search_directories)
+                        else {
+                            continue;
+                        };
+                        if let Some(path_scope) = path_scope.as_ref()
+                            && !Path::new(relative_path).starts_with(path_scope)
+                        {
+                            continue;
+                        }
+
+                        total_match_count += 1;
+                        if matches.len() >= inner.limit {
+                            continue;
+                        }
+
+                        let indices = if let Some(indices_matcher) = indices_matcher.as_mut() {
+                            let mut idx_vec = Vec::<u32>::new();
+                            let haystack = item.matcher_columns[0].slice(..);
+                            let _ = pattern.indices(haystack, indices_matcher, &mut idx_vec);
+                            idx_vec.sort_unstable();
+                            idx_vec.dedup();
+                            Some(idx_vec)
+                        } else {
+                            None
+                        };
+                        let match_type = if Path::new(full_path).is_dir() {
+                            MatchType::Directory
+                        } else {
+                            MatchType::File
+                        };
+                        matches.push(FileMatch {
                                 score: match_.score,
                                 path: PathBuf::from(relative_path),
                                 match_type,
                                 root: inner.search_directories[root_idx].clone(),
                                 indices,
-                            })
-                        })
-                        .collect();
+                        });
+                    }
 
                     let snapshot = FileSearchSnapshot {
                         query: last_query.clone(),
                         matches,
-                        total_match_count: snapshot.matched_item_count() as usize,
+                        total_match_count,
                         scanned_file_count: snapshot.item_count() as usize,
                         walk_complete,
                     };
@@ -1010,6 +1079,58 @@ mod tests {
             m.path == std::path::Path::new("docs").join("guides")
                 && m.match_type == MatchType::Directory
         }));
+    }
+
+    #[test]
+    fn run_limits_path_like_queries_to_the_relative_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::create_dir_all(dir.path().join("other/docs")).unwrap();
+        fs::write(dir.path().join("docs/api.md"), "api").unwrap();
+        fs::write(dir.path().join("docs/architecture.md"), "architecture").unwrap();
+        fs::write(dir.path().join("other/docs/api.md"), "other api").unwrap();
+
+        let path_query_results = run(
+            "docs/a",
+            vec![dir.path().to_path_buf()],
+            FileSearchOptions {
+                limit: NonZero::new(20).unwrap(),
+                exclude: Vec::new(),
+                threads: NonZero::new(2).unwrap(),
+                compute_indices: false,
+                respect_gitignore: true,
+            },
+            /*cancel_flag*/ None,
+        )
+        .expect("run ok");
+
+        assert!(
+            path_query_results
+                .matches
+                .iter()
+                .all(|m| m.path.starts_with(Path::new("docs")))
+        );
+
+        let directory_query_results = run(
+            "docs",
+            vec![dir.path().to_path_buf()],
+            FileSearchOptions {
+                limit: NonZero::new(20).unwrap(),
+                exclude: Vec::new(),
+                threads: NonZero::new(2).unwrap(),
+                compute_indices: false,
+                respect_gitignore: true,
+            },
+            /*cancel_flag*/ None,
+        )
+        .expect("run ok");
+
+        assert!(
+            directory_query_results
+                .matches
+                .iter()
+                .all(|m| m.path.starts_with(Path::new("docs")))
+        );
     }
 
     #[test]
