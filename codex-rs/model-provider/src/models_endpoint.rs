@@ -97,7 +97,7 @@ impl OpenAiModelsEndpoint {
             client.list_models(client_version, HeaderMap::new()),
         )
         .await
-        .map_err(|_| CodexErr::Timeout)?
+        .map_err(map_models_refresh_timeout)?
         .map_err(map_api_error)
     }
 
@@ -108,6 +108,10 @@ impl OpenAiModelsEndpoint {
             .is_some_and(|auth_manager| auth_manager.codex_api_key_env_enabled());
         collect_auth_env_telemetry(&self.provider_info, codex_api_key_env_enabled)
     }
+}
+
+fn map_models_refresh_timeout(_: tokio::time::error::Elapsed) -> CodexErr {
+    CodexErr::RequestTimeout
 }
 
 impl ModelsEndpointClient for OpenAiModelsEndpoint {
@@ -226,10 +230,12 @@ impl RequestTelemetry for ModelsRequestTelemetry {
 
 #[cfg(test)]
 mod tests {
+    use std::future;
     use std::num::NonZeroU64;
 
     use super::*;
     use codex_protocol::config_types::ModelProviderAuthInfo;
+    use pretty_assertions::assert_eq;
 
     fn provider_info_with_command_auth() -> ModelProviderInfo {
         ModelProviderInfo {
@@ -266,5 +272,15 @@ mod tests {
         );
 
         assert!(!endpoint.has_command_auth());
+    }
+
+    #[tokio::test]
+    async fn models_refresh_timeout_is_request_timeout() {
+        let err = timeout(Duration::from_millis(0), future::pending::<()>())
+            .await
+            .map_err(map_models_refresh_timeout)
+            .expect_err("pending future should time out");
+
+        assert_eq!(err.to_string(), "request timed out");
     }
 }
