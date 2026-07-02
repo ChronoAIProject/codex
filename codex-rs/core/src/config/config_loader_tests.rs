@@ -5,6 +5,7 @@ use crate::config::PermissionProfileCatalogEntry;
 use crate::config::permission_profile_catalog;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::CloudConfigBundleLoadError;
+use codex_config::CloudConfigBundleLoadErrorCode;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigError;
 use codex_config::ConfigLayerEntry;
@@ -2237,7 +2238,7 @@ async fn load_config_layers_fails_when_cloud_config_bundle_loader_fails() -> any
         ConfigLoadOptions {
             cloud_config_bundle: CloudConfigBundleLoader::new(async {
                 Err(CloudConfigBundleLoadError::new(
-                    codex_config::CloudConfigBundleLoadErrorCode::RequestFailed,
+                    CloudConfigBundleLoadErrorCode::RequestFailed,
                     /*status_code*/ None,
                     "cloud config bundle failed",
                 ))
@@ -2251,6 +2252,41 @@ async fn load_config_layers_fails_when_cloud_config_bundle_loader_fails() -> any
 
     assert_eq!(err.kind(), std::io::ErrorKind::Other);
     assert!(err.to_string().contains("cloud config bundle failed"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_layers_continues_when_cloud_config_bundle_loader_times_out()
+-> anyhow::Result<()> {
+    let tmp = tempdir()?;
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    tokio::fs::write(codex_home.join(CONFIG_TOML_FILE), r#"model = "local""#).await?;
+    let cwd = AbsolutePathBuf::from_absolute_path(tmp.path())?;
+
+    let layers = load_config_layers_state(
+        LOCAL_FS.as_ref(),
+        &codex_home,
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        ConfigLoadOptions {
+            cloud_config_bundle: CloudConfigBundleLoader::new(async {
+                Err(CloudConfigBundleLoadError::new(
+                    CloudConfigBundleLoadErrorCode::Timeout,
+                    /*status_code*/ None,
+                    "timed out waiting for cloud config bundle after 15s",
+                ))
+            }),
+            ..Default::default()
+        },
+        &codex_config::NoopThreadConfigLoader,
+    )
+    .await?;
+
+    let merged = layers.effective_config();
+    let table = merged.as_table().expect("merged config should be a table");
+    assert_eq!(table.get("model"), Some(&TomlValue::String("local".into())));
 
     Ok(())
 }

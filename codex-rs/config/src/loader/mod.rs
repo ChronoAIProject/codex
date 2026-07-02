@@ -7,6 +7,7 @@ mod tests;
 use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
 use crate::CloudConfigBundleLayers;
+use crate::CloudConfigBundleLoadErrorCode;
 use crate::ConfigLayerSource;
 use crate::ProfileV2Name;
 use crate::RequirementsLayerEntry;
@@ -138,7 +139,12 @@ pub async fn load_config_layers_state(
     let mut cloud_config_layers = Vec::new();
 
     if !ignore_managed_requirements {
-        if let Some(bundle) = cloud_config_bundle.get().await.map_err(io::Error::other)? {
+        let bundle = match cloud_config_bundle.get().await {
+            Ok(bundle) => bundle,
+            Err(err) if err.code() == CloudConfigBundleLoadErrorCode::Timeout => None,
+            Err(err) => return Err(io::Error::other(err)),
+        };
+        if let Some(bundle) = bundle {
             let cloud_config_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
             let bundle_layers = if strict_config {
                 CloudConfigBundleLayers::from_bundle_strict_config(bundle, &cloud_config_base_dir)?
