@@ -391,6 +391,16 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap 
     headers
 }
 
+fn model_slug_for_responses_request(model_slug: &str, auth: Option<&CodexAuth>) -> String {
+    if auth.is_some_and(CodexAuth::is_chatgpt_auth)
+        && let Some((_, suffix)) = model_slug.split_once('/')
+    {
+        return suffix.to_string();
+    }
+
+    model_slug.to_string()
+}
+
 impl ModelClient {
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
@@ -546,6 +556,7 @@ impl ModelClient {
         );
         let request = self.build_responses_request(
             &client_setup.api_provider,
+            client_setup.auth.as_ref(),
             prompt,
             model_info,
             settings.effort,
@@ -812,6 +823,7 @@ impl ModelClient {
     fn build_responses_request(
         &self,
         provider: &codex_api::Provider,
+        auth: Option<&CodexAuth>,
         prompt: &Prompt,
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
@@ -873,7 +885,7 @@ impl ModelClient {
         let prompt_cache_key = Some(self.prompt_cache_key());
         let service_tier = model_info.service_tier_for_request(service_tier);
         let request = ResponsesApiRequest {
-            model: model_info.slug.clone(),
+            model: model_slug_for_responses_request(model_info.slug.as_str(), auth),
             instructions,
             input,
             tools,
@@ -1390,6 +1402,7 @@ impl ModelClientSession {
 
             let mut request = self.client.build_responses_request(
                 &client_setup.api_provider,
+                client_setup.auth.as_ref(),
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1503,6 +1516,7 @@ impl ModelClientSession {
             );
             let request = self.client.build_responses_request(
                 &client_setup.api_provider,
+                client_setup.auth.as_ref(),
                 prompt,
                 model_info,
                 effort.clone(),
