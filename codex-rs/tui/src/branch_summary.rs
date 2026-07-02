@@ -22,6 +22,9 @@ use crate::workspace_command::WorkspaceCommandError;
 use crate::workspace_command::WorkspaceCommandExecutor;
 use crate::workspace_command::WorkspaceCommandOutput;
 
+const GH_COMMAND: &str = "gh";
+const GH_COMMAND_FALLBACKS: &[&str] = &["/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+
 /// Additions and deletions between `HEAD` and a branch comparison base.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GitBranchDiffStats {
@@ -495,8 +498,38 @@ async fn run_gh_command(
     cwd: &Path,
     args: &[&str],
 ) -> Result<WorkspaceCommandOutput, crate::workspace_command::WorkspaceCommandError> {
+    let mut result = run_gh_command_with_program(runner, cwd, GH_COMMAND, args).await;
+    if !should_retry_with_gh_fallback(&result) {
+        return result;
+    }
+
+    for program in GH_COMMAND_FALLBACKS {
+        result = run_gh_command_with_program(runner, cwd, program, args).await;
+        if !should_retry_with_gh_fallback(&result) {
+            return result;
+        }
+    }
+
+    result
+}
+
+fn should_retry_with_gh_fallback(
+    result: &Result<WorkspaceCommandOutput, crate::workspace_command::WorkspaceCommandError>,
+) -> bool {
+    match result {
+        Ok(output) => output.exit_code == 127,
+        Err(_) => true,
+    }
+}
+
+async fn run_gh_command_with_program(
+    runner: &dyn WorkspaceCommandExecutor,
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+) -> Result<WorkspaceCommandOutput, crate::workspace_command::WorkspaceCommandError> {
     let mut argv = Vec::with_capacity(args.len() + 1);
-    argv.push("gh".to_string());
+    argv.push(program.to_string());
     argv.extend(args.iter().map(|arg| (*arg).to_string()));
     runner
         .run(
@@ -587,6 +620,49 @@ mod tests {
                 url: "https://github.com/openai/codex/pull/20252".to_string(),
             }
         );
+        assert!(!runner.saw(&["git", "rev-parse", "HEAD"]));
+    }
+
+    #[tokio::test]
+    async fn open_pull_request_retries_homebrew_gh_when_path_lookup_fails() {
+        let runner = FakeRunner::new(vec![
+            response(
+                &["gh", "pr", "view", "--json", "number,url,state"],
+                /*exit_code*/ 127,
+                "",
+            ),
+            response(
+                &[
+                    "/opt/homebrew/bin/gh",
+                    "pr",
+                    "view",
+                    "--json",
+                    "number,url,state",
+                ],
+                /*exit_code*/ 0,
+                r#"{"number":23473,"url":"https://github.com/openai/codex/pull/23473","state":"OPEN"}"#,
+            ),
+        ]);
+
+        let pull_request = open_pull_request(&runner, Path::new("/repo"))
+            .await
+            .expect("pull request");
+
+        assert_eq!(
+            pull_request,
+            StatusLinePullRequest {
+                number: 23_473,
+                url: "https://github.com/openai/codex/pull/23473".to_string(),
+            }
+        );
+        assert!(runner.saw(&["gh", "pr", "view", "--json", "number,url,state"]));
+        assert!(runner.saw(&[
+            "/opt/homebrew/bin/gh",
+            "pr",
+            "view",
+            "--json",
+            "number,url,state",
+        ]));
         assert!(!runner.saw(&["git", "rev-parse", "HEAD"]));
     }
 
