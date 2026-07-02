@@ -81,6 +81,45 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn shutdown_waits_for_process_group_escalation() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let child_pid_file = temp_dir.path().join("child.pid");
+    let child_pid_file_str = child_pid_file.to_string_lossy().into_owned();
+
+    let client = RmcpClient::new_stdio_client(
+        OsString::from("/bin/sh"),
+        vec![
+            OsString::from("-c"),
+            OsString::from(
+                "sh -c 'trap \"\" TERM; echo $$ > \"$CHILD_PID_FILE\"; sleep 300' & wait",
+            ),
+        ],
+        Some(HashMap::from([(
+            OsString::from("CHILD_PID_FILE"),
+            OsString::from(child_pid_file_str),
+        )])),
+        &[],
+        /*cwd*/ None,
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await?;
+
+    let grandchild_pid = wait_for_pid_file(&child_pid_file).await?;
+    assert!(
+        process_exists(grandchild_pid),
+        "expected grandchild process {grandchild_pid} to be running before shutdown"
+    );
+
+    client.shutdown().await;
+
+    assert!(
+        !process_exists(grandchild_pid),
+        "shutdown should not return while grandchild process {grandchild_pid} is still running"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn drop_kills_wrapper_process_group() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let child_pid_file = temp_dir.path().join("child.pid");

@@ -22,10 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 #[cfg(unix)]
-use std::thread::sleep;
-#[cfg(unix)]
-use std::thread::spawn;
-#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -318,7 +314,7 @@ impl LocalProcessTerminator {
     }
 
     #[cfg(unix)]
-    fn terminate(&self) {
+    async fn terminate(&self) {
         let process_group_id = self.process_group_id;
         let should_escalate = match terminate_process_group(process_group_id) {
             Ok(exists) => exists,
@@ -328,17 +324,22 @@ impl LocalProcessTerminator {
             }
         };
         if should_escalate {
-            spawn(move || {
-                sleep(PROCESS_GROUP_TERM_GRACE_PERIOD);
-                if let Err(error) = kill_process_group(process_group_id) {
-                    warn!("Failed to kill MCP process group {process_group_id}: {error}");
+            match wait_for_process_group_exit(process_group_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(error) = kill_process_group(process_group_id) {
+                        warn!("Failed to kill MCP process group {process_group_id}: {error}");
+                    }
                 }
-            });
+                Err(error) => {
+                    warn!("Failed to check MCP process group {process_group_id}: {error}");
+                }
+            }
         }
     }
 
     #[cfg(windows)]
-    fn terminate(&self) {
+    async fn terminate(&self) {
         let _ = std::process::Command::new("taskkill")
             .arg("/PID")
             .arg(self.pid.to_string())
@@ -351,7 +352,59 @@ impl LocalProcessTerminator {
     }
 
     #[cfg(not(any(unix, windows)))]
-    fn terminate(&self) {}
+    async fn terminate(&self) {}
+
+    #[cfg(unix)]
+    fn terminate_on_drop(&self) {
+        let process_group_id = self.process_group_id;
+        let should_escalate = match terminate_process_group(process_group_id) {
+            Ok(exists) => exists,
+            Err(error) => {
+                warn!("Failed to terminate MCP process group {process_group_id}: {error}");
+                false
+            }
+        };
+        if should_escalate {
+            std::thread::spawn(move || {
+                std::thread::sleep(PROCESS_GROUP_TERM_GRACE_PERIOD);
+                if let Err(error) = kill_process_group(process_group_id) {
+                    warn!("Failed to kill MCP process group {process_group_id}: {error}");
+                }
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    fn terminate_on_drop(&self) {
+        let _ = std::process::Command::new("taskkill")
+            .arg("/PID")
+            .arg(self.pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn terminate_on_drop(&self) {}
+}
+
+#[cfg(unix)]
+async fn wait_for_process_group_exit(process_group_id: u32) -> io::Result<bool> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    let mut waited = Duration::ZERO;
+    while waited < PROCESS_GROUP_TERM_GRACE_PERIOD {
+        if !terminate_process_group(process_group_id)? {
+            return Ok(true);
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        waited += POLL_INTERVAL;
+    }
+
+    Ok(!terminate_process_group(process_group_id)?)
 }
 
 impl StdioServerProcessHandle {
@@ -382,7 +435,7 @@ impl StdioServerProcessHandle {
 
         match &self.inner.kind {
             StdioServerProcessKind::Local(Some(terminator)) => {
-                terminator.terminate();
+                terminator.terminate().await;
                 Ok(())
             }
             StdioServerProcessKind::Local(None) => Ok(()),
@@ -405,7 +458,7 @@ impl Drop for StdioServerProcessHandleInner {
 
         match &self.kind {
             StdioServerProcessKind::Local(Some(terminator)) => {
-                terminator.terminate();
+                terminator.terminate_on_drop();
             }
             StdioServerProcessKind::Local(None) => {}
             StdioServerProcessKind::Executor(process) => {
