@@ -359,7 +359,8 @@ fn create_bwrap_flags(
 /// 3. Unreadable ancestors of writable roots are masked before their child
 ///    mounts are rebound so nested writable carveouts can be reopened safely.
 /// 4. `--bind <root> <root>` re-enables writes for allowed roots, including
-///    writable subpaths under `/dev` (for example, `/dev/shm`).
+///    writable subpaths under `/dev` (for example, `/dev/shm`). `/dev` itself
+///    keeps the synthetic mount from step 2 so standard device nodes work.
 /// 5. `--ro-bind <subpath> <subpath>` re-applies read-only protections under
 ///    those writable roots so protected subpaths win.
 /// 6. Nested unreadable carveouts under a writable root are masked after that
@@ -564,9 +565,11 @@ fn create_filesystem_args(
         }
 
         let mount_root = symlink_target.as_deref().unwrap_or(root);
-        bwrap_args.args.push("--bind".to_string());
-        bwrap_args.args.push(path_to_string(mount_root));
-        bwrap_args.args.push(path_to_string(mount_root));
+        if mount_root != Path::new("/dev") {
+            bwrap_args.args.push("--bind".to_string());
+            bwrap_args.args.push(path_to_string(mount_root));
+            bwrap_args.args.push(path_to_string(mount_root));
+        }
 
         let mut read_only_subpaths: Vec<PathBuf> = writable_root
             .read_only_subpaths
@@ -2004,7 +2007,7 @@ mod tests {
     }
 
     #[test]
-    fn mounts_dev_before_writable_dev_binds() {
+    fn keeps_synthetic_dev_for_writable_dev_root() {
         let sandbox_policy = FileSystemSandboxPolicy::workspace_write(
             &[AbsolutePathBuf::try_from(Path::new("/dev")).expect("/dev path")],
             /*exclude_tmpdir_env_var*/ true,
@@ -2064,13 +2067,9 @@ mod tests {
                 "/.codex".to_string(),
                 "--remount-ro".to_string(),
                 "/.codex".to_string(),
-                // Rebind /dev after the root bind so device nodes remain
-                // writable/usable inside the writable root.
-                "--bind".to_string(),
-                "/dev".to_string(),
-                "/dev".to_string(),
-                // Then mask the metadata names that would otherwise be
-                // creatable below the writable /dev bind.
+                // Keep bwrap's synthetic /dev so standard device nodes remain
+                // usable, then mask metadata names that would otherwise be
+                // creatable below it.
                 "--perms".to_string(),
                 "555".to_string(),
                 "--tmpfs".to_string(),
