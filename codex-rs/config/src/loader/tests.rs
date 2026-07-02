@@ -254,3 +254,44 @@ model = "gpt-dev"
     .await
     .expect("profile-v2 should allow unrelated legacy profiles in base user config");
 }
+
+#[tokio::test]
+async fn custom_model_provider_skips_blocking_cloud_config_load() {
+    let tmp = tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join(CONFIG_TOML_FILE),
+        r#"
+model = "gpt-5.4"
+model_provider = "mycustomprovider"
+
+[model_providers.mycustomprovider]
+name = "mycustomprovider"
+base_url = "https://llm.ourlocaldomain"
+env_key = "CUSTOM_LLM_API_KEY"
+"#,
+    )
+    .expect("write default user config");
+
+    let cloud_config_bundle = crate::CloudConfigBundleLoader::new(async {
+        Err(crate::CloudConfigBundleLoadError::new(
+            crate::CloudConfigBundleLoadErrorCode::Timeout,
+            /*status_code*/ None,
+            "cloud config loader should not be awaited",
+        ))
+    });
+
+    load_config_layers_state(
+        &TestFileSystem,
+        tmp.path(),
+        /*cwd*/ None,
+        &[],
+        ConfigLoadOptions {
+            loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
+            strict_config: false,
+            cloud_config_bundle,
+        },
+        &crate::NoopThreadConfigLoader,
+    )
+    .await
+    .expect("custom model provider should not block on cloud config");
+}

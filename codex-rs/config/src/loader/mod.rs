@@ -34,6 +34,7 @@ use crate::thread_config::ThreadConfigContext;
 use crate::thread_config::ThreadConfigLoader;
 use codex_file_system::ExecutorFileSystem;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
@@ -137,8 +138,62 @@ pub async fn load_config_layers_state(
     let managed_preferences_requirements_layer;
     let mut cloud_config_layers = Vec::new();
 
+    let should_load_cloud_config_bundle = if ignore_user_config {
+        true
+    } else {
+        let active_user_file = overrides.user_config_path(codex_home)?;
+        let base_user_file =
+            AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home);
+        let mut pre_cloud_config = load_user_config_layer(
+            fs,
+            &base_user_file,
+            /*profile*/ None,
+            ignore_user_config,
+            strict_config,
+        )
+        .await?
+        .config;
+        if active_user_file != base_user_file {
+            let active_user_layer = load_user_config_layer(
+                fs,
+                &active_user_file,
+                active_user_profile.as_ref(),
+                ignore_user_config,
+                strict_config,
+            )
+            .await?;
+            merge_toml_values(&mut pre_cloud_config, &active_user_layer.config);
+        }
+        if !cli_overrides.is_empty() {
+            let cli_overrides_layer = build_cli_overrides_layer(cli_overrides);
+            let base_dir = cwd
+                .as_ref()
+                .map(AbsolutePathBuf::as_path)
+                .unwrap_or(codex_home);
+            if strict_config {
+                validate_cli_overrides_strictly(&cli_overrides_layer, base_dir)?;
+            }
+            let cli_overrides_layer =
+                resolve_relative_paths_in_config_toml(cli_overrides_layer, base_dir)?;
+            merge_toml_values(&mut pre_cloud_config, &cli_overrides_layer);
+        }
+        pre_cloud_config
+            .try_into()
+            .map(|config: ConfigToml| {
+                config.openai_base_url.as_deref().is_none_or(str::is_empty)
+                    && config
+                        .model_provider
+                        .is_none_or(|provider| provider == OPENAI_PROVIDER_ID)
+            })
+            .map_err(|err: toml::de::Error| {
+                io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+            })?
+    };
+
     if !ignore_managed_requirements {
-        if let Some(bundle) = cloud_config_bundle.get().await.map_err(io::Error::other)? {
+        if should_load_cloud_config_bundle
+            && let Some(bundle) = cloud_config_bundle.get().await.map_err(io::Error::other)?
+        {
             let cloud_config_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
             let bundle_layers = if strict_config {
                 CloudConfigBundleLayers::from_bundle_strict_config(bundle, &cloud_config_base_dir)?
