@@ -48,10 +48,15 @@ use rmcp::service::RoleClient;
 use rmcp::service::RxJsonRpcMessage;
 use rmcp::service::TxJsonRpcMessage;
 use rmcp::transport::Transport;
-use rmcp::transport::child_process::TokioChildProcess;
 use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
 use tokio::process::Command;
+use tokio::sync::mpsc;
+use tracing::debug;
 use tracing::info;
 use tracing::warn;
 
@@ -98,7 +103,7 @@ pub struct StdioServerTransport {
 }
 
 enum StdioServerTransportInner {
-    Local(TokioChildProcess),
+    Local(Box<LocalStdioTransport>),
     Executor(ExecutorProcessTransport),
 }
 
@@ -200,6 +205,13 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
 #[cfg(unix)]
 const PROCESS_GROUP_TERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
+struct LocalStdioTransport {
+    stdout: BufReader<ChildStdout>,
+    writer: Option<mpsc::Sender<Vec<u8>>>,
+    _child: Child,
+    program_name: String,
+}
+
 #[cfg(unix)]
 struct LocalProcessTerminator {
     process_group_id: u32,
@@ -265,25 +277,35 @@ impl LocalStdioServerLauncher {
         #[cfg(unix)]
         command.process_group(0);
 
-        let (transport, stderr) = TokioChildProcess::builder(command)
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut child = command.stderr(Stdio::piped()).spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("MCP server stdout was not piped"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("MCP server stdin was not piped"))?;
+        let stderr = child.stderr.take();
         let process = StdioServerProcessHandle::local(
             program_name.clone(),
-            transport.id().map(LocalProcessTerminator::new),
+            child.id().map(LocalProcessTerminator::new),
         );
 
         if let Some(stderr) = stderr {
+            let stderr_program_name = program_name.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
                 loop {
                     match reader.next_line().await {
                         Ok(Some(line)) => {
-                            info!("MCP server stderr ({program_name}): {line}");
+                            info!("MCP server stderr ({stderr_program_name}): {line}");
                         }
                         Ok(None) => break,
                         Err(error) => {
-                            warn!("Failed to read MCP server stderr ({program_name}): {error}");
+                            warn!(
+                                "Failed to read MCP server stderr ({stderr_program_name}): {error}"
+                            );
                             break;
                         }
                     }
@@ -292,9 +314,107 @@ impl LocalStdioServerLauncher {
         }
 
         Ok(StdioServerTransport {
-            inner: StdioServerTransportInner::Local(transport),
+            inner: StdioServerTransportInner::Local(Box::new(LocalStdioTransport::new(
+                child,
+                stdout,
+                stdin,
+                program_name,
+            ))),
             process,
         })
+    }
+}
+
+impl LocalStdioTransport {
+    fn new(child: Child, stdout: ChildStdout, stdin: ChildStdin, program_name: String) -> Self {
+        let (writer, mut receiver) = mpsc::channel::<Vec<u8>>(8);
+        let writer_program_name = program_name.clone();
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(bytes) = receiver.recv().await {
+                if let Err(error) = stdin.write_all(&bytes).await {
+                    warn!("Failed to write MCP server stdin ({writer_program_name}): {error}");
+                    break;
+                }
+                if let Err(error) = stdin.flush().await {
+                    warn!("Failed to flush MCP server stdin ({writer_program_name}): {error}");
+                    break;
+                }
+            }
+        });
+
+        Self {
+            stdout: BufReader::new(stdout),
+            writer: Some(writer),
+            _child: child,
+            program_name,
+        }
+    }
+
+    async fn receive_message(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match self.stdout.read_line(&mut line).await {
+                Ok(0) => return None,
+                Ok(_) => {
+                    let trimmed = line.trim_end_matches(['\r', '\n']);
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str(trimmed) {
+                        Ok(message) => return Some(message),
+                        Err(error) => {
+                            debug!(
+                                "Failed to parse MCP server stdout ({}): {error}",
+                                self.program_name
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        "Failed to read MCP server stdout ({}): {error}",
+                        self.program_name
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+impl Transport<RoleClient> for LocalStdioTransport {
+    type Error = io::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send + 'static {
+        let writer = self.writer.clone();
+        async move {
+            let Some(writer) = writer else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "Transport is closed",
+                ));
+            };
+            let mut bytes = serde_json::to_vec(&item).map_err(io::Error::other)?;
+            bytes.push(b'\n');
+            writer
+                .send(bytes)
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed"))
+        }
+    }
+
+    fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleClient>>> + Send {
+        self.receive_message()
+    }
+
+    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
+        self.writer.take();
+        Ok(())
     }
 }
 
