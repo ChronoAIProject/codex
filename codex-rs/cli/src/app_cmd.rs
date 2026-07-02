@@ -23,3 +23,21 @@ pub async fn run_app(cmd: AppCommand) -> anyhow::Result<()> {
         crate::desktop_app::run_app_open_or_install(workspace, cmd.download_url_override).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AppCommand;
+    use clap::Parser as _;
+    use pretty_assertions::assert_eq;
+    use std::path::PathBuf;
+
+    #[test]
+    fn app_command_does_not_default_download_url() {
+        let cmd = AppCommand::try_parse_from(["codex"]).expect("app command should parse");
+
+        assert_eq!(
+            (cmd.path, cmd.download_url_override),
+            (PathBuf::from("."), None)
+        );
+    }
+}
