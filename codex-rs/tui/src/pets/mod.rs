@@ -28,6 +28,9 @@ mod sixel;
 use anyhow::Context;
 use anyhow::Result;
 
+const BEGIN_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026h";
+const END_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026l";
+
 pub(crate) use ambient::AmbientPet;
 pub(crate) use ambient::AmbientPetDraw;
 pub(crate) use ambient::PetNotificationKind;
@@ -137,7 +140,9 @@ fn render_pet_image(
         }
         if let Some(area) = state.last_sixel_clear_area.take() {
             queue!(writer, SavePosition)?;
+            write!(writer, "{BEGIN_SYNCHRONIZED_OUTPUT}")?;
             clear_sixel_area(writer, area)?;
+            write!(writer, "{END_SYNCHRONIZED_OUTPUT}")?;
             queue!(writer, RestorePosition)?;
         }
         writer.flush()?;
@@ -187,6 +192,11 @@ fn render_pet_image(
     } else {
         None
     };
+    let synchronize_sixel_output =
+        current_sixel_clear_area.is_some() || state.last_sixel_clear_area.is_some();
+    if synchronize_sixel_output {
+        write!(writer, "{BEGIN_SYNCHRONIZED_OUTPUT}")?;
+    }
     if let Some(previous_area) = state.last_sixel_clear_area.take()
         && Some(previous_area) != current_sixel_clear_area
     {
@@ -200,6 +210,9 @@ fn render_pet_image(
     match payload {
         AmbientPetPayload::Text(payload) => write!(writer, "{payload}")?,
         AmbientPetPayload::Bytes(payload) => writer.write_all(&payload)?,
+    }
+    if synchronize_sixel_output {
+        write!(writer, "{END_SYNCHRONIZED_OUTPUT}")?;
     }
     queue!(writer, RestorePosition)?;
     writer.flush()?;
@@ -374,9 +387,17 @@ mod tests {
         render_ambient_pet_image(&mut output, &mut state, Some(request)).unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("\x1b[2;3H    \x1b[3;3H    \x1b[4;3H    \x1b[5;3H    \x1b[4;3H"));
-        assert!(output.contains("fake-sixel"));
-        assert!(output.contains("\x1b8"));
+        let sync_start = output.find(BEGIN_SYNCHRONIZED_OUTPUT).unwrap();
+        let clear = output
+            .find("\x1b[2;3H    \x1b[3;3H    \x1b[4;3H    \x1b[5;3H    \x1b[4;3H")
+            .unwrap();
+        let image = output.find("fake-sixel").unwrap();
+        let sync_end = output.find(END_SYNCHRONIZED_OUTPUT).unwrap();
+        let restore = output.find("\x1b8").unwrap();
+        assert!(sync_start < clear);
+        assert!(clear < image);
+        assert!(image < sync_end);
+        assert!(sync_end < restore);
     }
 
     #[test]
@@ -409,7 +430,15 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(!output.contains("Ga=d,d=I,i=49374,q=2;"));
         assert!(output.contains("\x1b7"));
-        assert!(output.contains("\x1b[2;3H    \x1b[3;3H    \x1b[4;3H    \x1b[5;3H    "));
+        let sync_start = output.find(BEGIN_SYNCHRONIZED_OUTPUT).unwrap();
+        let clear = output
+            .find("\x1b[2;3H    \x1b[3;3H    \x1b[4;3H    \x1b[5;3H    ")
+            .unwrap();
+        let sync_end = output.find(END_SYNCHRONIZED_OUTPUT).unwrap();
+        let restore = output.find("\x1b8").unwrap();
+        assert!(sync_start < clear);
+        assert!(clear < sync_end);
+        assert!(sync_end < restore);
         assert!(output.contains("\x1b8"));
         assert!(!output.contains("fake-sixel"));
     }
