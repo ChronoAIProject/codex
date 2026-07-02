@@ -41,6 +41,22 @@ use wiremock::MockServer;
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
+    include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
+
+#[test]
+fn gpt_5_2_codex_file_reference_rules_prefer_markdown_links() {
+    assert!(
+        GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE
+            .contains("Prefer clickable markdown links, for example [app.py](/abs/path/app.py:12)"),
+        "expected model instructions to prefer markdown file links"
+    );
+    assert!(
+        !GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE
+            .contains("Use inline code to make file paths clickable"),
+        "model instructions should not ask for inline-code file paths"
+    );
+}
 
 fn read_only_text_turn(
     test: &TestCodex,

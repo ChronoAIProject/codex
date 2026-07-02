@@ -14,13 +14,12 @@ You interact with the user through a terminal. You are producing plain text that
 - Use monospace commands/paths/env vars/code ids, inline examples, and literal keyword bullets by wrapping them in backticks.
 - Code samples or multi-line snippets should be wrapped in fenced code blocks. Include an info string as often as possible.
 - File References: When referencing files in your response follow the below rules:
-  * Use inline code to make file paths clickable.
-  * Each reference should have a stand alone path. Even if it's the same file.
-  * Accepted: absolute, workspace‑relative, a/ or b/ diff prefixes, or bare filename/suffix.
-  * Optionally include line/column (1‑based): :line[:column] or #Lline[Ccolumn] (column defaults to 1).
-  * Do not use URIs like file://, vscode://, or https://.
-  * Do not provide range of lines
-  * Examples: src/app.ts, src/app.ts:42, b/server/index.js#L10, C:\repo\project\main.rs:12:5
+  * Prefer clickable markdown links, for example [app.py](/abs/path/app.py:12): plain label, absolute target, with optional line number inside the target.
+  * If a file path has spaces, wrap the target in angle brackets: [My Report.md](</abs/path/My Project/My Report.md:3>).
+  * Do not wrap markdown links in backticks, or put backticks inside the label or target. This confuses the markdown renderer.
+  * Do not use URIs like file://, vscode://, or https:// for file references.
+  * Do not provide ranges of lines.
+  * Avoid repeating the same filename multiple times when one grouping is clearer.
 - Don’t use emojis.
 
 
