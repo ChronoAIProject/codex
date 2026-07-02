@@ -1,3 +1,4 @@
+use codex_connectors::AppInfo;
 use codex_core_skills::model::SkillMetadata;
 use codex_plugin::PluginCapabilitySummary;
 
@@ -11,6 +12,7 @@ use super::candidate::Selection;
 pub(crate) fn build_search_catalog(
     skills: Option<&[SkillMetadata]>,
     plugins: Option<&[PluginCapabilitySummary]>,
+    connectors: Option<&[AppInfo]>,
 ) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     if let Some(skills) = skills {
@@ -19,6 +21,15 @@ pub(crate) fn build_search_catalog(
 
     if let Some(plugins) = plugins {
         candidates.extend(plugins.iter().map(plugin_candidate));
+    }
+
+    if let Some(connectors) = connectors {
+        candidates.extend(
+            connectors
+                .iter()
+                .filter(|connector| connector.is_accessible && connector.is_enabled)
+                .map(app_candidate),
+        );
     }
 
     candidates
@@ -67,6 +78,22 @@ fn plugin_candidate(plugin: &PluginCapabilitySummary) -> Candidate {
         selection: Selection::Tool {
             insert_text: format!("@{mention_name}"),
             path: Some(format!("plugin://{}", plugin.config_name)),
+        },
+    }
+}
+
+fn app_candidate(connector: &AppInfo) -> Candidate {
+    let display_name = codex_connectors::metadata::connector_display_label(connector);
+    let slug = codex_connectors::metadata::connector_mention_slug(connector);
+    let connector_id = connector.id.as_str();
+    Candidate {
+        display_name: display_name.clone(),
+        description: connector.description.clone(),
+        search_terms: vec![display_name, connector.id.clone(), slug.clone()],
+        mention_type: MentionType::Plugin,
+        selection: Selection::Tool {
+            insert_text: format!("@{slug}"),
+            path: Some(format!("app://{connector_id}")),
         },
     }
 }
@@ -193,6 +220,37 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn build_search_catalog_includes_accessible_app_mentions() {
+        let catalog = build_search_catalog(
+            /*skills*/ None,
+            /*plugins*/ None,
+            Some(&[
+                app("connector_notion", "Notion", /*is_enabled*/ true),
+                app("connector_disabled", "Disabled", /*is_enabled*/ false),
+            ]),
+        );
+
+        assert_eq!(catalog.len(), 1);
+        let candidate = &catalog[0];
+        assert_eq!(candidate.display_name, "Notion");
+        assert_eq!(
+            candidate.search_terms,
+            vec![
+                "Notion".to_string(),
+                "connector_notion".to_string(),
+                "notion".to_string(),
+            ]
+        );
+        assert!(matches!(
+            candidate.selection,
+            Selection::Tool {
+                ref insert_text,
+                ref path,
+            } if insert_text == "@notion" && path.as_deref() == Some("app://connector_notion")
+        ));
+    }
+
+    #[test]
     fn plugin_mention_name_uses_display_segments_when_they_match_plugin_name() {
         assert_eq!(
             plugin_mention_name("mcp-search", "MCP Search"),
@@ -211,5 +269,25 @@ mod tests {
             plugin_mention_name("browser-use", "Browser Use"),
             "Browser-Use"
         );
+    }
+
+    fn app(id: &str, name: &str, is_enabled: bool) -> AppInfo {
+        AppInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: Some(format!("{name} app")),
+            logo_url: None,
+            logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
+            distribution_channel: None,
+            branding: None,
+            app_metadata: None,
+            labels: None,
+            install_url: None,
+            is_accessible: true,
+            is_enabled,
+            plugin_display_names: Vec::new(),
+        }
     }
 }
