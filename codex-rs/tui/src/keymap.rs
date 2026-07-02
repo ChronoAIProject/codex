@@ -944,7 +944,6 @@ impl RuntimeKeymap {
                     ctrl(KeyCode::Char('j')),
                     ctrl(KeyCode::Char('m')),
                     plain(KeyCode::Enter),
-                    shift(KeyCode::Enter),
                     alt(KeyCode::Enter)
                 ],
                 move_left: default_bindings![plain(KeyCode::Left), ctrl(KeyCode::Char('b'))],
@@ -2840,9 +2839,14 @@ mod tests {
                 key_hint::ctrl(KeyCode::Char('j')),
                 key_hint::ctrl(KeyCode::Char('m')),
                 key_hint::plain(KeyCode::Enter),
-                key_hint::shift(KeyCode::Enter),
                 key_hint::alt(KeyCode::Enter),
             ]
+        );
+        assert!(
+            !runtime
+                .editor
+                .insert_newline
+                .contains(&key_hint::shift(KeyCode::Enter))
         );
     }
 
