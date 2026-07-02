@@ -254,3 +254,19 @@ model = "gpt-dev"
     .await
     .expect("profile-v2 should allow unrelated legacy profiles in base user config");
 }
+
+#[cfg(windows)]
+#[test]
+fn project_trust_lookup_matches_windows_extended_length_path_keys() {
+    let projects_trust = std::collections::HashMap::from([(
+        r"\\?\D:\desktop\imcodex".to_string(),
+        TrustLevel::Trusted,
+    )]);
+
+    let trust = project_trust_for_lookup_key(&projects_trust, r"d:\desktop\imcodex");
+
+    assert_eq!(
+        trust,
+        Some((r"\\?\D:\desktop\imcodex".to_string(), TrustLevel::Trusted))
+    );
+}

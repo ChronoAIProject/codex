@@ -1049,6 +1049,13 @@ fn normalized_project_trust_keys(path: &Path) -> Vec<String> {
 
 fn normalize_project_trust_lookup_key(key: String) -> String {
     if cfg!(windows) {
+        let key = if let Some(path) = key.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{path}")
+        } else if let Some(path) = key.strip_prefix(r"\\?\") {
+            path.to_string()
+        } else {
+            key
+        };
         key.to_ascii_lowercase()
     } else {
         key
