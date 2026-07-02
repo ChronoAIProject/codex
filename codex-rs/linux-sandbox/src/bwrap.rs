@@ -267,7 +267,6 @@ pub(crate) fn create_bwrap_command_args(
 fn create_bwrap_flags_full_filesystem(command: Vec<String>, options: BwrapOptions) -> BwrapArgs {
     let mut args = vec![
         "--new-session".to_string(),
-        "--die-with-parent".to_string(),
         "--bind".to_string(),
         "/".to_string(),
         "/".to_string(),
@@ -316,7 +315,6 @@ fn create_bwrap_flags(
     let normalized_command_cwd = normalize_command_cwd_for_bwrap(command_cwd);
     let mut args = Vec::new();
     args.push("--new-session".to_string());
-    args.push("--die-with-parent".to_string());
     args.extend(filesystem_args);
     // Request a user namespace explicitly rather than relying on bubblewrap's
     // auto-enable behavior, which is skipped when the caller runs as uid 0.
@@ -1396,7 +1394,6 @@ mod tests {
             args.args,
             vec![
                 "--new-session".to_string(),
-                "--die-with-parent".to_string(),
                 "--bind".to_string(),
                 "/".to_string(),
                 "/".to_string(),

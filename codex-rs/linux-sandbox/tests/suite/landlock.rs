@@ -393,6 +393,45 @@ async fn sandbox_ignores_missing_writable_roots_under_bwrap() {
 }
 
 #[tokio::test]
+async fn bwrap_detached_child_survives_tool_call_exit() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let child_log = tempdir.path().join("detached-child.log");
+    let child_log_arg = child_log.to_string_lossy();
+    let output = run_cmd_result_with_writable_roots(
+        &[
+            "bash",
+            "-lc",
+            &format!(
+                "(sleep 0.3; printf detached-child-survived > {child_log_arg}) >/dev/null 2>&1 &"
+            ),
+        ],
+        &[tempdir.path().to_path_buf()],
+        LONG_TIMEOUT_MS,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
+    )
+    .await
+    .expect("sandboxed command should execute");
+
+    assert_eq!(output.exit_code, 0);
+    for _ in 0..20 {
+        if child_log.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(&child_log).unwrap_or_default(),
+        "detached-child-survived"
+    );
+}
+
+#[tokio::test]
 async fn test_no_new_privs_is_enabled() {
     let output = run_cmd_output(
         &["bash", "-lc", "grep '^NoNewPrivs:' /proc/self/status"],
