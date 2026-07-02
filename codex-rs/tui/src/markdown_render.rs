@@ -47,6 +47,7 @@ use crate::style::table_separator_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::annotate_web_urls_in_line;
 use crate::terminal_hyperlinks::remap_wrapped_line;
+use crate::terminal_hyperlinks::terminal_hyperlink_destination;
 use crate::terminal_hyperlinks::visible_lines;
 use crate::terminal_hyperlinks::web_destination;
 use crate::wrapping::RtOptions;
@@ -1785,13 +1786,22 @@ where
                     .unwrap_or_default()
                     .patch(self.styles.code);
                 let span = Span::styled(local_target_display, style);
+                let destination = terminal_hyperlink_destination(&link.destination);
                 if self.in_table_cell() {
-                    self.push_span_to_table_cell(span);
+                    let mut annotated = HyperlinkLine::new(Line::default());
+                    annotated.push_span(span, destination.as_deref());
+                    if let Some(table_state) = self.table_state.as_mut()
+                        && let Some(cell) = table_state.current_cell.as_mut()
+                    {
+                        cell.push_annotated(annotated);
+                    }
                 } else {
                     if self.pending_marker_line {
                         self.push_line(Line::default());
                     }
-                    self.push_span(span);
+                    let mut annotated = HyperlinkLine::new(Line::default());
+                    annotated.push_span(span, destination.as_deref());
+                    self.push_annotated(annotated);
                     self.line_ends_with_local_link_target = true;
                 }
             }

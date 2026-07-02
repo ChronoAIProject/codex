@@ -830,6 +830,25 @@ fn file_link_appends_hash_anchor_when_label_lacks_it() {
 }
 
 #[test]
+fn file_link_target_is_terminal_hyperlink() {
+    let destination =
+        "file:///Users/example/code/codex/codex-rs/tui/src/markdown_render.rs#L74C3";
+    let lines = render_markdown_lines_with_width_and_cwd(
+        &format!("[markdown_render.rs]({destination})"),
+        /*width*/ Some(80),
+        /*cwd*/ Some(Path::new("/Users/example/code/codex")),
+    );
+
+    assert_eq!(
+        lines[0].hyperlinks,
+        vec![crate::terminal_hyperlinks::TerminalHyperlink {
+            columns: 0.."codex-rs/tui/src/markdown_render.rs:74:3".len(),
+            destination: destination.to_string(),
+        }]
+    );
+}
+
+#[test]
 fn file_link_uses_target_path_for_hash_anchor() {
     let text = render_markdown_text_for_cwd(
         "[markdown_render.rs#L74C3](file:///Users/example/code/codex/codex-rs/tui/src/markdown_render.rs#L74C3)",
