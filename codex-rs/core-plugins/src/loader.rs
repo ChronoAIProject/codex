@@ -1,5 +1,6 @@
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::app_mcp_routing::apps_route_available;
+use crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
 use crate::is_openai_curated_marketplace_name;
 use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestHooks;
@@ -17,7 +18,11 @@ use crate::remote::RemoteInstalledPlugin;
 use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
 use crate::store::plugin_version_for_source_with_fallback_manifest;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_config::ConfigRequirements;
+use codex_config::ConfigRequirementsToml;
 use codex_config::HooksFile;
 use codex_config::types::McpServerConfig;
 use codex_config::types::PluginConfig;
@@ -511,8 +516,17 @@ fn refresh_non_curated_plugin_cache_with_mode(
         .collect::<HashSet<_>>();
 
     let store = PluginStore::try_new(codex_home.to_path_buf()).map_err(|err| err.to_string())?;
-    let marketplace_outcome = list_marketplaces_with_home(additional_roots, /*home_dir*/ None)
-        .map_err(|err| format!("failed to discover marketplaces for cache refresh: {err}"))?;
+    let mut marketplace_roots = additional_roots.to_vec();
+    marketplace_roots.extend(installed_marketplace_roots_from_codex_home(
+        codex_home,
+        "failed to read config while preparing non-curated plugin cache refresh",
+        "failed to parse config while preparing non-curated plugin cache refresh",
+    ));
+    marketplace_roots.sort_unstable();
+    marketplace_roots.dedup();
+    let marketplace_outcome =
+        list_marketplaces_with_home(&marketplace_roots, /*home_dir*/ None)
+            .map_err(|err| format!("failed to discover marketplaces for cache refresh: {err}"))?;
     let mut plugin_sources = HashMap::<String, (MarketplacePluginSource, Option<String>)>::new();
 
     for marketplace in marketplace_outcome.marketplaces {
@@ -669,33 +683,71 @@ fn configured_plugins_from_codex_home(
     read_error_message: &str,
     parse_error_message: &str,
 ) -> HashMap<String, PluginConfig> {
+    user_config_from_codex_home(codex_home, read_error_message, parse_error_message)
+        .map(|user_config| configured_plugins_from_user_config_value(&user_config))
+        .unwrap_or_default()
+}
+
+fn installed_marketplace_roots_from_codex_home(
+    codex_home: &Path,
+    read_error_message: &str,
+    parse_error_message: &str,
+) -> Vec<AbsolutePathBuf> {
+    let Some(user_config) =
+        user_config_from_codex_home(codex_home, read_error_message, parse_error_message)
+    else {
+        return Vec::new();
+    };
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let Ok(config_file) = AbsolutePathBuf::try_from(config_path) else {
+        return Vec::new();
+    };
+    let Ok(config_layer_stack) = ConfigLayerStack::new(
+        vec![ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: config_file,
+                profile: None,
+            },
+            user_config,
+        )],
+        ConfigRequirements::default(),
+        ConfigRequirementsToml::default(),
+    ) else {
+        return Vec::new();
+    };
+    installed_marketplace_roots_from_layer_stack(&config_layer_stack, codex_home)
+}
+
+fn user_config_from_codex_home(
+    codex_home: &Path,
+    read_error_message: &str,
+    parse_error_message: &str,
+) -> Option<toml::Value> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
     let user_config = match fs::read_to_string(&config_path) {
         Ok(user_config) => user_config,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
             warn!(
                 path = %config_path.display(),
                 error = %err,
                 "{read_error_message}"
             );
-            return HashMap::new();
+            return None;
         }
     };
 
-    let user_config = match toml::from_str::<toml::Value>(&user_config) {
-        Ok(user_config) => user_config,
+    match toml::from_str::<toml::Value>(&user_config) {
+        Ok(user_config) => Some(user_config),
         Err(err) => {
             warn!(
                 path = %config_path.display(),
                 error = %err,
                 "{parse_error_message}"
             );
-            return HashMap::new();
+            None
         }
-    };
-
-    configured_plugins_from_user_config_value(&user_config)
+    }
 }
 
 fn configured_plugin_ids(

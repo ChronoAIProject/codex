@@ -5465,6 +5465,72 @@ enabled = true
 }
 
 #[test]
+fn refresh_non_curated_plugin_cache_uses_configured_local_marketplace_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marketplace_root = tmp.path().join("marketplaces/debug");
+    fs::create_dir_all(marketplace_root.join(".agents/plugins")).unwrap();
+    write_plugin_with_version(
+        &marketplace_root,
+        "sample-plugin",
+        "sample-plugin",
+        Some("1.2.3"),
+    );
+    write_file(
+        &marketplace_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "debug",
+  "plugins": [
+    {
+      "name": "sample-plugin",
+      "source": {
+        "source": "local",
+        "path": "./sample-plugin"
+      }
+    }
+  ]
+}"#,
+    );
+    write_plugin_with_version(
+        &tmp.path().join("plugins/cache/debug"),
+        "sample-plugin/1.0.0",
+        "sample-plugin",
+        Some("1.0.0"),
+    );
+    let marketplace_source = marketplace_root.to_string_lossy().replace('\\', "\\\\");
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        &format!(
+            r#"[features]
+plugins = true
+
+[marketplaces.debug]
+source_type = "local"
+source = "{marketplace_source}"
+
+[plugins."sample-plugin@debug"]
+enabled = true
+"#
+        ),
+    );
+
+    assert!(
+        refresh_non_curated_plugin_cache(tmp.path(), &[], &["sample-plugin@debug".to_string()])
+            .expect("cache refresh should discover configured local marketplace")
+    );
+
+    assert!(
+        !tmp.path()
+            .join("plugins/cache/debug/sample-plugin/1.0.0")
+            .exists()
+    );
+    assert!(
+        tmp.path()
+            .join("plugins/cache/debug/sample-plugin/1.2.3")
+            .is_dir()
+    );
+}
+
+#[test]
 fn refresh_non_curated_plugin_cache_reinstalls_missing_configured_plugin_with_manifest_version() {
     let tmp = tempfile::tempdir().unwrap();
     let repo_root = tmp.path().join("repo");
