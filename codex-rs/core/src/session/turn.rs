@@ -172,6 +172,10 @@ pub(crate) async fn run_turn(
         turn_diff_display_roots(turn_context.as_ref()),
     );
 
+    if run_pending_session_start_hooks(&sess, &turn_context).await {
+        return Ok(None);
+    }
+
     let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,
         first_step_context.as_ref(),
@@ -183,9 +187,6 @@ pub(crate) async fn run_turn(
         return Ok(None);
     };
 
-    if run_pending_session_start_hooks(&sess, &turn_context).await {
-        return Ok(None);
-    }
     let mut can_drain_pending_input = input.is_empty();
     if run_hooks_and_record_inputs(&sess, &turn_context, &input).await {
         return Ok(None);
