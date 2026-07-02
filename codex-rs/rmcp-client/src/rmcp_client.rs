@@ -642,10 +642,7 @@ impl RmcpClient {
                         .await?
                         .await_response()
                         .await?;
-                    match result {
-                        ServerResult::CallToolResult(result) => Ok(result),
-                        _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
-                    }
+                    coerce_call_tool_result(result)
                 }
                 .boxed()
             })
@@ -1153,6 +1150,32 @@ impl RmcpClient {
     }
 }
 
+fn coerce_call_tool_result(
+    result: ServerResult,
+) -> std::result::Result<CallToolResult, rmcp::service::ServiceError> {
+    match result {
+        ServerResult::CallToolResult(result) => Ok(result),
+        ServerResult::CustomResult(result) => result
+            .result_as::<CallToolResult>()
+            .map_err(|_| rmcp::service::ServiceError::UnexpectedResponse),
+        ServerResult::InitializeResult(_)
+        | ServerResult::CompleteResult(_)
+        | ServerResult::GetPromptResult(_)
+        | ServerResult::ListPromptsResult(_)
+        | ServerResult::ListResourcesResult(_)
+        | ServerResult::ListResourceTemplatesResult(_)
+        | ServerResult::ReadResourceResult(_)
+        | ServerResult::ListToolsResult(_)
+        | ServerResult::CreateElicitationResult(_)
+        | ServerResult::CreateTaskResult(_)
+        | ServerResult::ListTasksResult(_)
+        | ServerResult::GetTaskResult(_)
+        | ServerResult::CancelTaskResult(_)
+        | ServerResult::GetTaskPayloadResult(_)
+        | ServerResult::EmptyResult(_) => Err(rmcp::service::ServiceError::UnexpectedResponse),
+    }
+}
+
 async fn create_oauth_transport_and_runtime(
     server_name: &str,
     url: &str,
@@ -1215,6 +1238,9 @@ mod tests {
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
+    use rmcp::model::Content;
+    use rmcp::model::CustomResult;
+    use serde_json::json;
     use tokio::time;
 
     use super::*;
@@ -1236,5 +1262,47 @@ mod tests {
             .await;
 
         assert_eq!(Ok("done"), result);
+    }
+
+    #[test]
+    fn coerce_call_tool_result_accepts_typed_result() {
+        let expected = CallToolResult::success(vec![Content::text("typed response")]);
+
+        assert_eq!(
+            coerce_call_tool_result(ServerResult::CallToolResult(expected))
+                .expect("typed tool result should be accepted"),
+            CallToolResult::success(vec![Content::text("typed response")]),
+        );
+    }
+
+    #[test]
+    fn coerce_call_tool_result_accepts_custom_result_with_tool_shape() {
+        let expected = CallToolResult::success(vec![Content::text("custom response")]);
+        let result = ServerResult::CustomResult(CustomResult::new(json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "custom response"
+                }
+            ],
+            "isError": false
+        })));
+
+        assert_eq!(
+            coerce_call_tool_result(result).expect("custom tool result should be accepted"),
+            expected,
+        );
+    }
+
+    #[test]
+    fn coerce_call_tool_result_rejects_unrelated_custom_result() {
+        let result = ServerResult::CustomResult(CustomResult::new(json!({
+            "status": "ok"
+        })));
+
+        assert!(matches!(
+            coerce_call_tool_result(result),
+            Err(rmcp::service::ServiceError::UnexpectedResponse)
+        ));
     }
 }
