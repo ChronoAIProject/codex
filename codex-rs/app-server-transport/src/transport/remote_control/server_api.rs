@@ -87,7 +87,6 @@ pub(super) async fn enroll_remote_control_server(
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         app_server_version: env!("CARGO_PKG_VERSION"),
-        installation_id: installation_id.to_string(),
     };
     let enrollment_response = send_remote_control_server_request::<_, EnrollRemoteServerResponse>(
         enroll_url,
