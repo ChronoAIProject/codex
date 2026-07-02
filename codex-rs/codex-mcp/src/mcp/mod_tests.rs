@@ -393,3 +393,19 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
         other => panic!("expected streamable http transport, got {other:?}"),
     }
 }
+
+#[test]
+fn effective_mcp_servers_keep_codex_apps_for_non_codex_model_auth() {
+    let mut config = test_mcp_config(PathBuf::new());
+    config.apps_enabled = true;
+    let mut catalog = ResolvedMcpCatalog::builder();
+    catalog.register(McpServerRegistration::from_config(
+        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        codex_apps_mcp_server_config("https://chatgpt.com", /*apps_mcp_product_sku*/ None),
+    ));
+    config.mcp_server_catalog = catalog.build();
+
+    let effective = effective_mcp_servers(&config, /*auth*/ None);
+
+    assert!(effective.contains_key(CODEX_APPS_MCP_SERVER_NAME));
+}

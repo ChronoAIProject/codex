@@ -288,7 +288,7 @@ pub fn effective_mcp_servers_from_configured(
             (name, EffectiveMcpServer::configured(server))
         })
         .collect::<HashMap<_, _>>();
-    if !host_owned_codex_apps_enabled(config, auth) {
+    if !config.apps_enabled {
         servers.remove(CODEX_APPS_MCP_SERVER_NAME);
     }
     servers
