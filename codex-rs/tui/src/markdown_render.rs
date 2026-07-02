@@ -1020,19 +1020,24 @@ where
     }
 
     fn push_text_spans_to_table_cell(&mut self, text: &str, style: Style) {
-        let span = Span::styled(text.to_string(), style);
         let destination = self
             .link
             .as_ref()
             .and_then(|link| web_destination(&link.destination));
         let mut annotated = if let Some(destination) = destination {
+            let span = Span::styled(text.to_string(), style);
             let mut annotated = HyperlinkLine::new(Line::default());
             annotated.push_span(span, Some(&destination));
             annotated
         } else if self.link.is_some() || self.in_code_block {
+            let span = Span::styled(text.to_string(), style);
             HyperlinkLine::new(Line::from(span))
         } else {
-            annotate_web_urls_in_line(Line::from(span))
+            annotate_local_file_references(
+                annotate_web_urls_in_line(Line::from(Span::styled(text.to_string(), style))),
+                self.styles.code,
+                self.cwd.as_deref(),
+            )
         };
         if let Some(table_state) = self.table_state.as_mut()
             && let Some(cell) = table_state.current_cell.as_mut()
@@ -1924,19 +1929,24 @@ where
     }
 
     fn push_text_spans(&mut self, text: &str, style: Style) {
-        let span = Span::styled(text.to_string(), style);
         let destination = self
             .link
             .as_ref()
             .and_then(|link| web_destination(&link.destination));
         let annotated = if let Some(destination) = destination {
+            let span = Span::styled(text.to_string(), style);
             let mut annotated = HyperlinkLine::new(Line::default());
             annotated.push_span(span, Some(&destination));
             annotated
         } else if self.link.is_some() || self.in_code_block {
+            let span = Span::styled(text.to_string(), style);
             HyperlinkLine::new(Line::from(span))
         } else {
-            annotate_web_urls_in_line(Line::from(span))
+            annotate_local_file_references(
+                annotate_web_urls_in_line(Line::from(Span::styled(text.to_string(), style))),
+                self.styles.code,
+                self.cwd.as_deref(),
+            )
         };
         self.push_annotated(annotated);
     }
@@ -2001,6 +2011,174 @@ fn is_local_path_like_link(dest_url: &str) -> bool {
             [drive, b':', separator, ..]
                 if drive.is_ascii_alphabetic() && matches!(separator, b'/' | b'\\')
         )
+}
+
+fn annotate_local_file_references(
+    line: HyperlinkLine,
+    local_path_style: Style,
+    cwd: Option<&Path>,
+) -> HyperlinkLine {
+    if line.hyperlinks.is_empty() {
+        let text = line
+            .line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        if !text_contains_local_file_reference(&text) {
+            return line;
+        }
+    }
+
+    let mut out = HyperlinkLine::new(Line::default().style(line.line.style));
+    let mut column = 0usize;
+    for span in line.line.spans {
+        let span_width = span.content.width();
+        let span_range = column..column + span_width;
+        let overlaps_hyperlink = line
+            .hyperlinks
+            .iter()
+            .any(|link| link.columns.start < span_range.end && span_range.start < link.columns.end);
+        if overlaps_hyperlink {
+            push_annotated_line(
+                &mut out,
+                HyperlinkLine {
+                    line: Line::from(span),
+                    hyperlinks: line
+                        .hyperlinks
+                        .iter()
+                        .filter_map(|link| {
+                            (link.columns.start < span_range.end
+                                && span_range.start < link.columns.end)
+                                .then(|| {
+                                    let start = link.columns.start.saturating_sub(span_range.start);
+                                    let end =
+                                        link.columns.end.min(span_range.end) - span_range.start;
+                                    crate::terminal_hyperlinks::TerminalHyperlink {
+                                        columns: start..end,
+                                        destination: link.destination.clone(),
+                                    }
+                                })
+                        })
+                        .collect(),
+                },
+            );
+        } else {
+            push_text_with_local_file_references(&mut out, &span, local_path_style, cwd);
+        }
+        column += span_width;
+    }
+    out
+}
+
+fn push_text_with_local_file_references(
+    out: &mut HyperlinkLine,
+    span: &Span<'static>,
+    local_path_style: Style,
+    cwd: Option<&Path>,
+) {
+    let mut remainder = span.content.as_ref();
+    while let Some(reference) = next_local_file_reference(remainder, cwd) {
+        if reference.start > 0 {
+            out.line.push_span(Span::styled(
+                remainder[..reference.start].to_string(),
+                span.style,
+            ));
+        }
+        out.line.push_span(Span::styled(
+            reference.display,
+            span.style.patch(local_path_style),
+        ));
+        remainder = &remainder[reference.end..];
+    }
+    if !remainder.is_empty() {
+        out.line
+            .push_span(Span::styled(remainder.to_string(), span.style));
+    }
+}
+
+#[derive(Debug)]
+struct LocalFileReference {
+    start: usize,
+    end: usize,
+    display: String,
+}
+
+fn next_local_file_reference(text: &str, cwd: Option<&Path>) -> Option<LocalFileReference> {
+    let mut search_from = 0usize;
+    for raw_token in text.split_ascii_whitespace() {
+        let relative_start = text[search_from..].find(raw_token)?;
+        let raw_start = search_from + relative_start;
+        search_from = raw_start + raw_token.len();
+        let trimmed_start = raw_token
+            .find(|ch: char| !is_leading_local_path_punctuation(ch))
+            .unwrap_or(raw_token.len());
+        let trimmed_end = trailing_local_path_end(&raw_token[trimmed_start..]) + trimmed_start;
+        if trimmed_start >= trimmed_end {
+            continue;
+        }
+        let candidate = &raw_token[trimmed_start..trimmed_end];
+        if !is_local_path_like_link(candidate) {
+            continue;
+        }
+        let Some(display) = render_local_link_target(candidate, cwd) else {
+            continue;
+        };
+        return Some(LocalFileReference {
+            start: raw_start + trimmed_start,
+            end: raw_start + trimmed_end,
+            display,
+        });
+    }
+    None
+}
+
+fn text_contains_local_file_reference(text: &str) -> bool {
+    next_local_file_reference(text, /*cwd*/ None).is_some()
+}
+
+fn push_annotated_line(out: &mut HyperlinkLine, mut appended: HyperlinkLine) {
+    let shift = out.width();
+    out.line.spans.append(&mut appended.line.spans);
+    out.hyperlinks
+        .extend(appended.hyperlinks.into_iter().map(|mut link| {
+            link.columns = link.columns.start + shift..link.columns.end + shift;
+            link
+        }));
+}
+
+fn is_leading_local_path_punctuation(ch: char) -> bool {
+    matches!(ch, '(' | '[' | '{' | '<' | '\'' | '"')
+}
+
+fn trailing_local_path_end(candidate: &str) -> usize {
+    let mut end = candidate.len();
+    while end > 0 {
+        let remaining = &candidate[..end];
+        let Some(ch) = remaining.chars().next_back() else {
+            break;
+        };
+        let trim = matches!(ch, ',' | '.' | ';' | '!' | '\'' | '"')
+            || matches!(ch, ')' | ']' | '}' | '>')
+                && has_unmatched_local_path_closing_delimiter(remaining, ch);
+        if !trim {
+            break;
+        }
+        end -= ch.len_utf8();
+    }
+    end
+}
+
+fn has_unmatched_local_path_closing_delimiter(candidate: &str, closing: char) -> bool {
+    let opening = match closing {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        '>' => '<',
+        _ => return false,
+    };
+    candidate.chars().filter(|ch| *ch == closing).count()
+        > candidate.chars().filter(|ch| *ch == opening).count()
 }
 
 /// Parse a local link target into normalized path text plus an optional location suffix.
