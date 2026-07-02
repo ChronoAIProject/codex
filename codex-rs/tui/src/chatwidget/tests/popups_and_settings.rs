@@ -3098,6 +3098,29 @@ async fn personality_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn personality_selection_popup_shows_none_as_current() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_personality(Personality::None);
+    chat.open_personality_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!(
+        "personality_selection_popup_none_current",
+        popup,
+        @r"
+  Select Personality
+  Choose a communication style for Codex.
+
+› 1. None (current)  No personality instructions.
+  2. Friendly        Warm, collaborative, and helpful.
+  3. Pragmatic       Concise, task-focused, and direct.
+
+  Press enter to confirm or esc to go back"
+    );
+}
+
+#[tokio::test]
 async fn skills_menu_default_mentions_shortcut_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.open_skills_menu();
