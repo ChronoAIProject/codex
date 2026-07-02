@@ -18,9 +18,10 @@ use toml::Value;
 #[derive(Parser, Debug, Default, Clone)]
 pub struct CliConfigOverrides {
     /// Override a configuration value that would otherwise be loaded from
-    /// `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override
-    /// nested values. The `value` portion is parsed as TOML. If it fails to
-    /// parse as TOML, the raw string is used as a literal.
+    /// `$CODEX_HOME/config.toml` (or `~/.codex/config.toml` when `CODEX_HOME`
+    /// is unset). Use a dotted path (`foo.bar.baz`) to override nested values.
+    /// The `value` portion is parsed as TOML. If it fails to parse as TOML, the
+    /// raw string is used as a literal.
     ///
     /// Examples:
     ///   - `-c model="o3"`
@@ -159,6 +160,8 @@ fn parse_toml_value(raw: &str) -> Result<Value, toml::de::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn parses_basic_scalar() {
@@ -221,5 +224,16 @@ mod tests {
         let tbl = v.as_table().expect("table");
         assert_eq!(tbl.get("a").unwrap().as_integer(), Some(1));
         assert_eq!(tbl.get("b").unwrap().as_integer(), Some(2));
+    }
+
+    #[test]
+    fn config_override_help_mentions_codex_home() {
+        let help = CliConfigOverrides::command().render_long_help().to_string();
+        let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(normalized_help.contains("$CODEX_HOME/config.toml"));
+        assert!(normalized_help.contains("~/.codex/config.toml"));
+        assert!(normalized_help.contains("CODEX_HOME"));
+        assert!(normalized_help.contains("is unset"));
     }
 }
