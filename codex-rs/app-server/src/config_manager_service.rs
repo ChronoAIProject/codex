@@ -226,15 +226,6 @@ impl ConfigManager {
             None => Cow::Owned(create_empty_user_layer(&allowed_path).await?),
         };
 
-        if let Some(expected) = expected_version.as_deref()
-            && expected != user_layer.version
-        {
-            return Err(ConfigManagerError::write(
-                ConfigWriteErrorCode::ConfigVersionConflict,
-                "Configuration was modified since last read. Fetch latest version and retry.",
-            ));
-        }
-
         let mut user_config = user_layer.config.clone();
         let mut parsed_segments = Vec::new();
         let mut config_edits = Vec::new();
@@ -243,6 +234,9 @@ impl ConfigManager {
             let segments = parse_key_path(&key_path).map_err(|message| {
                 ConfigManagerError::write(ConfigWriteErrorCode::ConfigValidationError, message)
             })?;
+            if let Some(expected) = expected_version.as_deref() {
+                validate_expected_version(&layers, &user_layer, &segments, expected)?;
+            }
             if !value.is_null() {
                 match segments.as_slice() {
                     [segment] if segment == "profile" => {
@@ -620,6 +614,28 @@ fn value_at_path<'a>(root: &'a TomlValue, segments: &[String]) -> Option<&'a Tom
         }
     }
     Some(current)
+}
+
+fn validate_expected_version(
+    layers: &ConfigLayerStack,
+    user_layer: &ConfigLayerEntry,
+    segments: &[String],
+    expected: &str,
+) -> Result<(), ConfigManagerError> {
+    let current = layers
+        .layers_high_to_low()
+        .into_iter()
+        .find(|layer| value_at_path(&layer.config, segments).is_some())
+        .unwrap_or(user_layer);
+
+    if expected == current.version {
+        Ok(())
+    } else {
+        Err(ConfigManagerError::write(
+            ConfigWriteErrorCode::ConfigVersionConflict,
+            "Configuration was modified since last read. Fetch latest version and retry.",
+        ))
+    }
 }
 
 fn override_message(layer: &ConfigLayerSource) -> String {

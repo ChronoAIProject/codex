@@ -539,6 +539,52 @@ async fn version_conflict_rejected() {
 }
 
 #[tokio::test]
+async fn write_value_accepts_version_from_current_origin_layer() {
+    let tmp = tempdir().expect("tempdir");
+    let user_path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&user_path, "model = \"user\"").unwrap();
+
+    let service = ConfigManager::new_for_tests(
+        tmp.path().to_path_buf(),
+        vec![(
+            "model".to_string(),
+            TomlValue::String("session".to_string()),
+        )],
+        LoaderOverrides::without_managed_config_for_tests(),
+        CloudConfigBundleLoader::default(),
+    );
+
+    let read = service
+        .read(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await
+        .expect("read succeeds");
+    let expected_version = read
+        .origins
+        .get("model")
+        .map(|origin| origin.version.clone());
+
+    let response = service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(tmp.path().join(CONFIG_TOML_FILE).display().to_string()),
+            key_path: "model".to_string(),
+            value: serde_json::json!("gpt-new"),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version,
+        })
+        .await
+        .expect("write succeeds");
+
+    assert_eq!(response.status, WriteStatus::OkOverridden);
+    assert_eq!(
+        std::fs::read_to_string(&user_path).expect("read config"),
+        "model = \"gpt-new\"\n"
+    );
+}
+
+#[tokio::test]
 async fn write_value_defaults_to_user_config_path() {
     let tmp = tempdir().expect("tempdir");
     std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "").unwrap();
