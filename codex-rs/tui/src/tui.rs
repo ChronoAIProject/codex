@@ -99,10 +99,12 @@ mod tests {
     use std::io::Write as _;
 
     use super::clear_for_viewport_change;
+    use super::resize_legacy_inline_viewport;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
+    use pretty_assertions::assert_eq;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
 
@@ -169,6 +171,43 @@ mod tests {
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
         );
+    }
+
+    #[test]
+    fn growing_inline_viewport_does_not_scroll_transcript_rows() {
+        let width = 12;
+        let height = 4;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            CustomTerminal::with_options_and_cursor_position(backend, Position { x: 0, y: 3 })
+                .expect("terminal");
+        write!(
+            terminal.backend_mut(),
+            "line one\r\nline two\r\nline three\r\n"
+        )
+        .expect("prefill terminal");
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 3, /*width*/ width, /*height*/ 1,
+        ));
+
+        resize_legacy_inline_viewport(&mut terminal, /*height*/ 3).expect("resize viewport");
+
+        let rows: Vec<String> = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .rows(/*start*/ 0, width)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "line one    ".to_string(),
+                "line two    ".to_string(),
+                "            ".to_string(),
+                "            ".to_string(),
+            ]
+        );
+        assert_eq!(terminal.viewport_area, Rect::new(0, 1, width, 3));
     }
 }
 
@@ -567,6 +606,28 @@ where
     terminal.clear_after_position(clear_position)
 }
 
+fn resize_legacy_inline_viewport<B>(terminal: &mut CustomTerminal<B>, height: u16) -> Result<()>
+where
+    B: Backend + Write,
+{
+    let size = terminal.size()?;
+
+    let mut area = terminal.viewport_area;
+    area.height = height.min(size.height);
+    area.width = size.width;
+    if area.bottom() > size.height {
+        area.y = size.height - area.height;
+    }
+    if area != terminal.viewport_area {
+        // On startup, the old viewport can still be empty. Clear from the
+        // new viewport top so stale shell cells do not show through spaces.
+        clear_for_viewport_change(terminal, area)?;
+        terminal.set_viewport_area(area);
+    }
+
+    Ok(())
+}
+
 impl Tui {
     pub(crate) fn new(
         terminal: Terminal,
@@ -907,24 +968,7 @@ impl Tui {
                 terminal.clear()?;
             }
 
-            let size = terminal.size()?;
-
-            let mut area = terminal.viewport_area;
-            area.height = height.min(size.height);
-            area.width = size.width;
-            // If the viewport has expanded, scroll everything else up to make room.
-            if area.bottom() > size.height {
-                terminal
-                    .backend_mut()
-                    .scroll_region_up(0..area.top(), area.bottom() - size.height)?;
-                area.y = size.height - area.height;
-            }
-            if area != terminal.viewport_area {
-                // On startup, the old viewport can still be empty. Clear from the
-                // new viewport top so stale shell cells do not show through spaces.
-                clear_for_viewport_change(terminal, area)?;
-                terminal.set_viewport_area(area);
-            }
+            resize_legacy_inline_viewport(terminal, height)?;
 
             Self::flush_pending_history_lines(
                 terminal,
