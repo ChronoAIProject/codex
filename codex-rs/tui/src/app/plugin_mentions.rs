@@ -4,7 +4,7 @@
 //! client. The current API exposes plugin-level mention metadata there, but not
 //! effective per-session capability summaries.
 
-use super::background_requests::request_plugin_list;
+use super::background_requests::request_plugin_list_for_kinds;
 use super::*;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginListResponse;
@@ -15,7 +15,12 @@ pub(super) async fn fetch_plugin_mentions(
     request_handle: AppServerRequestHandle,
     cwd: PathBuf,
 ) -> Result<Vec<PluginCapabilitySummary>> {
-    let response = request_plugin_list(request_handle, cwd).await?;
+    let response = request_plugin_list_for_kinds(
+        request_handle,
+        cwd,
+        vec![PluginListMarketplaceKind::Vertical],
+    )
+    .await?;
     Ok(plugin_mentions_from_list_response(response))
 }
 
@@ -48,13 +53,23 @@ fn plugin_mention_from_summary(
     }
 
     Some(PluginCapabilitySummary {
-        config_name: plugin.id.clone(),
+        config_name: plugin_mention_config_name(marketplace_name, &plugin),
         display_name: plugin_mention_display_name(&plugin),
         description: plugin_mention_description(marketplace_name, &plugin),
         has_skills: false,
         mcp_server_names: Vec::new(),
         app_connector_ids: Vec::new(),
     })
+}
+
+fn plugin_mention_config_name(marketplace_name: &str, plugin: &PluginSummary) -> String {
+    let marketplace_name = marketplace_name.trim();
+    if plugin.id.contains('@') || marketplace_name.is_empty() {
+        plugin.id.clone()
+    } else {
+        let plugin_id = plugin.id.as_str();
+        format!("{plugin_id}@{marketplace_name}")
+    }
 }
 
 fn plugin_mention_display_name(plugin: &PluginSummary) -> String {
@@ -146,6 +161,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn plugin_mentions_qualify_bare_vertical_plugin_ids() {
+        let response = PluginListResponse {
+            marketplaces: vec![PluginMarketplaceEntry {
+                name: "openai-curated".to_string(),
+                path: None,
+                interface: None,
+                plugins: vec![plugin_summary_with_id("superpowers", "superpowers")],
+            }],
+            marketplace_load_errors: Vec::new(),
+            featured_plugin_ids: Vec::new(),
+        };
+
+        assert_eq!(
+            plugin_mentions_from_list_response(response),
+            vec![PluginCapabilitySummary {
+                config_name: "superpowers@openai-curated".to_string(),
+                display_name: "superpowers".to_string(),
+                description: Some("openai-curated".to_string()),
+                has_skills: false,
+                mcp_server_names: Vec::new(),
+                app_connector_ids: Vec::new(),
+            }]
+        );
+    }
+
     fn shared_plugin_summary(name: &str) -> PluginSummary {
         PluginSummary {
             share_context: Some(PluginShareContext {
@@ -162,8 +203,12 @@ mod tests {
     }
 
     fn plugin_summary(name: &str) -> PluginSummary {
+        plugin_summary_with_id(&format!("{name}@server-marketplace"), name)
+    }
+
+    fn plugin_summary_with_id(id: &str, name: &str) -> PluginSummary {
         PluginSummary {
-            id: format!("{name}@server-marketplace"),
+            id: id.to_string(),
             remote_plugin_id: Some(format!("plugins~{name}")),
             local_version: None,
             name: name.to_string(),
