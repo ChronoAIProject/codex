@@ -515,7 +515,58 @@ async fn write_value_reports_override() {
 }
 
 #[tokio::test]
-async fn version_conflict_rejected() {
+async fn stale_version_write_succeeds() {
+    let tmp = tempdir().expect("tempdir");
+    let user_path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&user_path, "model = \"user\"").unwrap();
+
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+
+    let read = service
+        .read(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await
+        .expect("read succeeds");
+    let stale_version = read
+        .origins
+        .get("model")
+        .expect("model origin")
+        .version
+        .clone();
+
+    service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(tmp.path().join(CONFIG_TOML_FILE).display().to_string()),
+            key_path: "model".to_string(),
+            value: serde_json::json!("gpt-5.2"),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await
+        .expect("background write succeeds");
+
+    let response = service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(tmp.path().join(CONFIG_TOML_FILE).display().to_string()),
+            key_path: "approval_policy".to_string(),
+            value: serde_json::json!("on-request"),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: Some(stale_version.clone()),
+        })
+        .await
+        .expect("stale version write succeeds");
+
+    assert_ne!(response.version, stale_version);
+    assert_eq!(
+        std::fs::read_to_string(&user_path).expect("read config"),
+        "model = \"gpt-5.2\"\napproval_policy = \"on-request\"\n"
+    );
+}
+
+#[tokio::test]
+async fn invalid_version_token_rejected() {
     let tmp = tempdir().expect("tempdir");
     let user_path = tmp.path().join(CONFIG_TOML_FILE);
     std::fs::write(&user_path, "model = \"user\"").unwrap();
@@ -530,7 +581,7 @@ async fn version_conflict_rejected() {
             expected_version: Some("sha256:bogus".to_string()),
         })
         .await
-        .expect_err("should fail");
+        .expect_err("invalid version token should fail");
 
     assert_eq!(
         error.write_error_code(),

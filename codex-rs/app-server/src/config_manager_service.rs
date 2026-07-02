@@ -227,7 +227,7 @@ impl ConfigManager {
         };
 
         if let Some(expected) = expected_version.as_deref()
-            && expected != user_layer.version
+            && !is_config_version_token(expected)
         {
             return Err(ConfigManagerError::write(
                 ConfigWriteErrorCode::ConfigVersionConflict,
@@ -602,6 +602,12 @@ fn validate_config(value: &TomlValue) -> Result<(), toml::de::Error> {
 
 fn paths_match(expected: impl AsRef<Path>, provided: impl AsRef<Path>) -> bool {
     path_utils::paths_match_after_normalization(expected, provided)
+}
+
+fn is_config_version_token(version: &str) -> bool {
+    version
+        .strip_prefix("sha256:")
+        .is_some_and(|hash| hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 fn value_at_path<'a>(root: &'a TomlValue, segments: &[String]) -> Option<&'a TomlValue> {
