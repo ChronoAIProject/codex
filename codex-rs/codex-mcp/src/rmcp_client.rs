@@ -801,6 +801,7 @@ async fn start_server_task(
         client_elicitation_capability,
         supports_openai_form_elicitation,
     } = params;
+    let startup_started = TokioInstant::now();
     let params = mcp_initialize_request_params(
         client_elicitation_capability,
         supports_openai_form_elicitation,
@@ -828,7 +829,8 @@ async fn start_server_task(
         &server_name,
         is_codex_apps_mcp_server,
         &client,
-        startup_timeout,
+        remaining_startup_timeout(startup_timeout, startup_started)
+            .map_err(StartupOutcomeError::from)?,
         initialize_result.instructions.as_deref(),
     )
     .await
@@ -867,6 +869,22 @@ async fn start_server_task(
     };
 
     Ok(managed)
+}
+
+fn remaining_startup_timeout(
+    timeout: Option<Duration>,
+    startup_started: TokioInstant,
+) -> Result<Option<Duration>> {
+    let Some(timeout) = timeout else {
+        return Ok(None);
+    };
+
+    let remaining = timeout.saturating_sub(startup_started.elapsed());
+    if remaining.is_zero() {
+        Err(anyhow!("timed out awaiting MCP startup after {timeout:?}"))
+    } else {
+        Ok(Some(remaining))
+    }
 }
 
 fn mcp_initialize_request_params(
@@ -1007,10 +1025,25 @@ async fn make_rmcp_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elicitation::ElicitationRequestRouter;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::protocol::AskForApproval;
     use pretty_assertions::assert_eq;
+    use rmcp::ErrorData as McpError;
+    use rmcp::ServiceExt;
+    use rmcp::handler::server::ServerHandler;
+    use rmcp::model::InitializeRequestParams;
+    use rmcp::model::InitializeResult;
     use rmcp::model::JsonObject;
+    use rmcp::model::ListToolsResult;
     use rmcp::model::Meta;
+    use rmcp::model::PaginatedRequestParams;
+    use rmcp::model::ServerCapabilities;
+    use rmcp::model::ServerInfo;
     use rmcp::transport::auth::AuthError;
+    use std::io;
+    use tokio::io::DuplexStream;
+    use tokio::time::sleep;
 
     #[test]
     fn startup_outcome_error_identifies_authentication_required() {
@@ -1125,5 +1158,88 @@ mod tests {
             serde_json::to_value(tool_info).expect("serialize actual tool info"),
             serde_json::to_value(expected).expect("serialize expected tool info")
         );
+    }
+
+    struct HangingListToolsServer;
+
+    impl ServerHandler for HangingListToolsServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn initialize(
+            &self,
+            request: InitializeRequestParams,
+            context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<InitializeResult, McpError> {
+            context.peer.set_peer_info(request);
+            sleep(Duration::from_millis(90)).await;
+            Ok(self.get_info())
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<ListToolsResult, McpError> {
+            std::future::pending().await
+        }
+    }
+
+    struct HangingListToolsTransportFactory;
+
+    impl codex_rmcp_client::InProcessTransportFactory for HangingListToolsTransportFactory {
+        fn open(&self) -> BoxFuture<'static, io::Result<DuplexStream>> {
+            async {
+                let (client_stream, server_stream) = tokio::io::duplex(4096);
+                tokio::spawn(async move {
+                    let Ok(running) = HangingListToolsServer.serve(server_stream).await else {
+                        return;
+                    };
+                    let _ = running.waiting().await;
+                });
+                Ok(client_stream)
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn start_server_task_times_out_initial_tools_list() {
+        let (tx_event, _rx_event) = async_channel::bounded(1);
+        let client = Arc::new(
+            RmcpClient::new_in_process_client(Arc::new(HangingListToolsTransportFactory))
+                .await
+                .expect("create in-process RMCP client"),
+        );
+
+        let result = start_server_task(
+            "test".to_string(),
+            client,
+            StartServerTaskParams {
+                is_codex_apps_mcp_server: false,
+                startup_timeout: Some(Duration::from_millis(100)),
+                tool_timeout: DEFAULT_TOOL_TIMEOUT,
+                tool_filter: ToolFilter::default(),
+                tx_event,
+                elicitation_requests: ElicitationRequestManager::new(
+                    AskForApproval::OnRequest,
+                    PermissionProfile::default(),
+                    /*reviewer*/ None,
+                    ElicitationRequestRouter::default(),
+                ),
+                codex_apps_tools_cache_context: None,
+                client_elicitation_capability: ElicitationCapability::default(),
+                supports_openai_form_elicitation: false,
+            },
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("startup should time out while listing tools");
+        };
+
+        let error = error.to_string();
+        assert!(error.starts_with("MCP startup failed: timed out awaiting tools/list after "));
+        assert!(!error.contains("100ms"), "{error}");
     }
 }
