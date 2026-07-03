@@ -295,11 +295,14 @@ impl RemoteControlHandle {
             server_name = %status.server_name,
             "remote control enable requested"
         );
-        if matches!(
-            status.status,
-            RemoteControlConnectionStatus::Connected | RemoteControlConnectionStatus::Connecting
-        ) {
-            return Ok(status);
+        match status.status {
+            RemoteControlConnectionStatus::Connected => {
+                return Ok(self.publish_status(RemoteControlConnectionStatus::Connecting));
+            }
+            RemoteControlConnectionStatus::Connecting => {
+                return Ok(status);
+            }
+            RemoteControlConnectionStatus::Disabled | RemoteControlConnectionStatus::Errored => {}
         }
 
         Ok(self.publish_status(RemoteControlConnectionStatus::Connecting))

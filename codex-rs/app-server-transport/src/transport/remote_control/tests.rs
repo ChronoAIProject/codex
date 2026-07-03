@@ -1255,6 +1255,90 @@ async fn remote_control_handle_enable_disable_stops_and_restarts_connections() {
 }
 
 #[tokio::test]
+async fn remote_control_handle_enable_reconnects_when_already_connected() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let remote_control_url = remote_control_url_for_listener(&listener);
+    let codex_home = TempDir::new().expect("temp dir should create");
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let (remote_task, remote_handle) = start_remote_control(
+        RemoteControlStartConfig {
+            remote_control_url,
+            installation_id: TEST_INSTALLATION_ID.to_string(),
+            policy: RemoteControlPolicy::Allowed,
+        },
+        Some(remote_control_state_runtime(&codex_home).await),
+        remote_control_auth_manager(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        /*app_server_client_name_rx*/ None,
+        RemoteControlStartupMode::EnabledEphemeral,
+    )
+    .await
+    .expect("remote control should start");
+    let mut status_rx = remote_handle.status_receiver();
+
+    let enroll_request = accept_http_request(&listener).await;
+    respond_with_json(
+        enroll_request.stream,
+        remote_control_server_token_response(
+            "srv_e_test",
+            "env_test",
+            TEST_REMOTE_CONTROL_SERVER_TOKEN,
+        ),
+    )
+    .await;
+    let mut first_websocket = accept_remote_control_connection(&listener).await;
+    expect_remote_control_status_snapshot(
+        &mut status_rx,
+        RemoteControlStatusChangedNotification {
+            status: RemoteControlConnectionStatus::Connected,
+            server_name: test_server_name(),
+            installation_id: TEST_INSTALLATION_ID.to_string(),
+            environment_id: Some("env_test".to_string()),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        remote_handle
+            .enable(Some("rpc-client"))
+            .await
+            .expect("enable should succeed"),
+        RemoteControlStatusChangedNotification {
+            status: RemoteControlConnectionStatus::Connecting,
+            server_name: test_server_name(),
+            installation_id: TEST_INSTALLATION_ID.to_string(),
+            environment_id: Some("env_test".to_string()),
+        }
+    );
+    timeout(Duration::from_secs(1), first_websocket.next())
+        .await
+        .expect("enable should close the stale websocket");
+    let mut second_websocket = accept_remote_control_connection(&listener).await;
+    expect_remote_control_status_snapshot(
+        &mut status_rx,
+        RemoteControlStatusChangedNotification {
+            status: RemoteControlConnectionStatus::Connected,
+            server_name: test_server_name(),
+            installation_id: TEST_INSTALLATION_ID.to_string(),
+            environment_id: Some("env_test".to_string()),
+        },
+    )
+    .await;
+    second_websocket
+        .close(None)
+        .await
+        .expect("second websocket should close");
+
+    shutdown_token.cancel();
+    let _ = remote_task.await;
+}
+
+#[tokio::test]
 async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
