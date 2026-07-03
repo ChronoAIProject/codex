@@ -1238,6 +1238,7 @@ async fn cli_main(
                 root_remote_auth_token_env.as_deref(),
                 "app",
             )?;
+            reject_root_config_overrides_for_app_subcommand(&root_config_overrides.raw_overrides)?;
             app_cmd::run_app(app_cli).await?;
         }
         Some(Subcommand::Resume(ResumeCommand {
@@ -2066,6 +2067,15 @@ fn reject_remote_mode_for_subcommand(
     if remote_auth_token_env.is_some() {
         anyhow::bail!(
             "`--remote-auth-token-env` is only supported for interactive TUI commands, not `codex {subcommand}`"
+        );
+    }
+    Ok(())
+}
+
+fn reject_root_config_overrides_for_app_subcommand(raw_overrides: &[String]) -> anyhow::Result<()> {
+    if !raw_overrides.is_empty() {
+        anyhow::bail!(
+            "`-c`/`--config` overrides are not supported for `codex app`; set the values in config.toml before launching the desktop app"
         );
     }
     Ok(())
@@ -3587,6 +3597,23 @@ mod tests {
         .expect_err("remote-control should reject root --remote");
 
         assert!(err.to_string().contains("remote-control"));
+    }
+
+    #[test]
+    fn root_config_overrides_are_rejected_for_app() {
+        let err = reject_root_config_overrides_for_app_subcommand(&["model=gpt-5".to_string()])
+            .expect_err("app should reject root config overrides");
+
+        assert_eq!(
+            err.to_string(),
+            "`-c`/`--config` overrides are not supported for `codex app`; set the values in config.toml before launching the desktop app"
+        );
+    }
+
+    #[test]
+    fn empty_root_config_overrides_are_allowed_for_app() {
+        reject_root_config_overrides_for_app_subcommand(&[])
+            .expect("app should allow empty root config overrides");
     }
 
     #[test]
