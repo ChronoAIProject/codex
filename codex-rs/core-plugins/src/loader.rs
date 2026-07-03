@@ -62,6 +62,9 @@ const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
 const CONFIG_TOML_FILE: &str = "config.toml";
 const CURATED_PLUGIN_CACHE_VERSION_SHA_PREFIX_LEN: usize = 8;
+const BUNDLED_COMPUTER_USE_PLUGIN_NAME: &str = "computer-use";
+const BUNDLED_COMPUTER_USE_MIN_MACOS_MAJOR: u32 = 15;
+const BUNDLED_COMPUTER_USE_UNSUPPORTED_REASON: &str = "Computer Use requires macOS 15 or newer";
 
 /// Hook declarations and warnings resolved without loading other plugin capabilities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -804,6 +807,7 @@ async fn load_plugin(
 
     let manifest_paths = &manifest.paths;
     loaded_plugin.plugin_namespace = Some(manifest.name.clone());
+    let disabled_reason = bundled_computer_use_unsupported_reason(&loaded_plugin_id);
     match scope {
         PluginLoadScope::AllCapabilities {
             restriction_product,
@@ -813,6 +817,10 @@ async fn load_plugin(
             loaded_plugin.manifest_name = Some(manifest.display_name().to_string());
             loaded_plugin.manifest_description = manifest.description.clone();
             loaded_plugin.skill_roots = plugin_skill_roots(&plugin_root, manifest_paths);
+            if let Some(reason) = disabled_reason {
+                loaded_plugin.error = Some(reason.to_string());
+                return loaded_plugin;
+            }
             let resolved_skills = load_plugin_skills(
                 &plugin_root,
                 &loaded_plugin_id,
@@ -833,7 +841,12 @@ async fn load_plugin(
             .await;
             loaded_plugin.apps = load_plugin_apps(plugin_root.as_path()).await;
         }
-        PluginLoadScope::HooksOnly => {}
+        PluginLoadScope::HooksOnly => {
+            if let Some(reason) = disabled_reason {
+                loaded_plugin.error = Some(reason.to_string());
+                return loaded_plugin;
+            }
+        }
     }
     let (hook_sources, hook_load_warnings) = load_plugin_hooks(
         &plugin_root,
@@ -844,6 +857,53 @@ async fn load_plugin(
     loaded_plugin.hook_sources = hook_sources;
     loaded_plugin.hook_load_warnings = hook_load_warnings;
     loaded_plugin
+}
+
+fn bundled_computer_use_unsupported_reason(plugin_id: &PluginId) -> Option<&'static str> {
+    if plugin_id.plugin_name != BUNDLED_COMPUTER_USE_PLUGIN_NAME
+        || plugin_id.marketplace_name != crate::OPENAI_BUNDLED_MARKETPLACE_NAME
+    {
+        return None;
+    }
+
+    bundled_computer_use_unsupported_reason_for_macos_major(
+        plugin_id,
+        current_macos_major_version(),
+    )
+}
+
+fn bundled_computer_use_unsupported_reason_for_macos_major(
+    plugin_id: &PluginId,
+    current_macos_major_version: Option<u32>,
+) -> Option<&'static str> {
+    if plugin_id.plugin_name != BUNDLED_COMPUTER_USE_PLUGIN_NAME
+        || plugin_id.marketplace_name != crate::OPENAI_BUNDLED_MARKETPLACE_NAME
+    {
+        return None;
+    }
+
+    let major_version = current_macos_major_version?;
+    (major_version < BUNDLED_COMPUTER_USE_MIN_MACOS_MAJOR)
+        .then_some(BUNDLED_COMPUTER_USE_UNSUPPORTED_REASON)
+}
+
+#[cfg(target_os = "macos")]
+fn current_macos_major_version() -> Option<u32> {
+    let output = Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let version = String::from_utf8(output.stdout).ok()?;
+    version.trim().split('.').next()?.parse::<u32>().ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_macos_major_version() -> Option<u32> {
+    None
 }
 
 fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginMcpServerConfig) {

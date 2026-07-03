@@ -227,6 +227,29 @@ fn curated_plugin_cache_version_preserves_non_git_sha_versions() {
     assert_eq!(curated_plugin_cache_version("0123456"), "0123456");
 }
 
+#[test]
+fn bundled_computer_use_requires_macos_15() {
+    let computer_use = PluginId::parse("computer-use@openai-bundled").expect("plugin id");
+    let chrome = PluginId::parse("chrome@openai-bundled").expect("plugin id");
+
+    assert_eq!(
+        bundled_computer_use_unsupported_reason_for_macos_major(&computer_use, Some(14)),
+        Some("Computer Use requires macOS 15 or newer")
+    );
+    assert_eq!(
+        bundled_computer_use_unsupported_reason_for_macos_major(&computer_use, Some(15)),
+        None
+    );
+    assert_eq!(
+        bundled_computer_use_unsupported_reason_for_macos_major(&computer_use, None),
+        None
+    );
+    assert_eq!(
+        bundled_computer_use_unsupported_reason_for_macos_major(&chrome, Some(14)),
+        None
+    );
+}
+
 fn plugin_id() -> PluginId {
     PluginId::parse("demo-plugin@test-marketplace").expect("plugin id")
 }
