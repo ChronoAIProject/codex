@@ -157,6 +157,33 @@ pub struct AnalyticsConfig {
     pub additional: HashMap<String, JsonValue>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct DesktopFontConfig {
+    pub code: Option<String>,
+    #[serde(default, flatten)]
+    pub additional: HashMap<String, JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct DesktopChromeThemeConfig {
+    pub fonts: Option<DesktopFontConfig>,
+    #[serde(default, flatten)]
+    pub additional: HashMap<String, JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct DesktopConfig {
+    pub appearance_dark_chrome_theme: Option<DesktopChromeThemeConfig>,
+    #[serde(default, flatten)]
+    pub additional: HashMap<String, JsonValue>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
@@ -271,7 +298,7 @@ pub struct Config {
     #[experimental("config/read.apps")]
     #[serde(default)]
     pub apps: Option<AppsConfig>,
-    pub desktop: Option<HashMap<String, JsonValue>>,
+    pub desktop: Option<DesktopConfig>,
     #[serde(default, flatten)]
     pub additional: HashMap<String, JsonValue>,
 }

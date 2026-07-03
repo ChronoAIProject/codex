@@ -17,6 +17,9 @@ use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::DesktopChromeThemeConfig;
+use codex_app_server_protocol::DesktopConfig;
+use codex_app_server_protocol::DesktopFontConfig;
 use codex_app_server_protocol::ForcedChatgptWorkspaceIds;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -530,6 +533,9 @@ async fn config_read_includes_desktop_settings() -> Result<()> {
 appearanceTheme = "dark"
 selected-avatar-id = "codex"
 
+[desktop.appearanceDarkChromeTheme.fonts]
+code = '"Geist Mono", ui-monospace, "SFMono-Regular"'
+
 [desktop.workspace]
 collapsed = true
 width = 320
@@ -553,14 +559,28 @@ width = 320
     let ConfigReadResponse { config, .. } = to_response(resp)?;
 
     let desktop = config.desktop.expect("desktop settings present");
-    assert_eq!(desktop.get("appearanceTheme"), Some(&json!("dark")));
-    assert_eq!(desktop.get("selected-avatar-id"), Some(&json!("codex")));
     assert_eq!(
-        desktop.get("workspace"),
-        Some(&json!({
-            "collapsed": true,
-            "width": 320,
-        }))
+        desktop,
+        DesktopConfig {
+            appearance_dark_chrome_theme: Some(DesktopChromeThemeConfig {
+                fonts: Some(DesktopFontConfig {
+                    code: Some(r#""Geist Mono", ui-monospace, "SFMono-Regular""#.to_string()),
+                    additional: Default::default(),
+                }),
+                additional: Default::default(),
+            }),
+            additional: std::collections::HashMap::from([
+                ("appearanceTheme".to_string(), json!("dark")),
+                ("selected-avatar-id".to_string(), json!("codex")),
+                (
+                    "workspace".to_string(),
+                    json!({
+                        "collapsed": true,
+                        "width": 320,
+                    }),
+                ),
+            ]),
+        }
     );
 
     Ok(())
@@ -843,7 +863,10 @@ async fn config_value_write_updates_desktop_settings() -> Result<()> {
     .await??;
     let read: ConfigReadResponse = to_response(read_resp)?;
     let desktop = read.config.desktop.expect("desktop settings present");
-    assert_eq!(desktop.get("appearanceTheme"), Some(&json!("dark")));
+    assert_eq!(
+        desktop.additional.get("appearanceTheme"),
+        Some(&json!("dark"))
+    );
 
     Ok(())
 }
@@ -1116,9 +1139,12 @@ async fn config_batch_write_updates_multiple_desktop_settings() -> Result<()> {
     .await??;
     let read: ConfigReadResponse = to_response(read_resp)?;
     let desktop = read.config.desktop.expect("desktop settings present");
-    assert_eq!(desktop.get("selected-avatar-id"), Some(&json!("codex")));
     assert_eq!(
-        desktop.get("workspace"),
+        desktop.additional.get("selected-avatar-id"),
+        Some(&json!("codex"))
+    );
+    assert_eq!(
+        desktop.additional.get("workspace"),
         Some(&json!({
             "collapsed": true,
             "width": 320,
