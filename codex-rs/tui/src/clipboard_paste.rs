@@ -250,6 +250,10 @@ pub(crate) fn normalize_pasted_search_query(pasted: &str) -> Option<String> {
 /// - shell-escaped single paths (via `shlex`)
 pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
     let pasted = pasted.trim();
+    if let Some(bracketed) = pasted.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        return Some(PathBuf::from(bracketed.trim()));
+    }
+
     let unquoted = pasted
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
