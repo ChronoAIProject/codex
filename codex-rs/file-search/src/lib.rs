@@ -121,7 +121,7 @@ impl Default for FileSearchOptions {
             #[expect(clippy::unwrap_used)]
             threads: NonZero::new(2).unwrap(),
             compute_indices: false,
-            respect_gitignore: true,
+            respect_gitignore: false,
         }
     }
 }
@@ -1010,6 +1010,30 @@ mod tests {
             m.path == std::path::Path::new("docs").join("guides")
                 && m.match_type == MatchType::Directory
         }));
+    }
+
+    #[test]
+    fn default_options_include_gitignored_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::create_dir_all(dir.path().join("playground")).unwrap();
+        fs::write(dir.path().join(".gitignore"), "playground/\n").unwrap();
+        fs::write(dir.path().join("playground/notes.md"), "notes").unwrap();
+
+        let results = run(
+            "notes",
+            vec![dir.path().to_path_buf()],
+            FileSearchOptions::default(),
+            /*cancel_flag*/ None,
+        )
+        .expect("run ok");
+
+        assert!(
+            results
+                .matches
+                .iter()
+                .any(|m| m.path.as_path() == Path::new("playground/notes.md"))
+        );
     }
 
     #[test]
