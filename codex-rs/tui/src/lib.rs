@@ -570,7 +570,10 @@ where
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
     .await
-    .wrap_err("failed to start embedded app server")?;
+    .map_err(|err| {
+        let message = format!("failed to start embedded app server: {err}");
+        color_eyre::Report::new(err).wrap_err(message)
+    })?;
     Ok(client)
 }
 
@@ -2895,6 +2898,10 @@ mod tests {
             err.to_string()
                 .contains("failed to start embedded app server"),
             "error should preserve the embedded app server startup context"
+        );
+        assert!(
+            err.to_string().contains("boom"),
+            "error should surface the embedded app server startup cause"
         );
         Ok(())
     }
