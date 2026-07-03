@@ -442,6 +442,20 @@ fn resolve_redirect_uri(server: &Server, callback_url: Option<&str>) -> Result<S
     Ok(callback_url.to_string())
 }
 
+fn redirect_uri_for_callback(
+    server: &Server,
+    server_url: &str,
+    callback_url: Option<&str>,
+) -> Result<String> {
+    let redirect_uri = resolve_redirect_uri(server, callback_url)?;
+    if callback_url.is_some() {
+        return Ok(redirect_uri);
+    }
+
+    let callback_id = callback_id_from_server_url(server_url)?;
+    append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)
+}
+
 fn callback_id_from_server_url(server_url: &str) -> Result<String> {
     let mut parsed =
         Url::parse(server_url).with_context(|| format!("invalid MCP server URL `{server_url}`"))?;
@@ -518,9 +532,7 @@ impl OauthLoginFlow {
             server: Arc::clone(&server),
         };
 
-        let redirect_uri = resolve_redirect_uri(&server, callback_url)?;
-        let callback_id = callback_id_from_server_url(server_url)?;
-        let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+        let redirect_uri = redirect_uri_for_callback(&server, server_url, callback_url)?;
         let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
 
         let (tx, rx) = oneshot::channel();
@@ -723,13 +735,17 @@ mod tests {
 
     use super::CallbackOutcome;
     use super::OAuthHttpClientAdapter;
+    use super::OAuthHttpContext;
     use super::OAuthProviderError;
+    use super::OauthLoginFlow;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
     use super::start_authorization;
+    use codex_config::types::AuthKeyringBackendKind;
+    use codex_config::types::OAuthCredentialsStoreMode;
 
     async fn spawn_oauth_metadata_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -795,6 +811,43 @@ mod tests {
             .map(|(_, value)| value.into_owned());
 
         assert_eq!(client_id.as_deref(), Some("eci-prd-pub-codex-123"));
+    }
+
+    #[tokio::test]
+    async fn oauth_flow_uses_configured_callback_url_as_redirect_uri() {
+        let base_url = spawn_oauth_metadata_server().await;
+        let flow = OauthLoginFlow::new(
+            "slack",
+            &format!("{base_url}/mcp"),
+            OAuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+            OAuthHttpContext {
+                http_headers: None,
+                env_http_headers: None,
+                http_client: Arc::new(ReqwestHttpClient),
+            },
+            &[],
+            Some("eci-prd-pub-codex-123"),
+            None,
+            /*launch_browser*/ false,
+            None,
+            Some("http://localhost:1455/callback"),
+            Some(1),
+        )
+        .await
+        .expect("start oauth flow");
+
+        let auth_url =
+            Url::parse(&flow.authorization_url()).expect("authorization URL should parse");
+        let redirect_uri = auth_url
+            .query_pairs()
+            .find(|(key, _)| key == "redirect_uri")
+            .map(|(_, value)| value.into_owned());
+
+        assert_eq!(
+            redirect_uri.as_deref(),
+            Some("http://localhost:1455/callback")
+        );
     }
 
     #[test]
