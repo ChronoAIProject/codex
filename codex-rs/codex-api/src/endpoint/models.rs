@@ -9,6 +9,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
 use http::Method;
 use http::header::ETAG;
+use serde::Deserialize;
 use std::sync::Arc;
 
 pub struct ModelsClient<T: HttpTransport> {
@@ -61,16 +62,30 @@ impl<T: HttpTransport> ModelsClient<T> {
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
 
-        let ModelsResponse { models } = serde_json::from_slice::<ModelsResponse>(&resp.body)
-            .map_err(|e| {
+        let response =
+            serde_json::from_slice::<ModelsResponseEnvelope>(&resp.body).map_err(|e| {
                 ApiError::Stream(format!(
                     "failed to decode models response: {e}; body: {}",
                     String::from_utf8_lossy(&resp.body)
                 ))
             })?;
+        let models = match response {
+            ModelsResponseEnvelope::Codex { models } => models,
+            ModelsResponseEnvelope::OpenAi { data } => data
+                .into_iter()
+                .filter_map(|value| serde_json::from_value(value).ok())
+                .collect(),
+        };
 
         Ok((models, header_etag))
     }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ModelsResponseEnvelope {
+    Codex { models: Vec<ModelInfo> },
+    OpenAi { data: Vec<serde_json::Value> },
 }
 
 #[cfg(test)]
@@ -85,6 +100,7 @@ mod tests {
     use http::HeaderMap;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
+    use serde::Serialize;
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -93,7 +109,7 @@ mod tests {
     #[derive(Clone)]
     struct CapturingTransport {
         last_request: Arc<Mutex<Option<Request>>>,
-        body: Arc<ModelsResponse>,
+        body: Arc<Vec<u8>>,
         etag: Option<String>,
     }
 
@@ -101,7 +117,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 last_request: Arc::new(Mutex::new(None)),
-                body: Arc::new(ModelsResponse { models: Vec::new() }),
+                body: json_response(ModelsResponse { models: Vec::new() }),
                 etag: None,
             }
         }
@@ -110,7 +126,6 @@ mod tests {
     impl HttpTransport for CapturingTransport {
         async fn execute(&self, req: Request) -> Result<Response, TransportError> {
             *self.last_request.lock().unwrap() = Some(req);
-            let body = serde_json::to_vec(&*self.body).unwrap();
             let mut headers = HeaderMap::new();
             if let Some(etag) = &self.etag {
                 headers.insert(ETAG, etag.parse().unwrap());
@@ -118,7 +133,7 @@ mod tests {
             Ok(Response {
                 status: StatusCode::OK,
                 headers,
-                body: body.into(),
+                body: self.body.as_ref().clone().into(),
             })
         }
 
@@ -151,13 +166,44 @@ mod tests {
         }
     }
 
+    fn json_response(body: impl Serialize) -> Arc<Vec<u8>> {
+        Arc::new(serde_json::to_vec(&body).unwrap())
+    }
+
+    fn test_model_info() -> ModelInfo {
+        serde_json::from_value(json!({
+            "slug": "gpt-test",
+            "display_name": "gpt-test",
+            "description": "desc",
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [{"effort": "low", "description": "low"}, {"effort": "medium", "description": "medium"}, {"effort": "high", "description": "high"}],
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "minimal_client_version": [0, 99, 0],
+            "supported_in_api": true,
+            "priority": 1,
+            "upgrade": null,
+            "base_instructions": "base instructions",
+            "supports_reasoning_summaries": false,
+            "support_verbosity": false,
+            "default_verbosity": null,
+            "apply_patch_tool_type": null,
+            "truncation_policy": {"mode": "bytes", "limit": 10_000},
+            "supports_parallel_tool_calls": false,
+            "supports_image_detail_original": false,
+            "context_window": 272_000,
+            "experimental_supported_tools": [],
+        }))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn appends_client_version_query() {
         let response = ModelsResponse { models: Vec::new() };
 
         let transport = CapturingTransport {
             last_request: Arc::new(Mutex::new(None)),
-            body: Arc::new(response),
+            body: json_response(response),
             etag: None,
         };
 
@@ -191,37 +237,12 @@ mod tests {
     #[tokio::test]
     async fn parses_models_response() {
         let response = ModelsResponse {
-            models: vec![
-                serde_json::from_value(json!({
-                    "slug": "gpt-test",
-                    "display_name": "gpt-test",
-                    "description": "desc",
-                    "default_reasoning_level": "medium",
-                    "supported_reasoning_levels": [{"effort": "low", "description": "low"}, {"effort": "medium", "description": "medium"}, {"effort": "high", "description": "high"}],
-                    "shell_type": "shell_command",
-                    "visibility": "list",
-                    "minimal_client_version": [0, 99, 0],
-                    "supported_in_api": true,
-                    "priority": 1,
-                    "upgrade": null,
-                    "base_instructions": "base instructions",
-                    "supports_reasoning_summaries": false,
-                    "support_verbosity": false,
-                    "default_verbosity": null,
-                    "apply_patch_tool_type": null,
-                    "truncation_policy": {"mode": "bytes", "limit": 10_000},
-                    "supports_parallel_tool_calls": false,
-                    "supports_image_detail_original": false,
-                    "context_window": 272_000,
-                    "experimental_supported_tools": [],
-                }))
-                .unwrap(),
-            ],
+            models: vec![test_model_info()],
         };
 
         let transport = CapturingTransport {
             last_request: Arc::new(Mutex::new(None)),
-            body: Arc::new(response),
+            body: json_response(response),
             etag: None,
         };
 
@@ -238,8 +259,43 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].slug, "gpt-test");
-        assert_eq!(models[0].supported_in_api, true);
+        assert!(models[0].supported_in_api);
         assert_eq!(models[0].priority, 1);
+    }
+
+    #[tokio::test]
+    async fn parses_openai_models_response() {
+        let response = json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "gpt-4.1",
+                    "object": "model",
+                    "created": 1_712_345_678,
+                    "owned_by": "openai"
+                },
+                test_model_info()
+            ]
+        });
+
+        let transport = CapturingTransport {
+            last_request: Arc::new(Mutex::new(None)),
+            body: json_response(response),
+            etag: None,
+        };
+
+        let client = ModelsClient::new(
+            transport,
+            provider("https://example.openai.azure.com/openai"),
+            Arc::new(DummyAuth),
+        );
+
+        let (models, _) = client
+            .list_models("0.99.0", HeaderMap::new())
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(models, vec![test_model_info()]);
     }
 
     #[tokio::test]
@@ -248,7 +304,7 @@ mod tests {
 
         let transport = CapturingTransport {
             last_request: Arc::new(Mutex::new(None)),
-            body: Arc::new(response),
+            body: json_response(response),
             etag: Some("\"abc\"".to_string()),
         };
 
