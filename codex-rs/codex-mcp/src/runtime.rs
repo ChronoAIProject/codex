@@ -14,11 +14,14 @@ use codex_exec_server::EnvironmentManager;
 use codex_exec_server::HttpClient;
 use codex_exec_server::ReqwestHttpClient;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
+use serde::ser::SerializeStruct;
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxState {
     pub permission_profile: PermissionProfile,
@@ -26,6 +29,35 @@ pub struct SandboxState {
     pub sandbox_cwd: PathUri,
     #[serde(default)]
     pub use_legacy_landlock: bool,
+}
+
+impl Serialize for SandboxState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let sandbox_policy = self.sandbox_policy();
+        let mut state = serializer.serialize_struct("SandboxState", 5)?;
+        state.serialize_field("permissionProfile", &self.permission_profile)?;
+        state.serialize_field("sandboxPolicy", &sandbox_policy)?;
+        state.serialize_field("codexLinuxSandboxExe", &self.codex_linux_sandbox_exe)?;
+        state.serialize_field("sandboxCwd", &self.sandbox_cwd)?;
+        state.serialize_field("useLegacyLandlock", &self.use_legacy_landlock)?;
+        state.end()
+    }
+}
+
+impl SandboxState {
+    fn sandbox_policy(&self) -> SandboxPolicy {
+        self.permission_profile
+            .to_legacy_sandbox_policy(self.sandbox_cwd.to_path_buf().as_path())
+            .unwrap_or_else(|_| SandboxPolicy::ReadOnly {
+                network_access: self
+                    .permission_profile
+                    .network_sandbox_policy()
+                    .is_enabled(),
+            })
+    }
 }
 
 /// Runtime context used when resolving per-server MCP environments.
@@ -115,6 +147,7 @@ mod tests {
     use codex_exec_server::EnvironmentManager;
     use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
 
@@ -157,6 +190,35 @@ mod tests {
             environment_id: environment_id.to_string(),
             ..stdio_server(environment_id)
         }
+    }
+
+    #[test]
+    fn sandbox_state_serializes_legacy_sandbox_policy() {
+        let sandbox_cwd =
+            PathUri::from_host_native_path(std::env::temp_dir()).expect("temp dir is absolute");
+
+        let value = serde_json::to_value(SandboxState {
+            permission_profile: PermissionProfile::read_only(),
+            codex_linux_sandbox_exe: None,
+            sandbox_cwd: sandbox_cwd.clone(),
+            use_legacy_landlock: false,
+        })
+        .expect("sandbox state should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "permissionProfile": serde_json::to_value(PermissionProfile::read_only())
+                    .expect("permission profile should serialize"),
+                "sandboxPolicy": serde_json::to_value(SandboxPolicy::ReadOnly {
+                    network_access: false,
+                })
+                .expect("sandbox policy should serialize"),
+                "codexLinuxSandboxExe": null,
+                "sandboxCwd": sandbox_cwd,
+                "useLegacyLandlock": false,
+            })
+        );
     }
 
     #[test]
