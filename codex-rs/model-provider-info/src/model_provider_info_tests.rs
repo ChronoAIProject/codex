@@ -133,6 +133,13 @@ supports_websockets = true
 }
 
 #[test]
+fn test_openai_provider_uses_single_stream_reconnect_by_default() {
+    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+
+    assert_eq!(provider.stream_max_retries(), 1);
+}
+
+#[test]
 fn test_supports_remote_compaction_for_openai() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
 
