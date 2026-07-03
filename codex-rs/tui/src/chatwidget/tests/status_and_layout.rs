@@ -2276,6 +2276,30 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 }
 
 #[tokio::test]
+async fn status_line_permissions_distinguishes_full_access_from_approval_required() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.tui_status_line = Some(vec!["permissions".to_string()]);
+    chat.config
+        .permissions
+        .approval_policy
+        .set(AskForApproval::OnRequest.to_core())
+        .expect("set approval policy");
+    chat.config
+        .permissions
+        .set_permission_profile(PermissionProfile::Disabled)
+        .expect("set permission profile");
+
+    chat.refresh_status_line();
+
+    assert_eq!(status_line_text(&chat), Some("No Sandbox".to_string()));
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "permissions should remain a valid status line item"
+    );
+}
+
+#[tokio::test]
 async fn status_line_workspace_headline_renders_cached_value() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
