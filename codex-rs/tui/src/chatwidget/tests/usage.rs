@@ -85,6 +85,32 @@ async fn usage_menu_refresh_enables_newly_available_reset() {
 }
 
 #[tokio::test]
+async fn usage_menu_refreshes_unknown_reset_availability() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+
+    chat.dispatch_command(SlashCommand::Usage);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsageMenu { request_id: 0 }
+        })
+    );
+    chat.finish_usage_menu_rate_limit_refresh(
+        /*request_id*/ 0,
+        Vec::new(),
+        Ok(RateLimitResetCreditsSummary { available_count: 1 }),
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("You have 1 usage limit reset available."),
+        "expected refreshed reset availability in usage menu, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
 async fn usage_menu_refresh_failure_preserves_disabled_known_zero() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
@@ -155,6 +181,12 @@ async fn usage_command_can_check_reset_availability_before_startup_refresh_finis
 
     chat.dispatch_command(SlashCommand::Usage);
 
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsageMenu { request_id: 1 }
+        })
+    );
     assert_chatwidget_snapshot!(
         "usage_command_menu_before_reset_refresh",
         render_bottom_popup(&chat, /*width*/ 80)
@@ -172,6 +204,12 @@ async fn usage_command_can_check_reset_availability_for_workspace_accounts() {
 
     chat.dispatch_command(SlashCommand::Usage);
 
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsageMenu { request_id: 0 }
+        })
+    );
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(rx.try_recv(), Ok(AppEvent::OpenRateLimitResetCredits));

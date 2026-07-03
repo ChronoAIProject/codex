@@ -12,7 +12,9 @@ const RATE_LIMIT_RESET_VIEW_ID: &str = "rate-limit-reset";
 impl ChatWidget {
     pub(super) fn open_usage_menu(&mut self) {
         self.clear_pending_rate_limit_reset_hint();
-        let should_refresh_reset_availability = self.available_rate_limit_reset_credits == Some(0);
+        let should_refresh_reset_availability = self
+            .available_rate_limit_reset_credits
+            .map_or(true, |available_count| available_count == 0);
         self.bottom_pane
             .show_selection_view(self.usage_menu_params());
         if should_refresh_reset_availability {
