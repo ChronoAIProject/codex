@@ -697,7 +697,10 @@ async fn derive_new_contents_from_chunks(
     }
 
     let path_text = path.inferred_native_path_string();
-    let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
+    let mut replacements = compute_replacements(&original_lines, &path_text, chunks)?;
+    if original_contents.contains("\r\n") {
+        add_carriage_returns_to_replacements(&mut replacements);
+    }
     let new_lines = apply_replacements(original_lines, &replacements);
     let mut new_lines = new_lines;
     if !new_lines.last().is_some_and(String::is_empty) {
@@ -799,6 +802,16 @@ fn compute_replacements(
     replacements.sort_by_key(|(index, _, _)| *index);
 
     Ok(replacements)
+}
+
+fn add_carriage_returns_to_replacements(replacements: &mut [(usize, usize, Vec<String>)]) {
+    for (_, _, new_lines) in replacements {
+        for line in new_lines {
+            if !line.ends_with('\r') {
+                line.push('\r');
+            }
+        }
+    }
 }
 
 /// Apply the `(start_index, old_len, new_lines)` replacements to `original_lines`,
@@ -1071,6 +1084,38 @@ mod tests {
         assert_eq!(stderr_str, "");
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents, "foo\nbaz\n");
+    }
+
+    #[tokio::test]
+    async fn test_update_file_hunk_preserves_crlf_line_endings() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("update-crlf.txt");
+        fs::write(&path, b"foo\r\nbar\r\nbaz\r\n").unwrap();
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@
+ foo
+-bar
++qux
+ baz
++tail"#,
+            path.display()
+        ));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(
+            &patch,
+            &PathUri::from_host_native_path(dir.path()).expect("absolute test path"),
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .unwrap();
+
+        let contents = fs::read(&path).unwrap();
+        assert_eq!(contents, b"foo\r\nqux\r\nbaz\r\ntail\r\n");
     }
 
     #[tokio::test]
