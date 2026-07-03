@@ -2694,7 +2694,7 @@ impl ThreadRequestProcessor {
             exclude_turns,
             initial_turns_page,
         } = params;
-        let include_turns = !exclude_turns;
+        let include_turns = !exclude_turns && initial_turns_page.is_none();
 
         let resume_result = if let Some(history) = history {
             self.resume_thread_from_history(history.as_slice())
@@ -3119,7 +3119,7 @@ impl ThreadRequestProcessor {
                     thread_summary,
                     emit_thread_goal_update,
                     thread_goal_state_db,
-                    include_turns: !params.exclude_turns,
+                    include_turns: !params.exclude_turns && params.initial_turns_page.is_none(),
                     initial_turns_page: params.initial_turns_page.clone(),
                     redact_resume_payloads,
                 }),

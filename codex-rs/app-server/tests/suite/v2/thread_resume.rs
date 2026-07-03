@@ -799,11 +799,10 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
 async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<()> {
     for client_name in ["codex_chatgpt_android_remote", "codex_chatgpt_ios_remote"] {
         let remote_resume = resume_redaction_fixture(Some(client_name)).await?;
-        let remote_turn = remote_resume
-            .thread
-            .turns
-            .first()
-            .expect("remote resume should include a turn");
+        assert!(
+            remote_resume.thread.turns.is_empty(),
+            "paged resume should not duplicate turns on the top-level thread"
+        );
         let remote_page_turn = remote_resume
             .initial_turns_page
             .as_ref()
@@ -811,7 +810,7 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
             .data
             .first()
             .expect("remote initial turns page should include a turn");
-        for remote_turn in [remote_turn, remote_page_turn] {
+        for remote_turn in [remote_page_turn] {
             let remote_mcp_item = remote_turn
                 .items
                 .iter()
@@ -862,10 +861,16 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
 
     let normal_resume = resume_redaction_fixture(Some("some_other_client")).await?;
     let normal_turn = normal_resume
-        .thread
-        .turns
+        .initial_turns_page
+        .as_ref()
+        .expect("normal resume should include the requested initial turns page")
+        .data
         .first()
         .expect("normal resume should include a turn");
+    assert!(
+        normal_resume.thread.turns.is_empty(),
+        "paged resume should not duplicate turns on the top-level thread"
+    );
     let normal_mcp_item = normal_turn
         .items
         .iter()
@@ -2989,6 +2994,10 @@ async fn thread_resume_rejoins_running_thread_even_with_override_mismatch() -> R
         ..
     } = to_response::<ThreadResumeResponse>(resume_resp)?;
     assert_eq!(model, "gpt-5.4");
+    assert!(
+        thread.turns.is_empty(),
+        "paged resume should not duplicate turns on the top-level thread"
+    );
     let initial_turns_page = initial_turns_page.expect("resume should include initial turns page");
     let resumed_running_turn = initial_turns_page
         .data
