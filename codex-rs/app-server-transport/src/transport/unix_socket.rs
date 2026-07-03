@@ -148,11 +148,38 @@ pub async fn acquire_app_server_startup_lock(
             .read(true)
             .write(true)
             .open(startup_lock_path.as_path())?;
-        file.lock()?;
+        maybe_lock_file_for_target(std::env::consts::OS, || file.lock())?;
         Ok(AppServerStartupLock { _file: file })
     })
     .await
     .map_err(|err| std::io::Error::other(format!("startup lock task failed: {err}")))?
+}
+
+fn maybe_lock_file_for_target<F>(target_os: &str, lock_file: F) -> IoResult<()>
+where
+    F: FnOnce() -> IoResult<()>,
+{
+    if target_os == "android" {
+        Ok(())
+    } else {
+        lock_file()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn android_skips_unsupported_startup_lock() {
+    let unsupported_lock = || Err(std::io::Error::from(ErrorKind::Unsupported));
+
+    maybe_lock_file_for_target("android", unsupported_lock)
+        .expect("android should skip advisory file locking");
+
+    assert_eq!(
+        maybe_lock_file_for_target("linux", unsupported_lock)
+            .expect_err("non-android targets should still require advisory file locking")
+            .kind(),
+        ErrorKind::Unsupported
+    );
 }
 
 #[cfg(unix)]

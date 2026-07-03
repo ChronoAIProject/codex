@@ -29,7 +29,7 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
         }
 
         let mut file = options.open(&path)?;
-        file.lock()?;
+        maybe_lock_file_for_target(std::env::consts::OS, || file.lock())?;
 
         #[cfg(unix)]
         {
@@ -63,12 +63,25 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
     .await?
 }
 
+fn maybe_lock_file_for_target<F>(target_os: &str, lock_file: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if target_os == "android" {
+        Ok(())
+    } else {
+        lock_file()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::INSTALLATION_ID_FILENAME;
+    use super::maybe_lock_file_for_target;
     use super::resolve_installation_id;
     use core_test_support::PathExt;
     use pretty_assertions::assert_eq;
+    use std::io::ErrorKind;
     use tempfile::TempDir;
     use uuid::Uuid;
 
@@ -144,6 +157,21 @@ mod tests {
             std::fs::read_to_string(codex_home.path().join(INSTALLATION_ID_FILENAME))
                 .expect("read rewritten installation id"),
             resolved
+        );
+    }
+
+    #[test]
+    fn android_skips_unsupported_advisory_file_lock() {
+        let unsupported_lock = || Err(std::io::Error::from(ErrorKind::Unsupported));
+
+        maybe_lock_file_for_target("android", unsupported_lock)
+            .expect("android should skip advisory file locking");
+
+        assert_eq!(
+            maybe_lock_file_for_target("linux", unsupported_lock)
+                .expect_err("non-android targets should still require advisory file locking")
+                .kind(),
+            ErrorKind::Unsupported
         );
     }
 }

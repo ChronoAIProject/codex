@@ -371,7 +371,7 @@ fn prepare_path_entry_for_codex_aliases(
         .create(true)
         .truncate(false)
         .open(&lock_path)?;
-    lock_file.try_lock()?;
+    maybe_try_lock_file_for_target(std::env::consts::OS, || lock_file.try_lock())?;
 
     for filename in &[
         APPLY_PATCH_ARG0,
@@ -504,10 +504,24 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
         Err(err) => return Err(err),
     };
 
-    match lock_file.try_lock() {
+    match maybe_try_lock_file_for_target(std::env::consts::OS, || lock_file.try_lock()) {
         Ok(()) => Ok(Some(lock_file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(err) => Err(err.into()),
+    }
+}
+
+fn maybe_try_lock_file_for_target<F>(
+    target_os: &str,
+    try_lock_file: F,
+) -> std::result::Result<(), std::fs::TryLockError>
+where
+    F: FnOnce() -> std::result::Result<(), std::fs::TryLockError>,
+{
+    if target_os == "android" {
+        Ok(())
+    } else {
+        try_lock_file()
     }
 }
 
@@ -518,6 +532,7 @@ mod tests {
     use super::LOCK_FILENAME;
     use super::janitor_cleanup;
     use super::linux_sandbox_exe_path;
+    use super::maybe_try_lock_file_for_target;
     #[cfg(unix)]
     use super::run_main_with_arg0_guard;
     #[cfg(unix)]
@@ -741,5 +756,22 @@ mod tests {
 
         assert!(!dir.exists());
         Ok(())
+    }
+
+    #[test]
+    fn android_skips_unsupported_advisory_file_lock() {
+        let unsupported_lock = || {
+            Err(std::fs::TryLockError::Error(std::io::Error::from(
+                std::io::ErrorKind::Unsupported,
+            )))
+        };
+
+        maybe_try_lock_file_for_target("android", unsupported_lock)
+            .expect("android should skip advisory file locking");
+
+        assert!(matches!(
+            maybe_try_lock_file_for_target("linux", unsupported_lock),
+            Err(std::fs::TryLockError::Error(err)) if err.kind() == std::io::ErrorKind::Unsupported
+        ));
     }
 }
