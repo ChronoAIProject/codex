@@ -238,8 +238,40 @@ fn load_oauth_tokens_from_secrets_keyring<K: KeyringStore + Clone + 'static>(
             refresh_expires_in_from_timestamp(&mut tokens);
             Ok(Some(tokens))
         }
-        None => Ok(None),
+        None => load_legacy_direct_keyring_tokens_and_migrate(
+            keyring_store,
+            &manager,
+            &secret_name,
+            server_name,
+            url,
+        ),
     }
+}
+
+fn load_legacy_direct_keyring_tokens_and_migrate<K: KeyringStore>(
+    keyring_store: &K,
+    manager: &SecretsManager,
+    secret_name: &SecretName,
+    server_name: &str,
+    url: &str,
+) -> Result<Option<StoredOAuthTokens>> {
+    let Some(tokens) = load_oauth_tokens_from_direct_keyring(keyring_store, server_name, url)?
+    else {
+        return Ok(None);
+    };
+
+    let serialized =
+        serde_json::to_string(&tokens).context("failed to serialize legacy OAuth tokens")?;
+    if let Err(error) = manager.set(&SecretScope::Global, secret_name, &serialized) {
+        warn!("failed to migrate OAuth tokens to encrypted storage: {error:?}");
+        return Ok(Some(tokens));
+    }
+
+    if let Err(error) = delete_oauth_tokens_from_direct_keyring(keyring_store, server_name, url) {
+        warn!("failed to remove migrated OAuth tokens from legacy keyring storage: {error:?}");
+    }
+
+    Ok(Some(tokens))
 }
 
 pub fn save_oauth_tokens(
@@ -1039,10 +1071,11 @@ mod tests {
     }
 
     #[test]
-    fn load_oauth_tokens_with_secrets_backend_ignores_direct_entry() -> Result<()> {
-        let _env = TempCodexHome::new();
+    fn load_oauth_tokens_with_secrets_backend_migrates_direct_entry() -> Result<()> {
+        let env = TempCodexHome::new();
         let store = MockKeyringStore::default();
         let tokens = sample_tokens();
+        let expected = tokens.clone();
         let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
         let serialized = serde_json::to_string(&tokens)?;
         store.save(KEYRING_SERVICE, &key, &serialized)?;
@@ -1052,9 +1085,23 @@ mod tests {
             AuthKeyringBackendKind::Secrets,
             &tokens.server_name,
             &tokens.url,
-        )?;
+        )?
+        .expect("tokens should load from legacy keyring storage");
 
-        assert!(loaded.is_none());
+        let manager = SecretsManager::new_with_keyring_store_and_namespace(
+            env.path().to_path_buf(),
+            SecretsBackendKind::Local,
+            Arc::new(store.clone()),
+            LocalSecretsNamespace::McpOAuth,
+        );
+        let secret_name = super::compute_secret_name(&tokens.server_name, &tokens.url)?;
+        let stored = manager
+            .get(&SecretScope::Global, &secret_name)?
+            .expect("tokens should be migrated to encrypted storage");
+        let migrated: StoredOAuthTokens = serde_json::from_str(&stored)?;
+        assert_tokens_match_without_expiry(&loaded, &expected);
+        assert_eq!(migrated, loaded);
+        assert!(store.saved_value(&key).is_none());
         Ok(())
     }
 
