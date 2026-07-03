@@ -37,6 +37,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::debug;
@@ -160,6 +161,8 @@ const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
+const WEBSOCKET_MESSAGE_TOO_LARGE_MESSAGE: &str =
+    "Responses websocket message exceeded the server size limit. Retrying over HTTPS transport.";
 
 pub struct ResponsesWebsocketConnection {
     stream: Arc<Mutex<Option<WsStream>>>,
@@ -418,6 +421,25 @@ fn close_frame_to_probe(frame: CloseFrame) -> ResponsesWebsocketClose {
         code: frame.code.to_string(),
         reason: frame.reason.to_string(),
     }
+}
+
+fn map_websocket_close_before_completed(frame: Option<CloseFrame>) -> ApiError {
+    if frame
+        .as_ref()
+        .is_some_and(|frame| frame.code == CloseCode::Size)
+    {
+        return ApiError::Retryable {
+            message: WEBSOCKET_MESSAGE_TOO_LARGE_MESSAGE.to_string(),
+            delay: Some(Duration::ZERO),
+        };
+    }
+
+    let close_details = frame
+        .map(|frame| format!(": code={} reason={}", frame.code, frame.reason))
+        .unwrap_or_default();
+    ApiError::Stream(format!(
+        "websocket closed by server before response.completed{close_details}"
+    ))
 }
 
 fn merge_request_headers(
@@ -762,10 +784,8 @@ async fn run_websocket_response_stream(
             Message::Binary(_) => {
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
-            Message::Close(_) => {
-                return Err(ApiError::Stream(
-                    "websocket closed by server before response.completed".into(),
-                ));
+            Message::Close(frame) => {
+                return Err(map_websocket_close_before_completed(frame));
             }
             Message::Frame(_) => {}
             Message::Ping(_) | Message::Pong(_) => {}
@@ -987,6 +1007,36 @@ mod tests {
         };
         assert_eq!(message, WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE);
         assert_eq!(delay, None);
+    }
+
+    #[test]
+    fn websocket_close_size_maps_to_immediate_retryable_fallback() {
+        let api_error = map_websocket_close_before_completed(Some(CloseFrame {
+            code: CloseCode::Size,
+            reason: "Message too large".into(),
+        }));
+        let ApiError::Retryable { message, delay } = api_error else {
+            panic!("expected ApiError::Retryable");
+        };
+
+        assert_eq!(message, WEBSOCKET_MESSAGE_TOO_LARGE_MESSAGE);
+        assert_eq!(delay, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn websocket_close_before_completed_preserves_close_details() {
+        let api_error = map_websocket_close_before_completed(Some(CloseFrame {
+            code: CloseCode::Away,
+            reason: "server restart".into(),
+        }));
+        let ApiError::Stream(message) = api_error else {
+            panic!("expected ApiError::Stream");
+        };
+
+        assert_eq!(
+            message,
+            "websocket closed by server before response.completed: code=1001 reason=server restart"
+        );
     }
 
     #[test]

@@ -11,6 +11,9 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
 
+const WEBSOCKET_MESSAGE_TOO_LARGE_MESSAGE_PREFIX: &str =
+    "Responses websocket message exceeded the server size limit.";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
     Sampling,
@@ -28,6 +31,23 @@ pub(crate) async fn handle_retryable_response_stream_error(
     turn_context: &TurnContext,
     request: ResponsesStreamRequest,
 ) -> Result<(), CodexErr> {
+    if should_fallback_to_http_without_retry(&err)
+        && client_session.try_switch_fallback_transport(
+            &turn_context.session_telemetry,
+            &turn_context.model_info,
+        )
+    {
+        sess.send_event(
+            turn_context,
+            EventMsg::Warning(WarningEvent {
+                message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
+            }),
+        )
+        .await;
+        *retries = 0;
+        return Ok(());
+    }
+
     if *retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
@@ -78,6 +98,15 @@ pub(crate) async fn handle_retryable_response_stream_error(
     Err(err)
 }
 
+fn should_fallback_to_http_without_retry(err: &CodexErr) -> bool {
+    matches!(
+        err,
+        CodexErr::Stream(message, Some(delay))
+            if *delay == Duration::ZERO
+                && message.starts_with(WEBSOCKET_MESSAGE_TOO_LARGE_MESSAGE_PREFIX)
+    )
+}
+
 fn log_retry(
     request: ResponsesStreamRequest,
     turn_context: &TurnContext,
@@ -103,3 +132,7 @@ fn log_retry(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "responses_retry_tests.rs"]
+mod tests;
