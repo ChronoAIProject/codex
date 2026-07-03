@@ -100,6 +100,23 @@ async fn plan_mode_nudge_shift_tab_uses_existing_mode_cycle_path() {
 }
 
 #[tokio::test]
+async fn plan_mode_switch_does_not_update_thread_settings() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+        .expect("expected plan collaboration mode");
+    chat.set_collaboration_mask_from_user_action(plan_mask);
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::SubmitThreadOp { .. })),
+        "local mode switches must not persist shared thread settings"
+    );
+}
+
+#[tokio::test]
 async fn plan_mode_nudge_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.set_token_info(Some(make_token_info(
