@@ -174,7 +174,6 @@ url = "{mcp_server_url}/mcp"
     )
     .await??;
     let threadless_response: ListMcpServerStatusResponse = to_response(threadless_response)?;
-    assert_eq!(threadless_response.data, Vec::new());
 
     let thread_request_id = mcp
         .send_list_mcp_server_status_request(ListMcpServerStatusParams {
@@ -191,14 +190,16 @@ url = "{mcp_server_url}/mcp"
     .await??;
     let thread_response: ListMcpServerStatusResponse = to_response(thread_response)?;
 
-    assert_eq!(thread_response.next_cursor, None);
-    assert_eq!(thread_response.data.len(), 1);
-    let status = &thread_response.data[0];
-    assert_eq!(status.name, "project-server");
-    assert_eq!(
-        status.tools.keys().cloned().collect::<BTreeSet<_>>(),
-        BTreeSet::from(["project_lookup".to_string()])
-    );
+    for response in [threadless_response, thread_response] {
+        assert_eq!(response.next_cursor, None);
+        assert_eq!(response.data.len(), 1);
+        let status = &response.data[0];
+        assert_eq!(status.name, "project-server");
+        assert_eq!(
+            status.tools.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["project_lookup".to_string()])
+        );
+    }
 
     mcp_server_handle.abort();
     let _ = mcp_server_handle.await;
