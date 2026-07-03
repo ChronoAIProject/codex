@@ -849,7 +849,7 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up() {
+async fn steered_user_input_skips_compact_when_only_the_steer_needs_follow_up() {
     let (gate_first_completed_tx, gate_first_completed_rx) = oneshot::channel();
 
     let first_chunks = vec![
@@ -865,15 +865,6 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         ),
     ];
 
-    let compact_chunks = vec![
-        chunk(ev_response_created("resp-compact")),
-        chunk(ev_message_item_done("msg-compact", "AUTO_COMPACT_SUMMARY")),
-        chunk(ev_completed_with_tokens(
-            "resp-compact",
-            /*total_tokens*/ 50,
-        )),
-    ];
-
     let steered_follow_up_chunks = vec![
         chunk(ev_response_created("resp-steered")),
         chunk(ev_message_item_done(
@@ -887,8 +878,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
     ];
 
     let (server, _completions) =
-        start_streaming_sse_server(vec![first_chunks, compact_chunks, steered_follow_up_chunks])
-            .await;
+        start_streaming_sse_server(vec![first_chunks, steered_follow_up_chunks]).await;
 
     let codex = test_codex()
         .with_model("gpt-5.4")
@@ -911,17 +901,22 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
     wait_for_turn_complete(&codex).await;
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
 
-    let compact_body: Value = from_slice(&requests[1]).expect("parse compact request");
-    let steered_body: Value = from_slice(&requests[2]).expect("parse steered request");
-
-    let compact_user_texts = message_input_texts(&compact_body, "user");
+    let steered_body: Value = from_slice(&requests[1]).expect("parse steered request");
+    let request_bodies = requests
+        .iter()
+        .map(|request| {
+            from_slice::<Value>(request)
+                .expect("parse request")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
     assert!(
-        !compact_user_texts
+        request_bodies
             .iter()
-            .any(|text| text == "second prompt"),
-        "steered input should not be included in the compaction request"
+            .all(|body| !body.contains("AUTO_COMPACT_SUMMARY")),
+        "steered input should not trigger compaction when the model was already done"
     );
 
     let steered_user_texts = message_input_texts(&steered_body, "user");

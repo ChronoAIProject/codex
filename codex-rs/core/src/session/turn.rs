@@ -343,7 +343,7 @@ pub(crate) async fn run_turn(
                 .await;
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
-                if needs_follow_up
+                if model_needs_follow_up
                     && (sess.take_new_context_window_request().await || token_limit_reached)
                 {
                     if let Err(err) = run_auto_compact(
