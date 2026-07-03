@@ -125,7 +125,7 @@ async fn remote_control_handle_revokes_client_while_disabled() {
         let request = accept_http_request(&listener).await;
         assert_eq!(
             request.request_line,
-            "DELETE /backend-api/wham/remote/control/environments/env%20%2F%3F/clients/client%20%2F%3F HTTP/1.1"
+            "DELETE /backend-api/codex/remote/control/environments/env%20%2F%3F HTTP/1.1"
         );
         assert_eq!(
             request.headers.get("authorization"),
@@ -376,7 +376,7 @@ async fn revoke_remote_control_client_does_not_retry_forbidden() {
     assert_eq!(
         err.to_string(),
         format!(
-            "remote control client revoke failed at `{remote_control_url}wham/remote/control/environments/env-123/clients/client-123`: HTTP 403 Forbidden, request-id: request-123, cf-ray: ray-123, body: forbidden"
+            "remote control client revoke failed at `{remote_control_url}codex/remote/control/environments/env-123`: HTTP 403 Forbidden, request-id: request-123, cf-ray: ray-123, body: forbidden"
         )
     );
 }

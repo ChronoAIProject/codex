@@ -758,7 +758,7 @@ async fn remote_control_client_management_works_while_disabled() -> Result<()> {
         timeout(DEFAULT_TIMEOUT, backend.wait_for_requests()).await??,
         vec![
             "GET /backend-api/wham/remote/control/environments/environment-id/clients?cursor=cursor-id&limit=10&order=desc HTTP/1.1".to_string(),
-            "DELETE /backend-api/wham/remote/control/environments/environment-id/clients/client-id HTTP/1.1".to_string(),
+            "DELETE /backend-api/codex/remote/control/environments/environment-id HTTP/1.1".to_string(),
         ]
     );
     Ok(())
