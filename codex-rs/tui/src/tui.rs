@@ -99,12 +99,25 @@ mod tests {
     use std::io::Write as _;
 
     use super::clear_for_viewport_change;
+    #[cfg(unix)]
+    use super::install_stderr_guard_before_startup_probe;
     use super::should_emit_notification;
+    #[cfg(unix)]
+    use std::cell::RefCell;
+
     use crate::custom_terminal::Terminal as CustomTerminal;
+    #[cfg(unix)]
+    use crate::terminal_probe::StartupProbe;
     use crate::test_backend::VT100Backend;
+    #[cfg(unix)]
+    use crate::tui::terminal_stderr::TerminalStderrGuard;
     use codex_config::types::NotificationCondition;
+    #[cfg(unix)]
+    use pretty_assertions::assert_eq;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    #[cfg(target_os = "macos")]
+    use serial_test::serial;
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -169,6 +182,31 @@ mod tests {
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(target_os = "macos", serial)]
+    fn stderr_guard_is_installed_before_startup_probe() {
+        let events = RefCell::new(Vec::new());
+
+        let (_guard, _probe) = install_stderr_guard_before_startup_probe(
+            || {
+                events.borrow_mut().push("stderr guard");
+                TerminalStderrGuard::install()
+            },
+            || {
+                events.borrow_mut().push("startup probe");
+                StartupProbe {
+                    cursor_position: None,
+                    default_colors: None,
+                    keyboard_enhancement_supported: None,
+                }
+            },
+        )
+        .expect("startup ordering should succeed");
+
+        assert_eq!(events.into_inner(), vec!["stderr guard", "startup probe"]);
     }
 }
 
@@ -387,43 +425,48 @@ pub(crate) fn init() -> Result<InitializedTerminal> {
     set_panic_hook();
 
     #[cfg(unix)]
-    let backend = CrosstermBackend::new(stdout());
+    let (stderr_guard, startup_probe) = install_stderr_guard_before_startup_probe(
+        terminal_stderr::TerminalStderrGuard::install,
+        || {
+            use crate::terminal_probe::StartupKeyboardEnhancementProbe;
 
-    #[cfg(unix)]
-    let startup_probe = {
-        use crate::terminal_probe::StartupKeyboardEnhancementProbe;
-
-        let started_at = std::time::Instant::now();
-        let keyboard_probe = if keyboard_modes::keyboard_enhancement_disabled() {
-            StartupKeyboardEnhancementProbe::Skip
-        } else {
-            StartupKeyboardEnhancementProbe::Query
-        };
-        match crate::terminal_probe::startup(crate::terminal_probe::DEFAULT_TIMEOUT, keyboard_probe)
-        {
-            Ok(probe) => {
-                tracing::info!(
-                    duration_ms = %started_at.elapsed().as_millis(),
-                    cursor_position = probe.cursor_position.is_some(),
-                    default_colors = probe.default_colors.is_some(),
-                    keyboard_enhancement_supported = ?probe.keyboard_enhancement_supported,
-                    "terminal startup probes completed"
-                );
-                probe
-            }
-            Err(err) => {
-                tracing::warn!(
-                    duration_ms = %started_at.elapsed().as_millis(),
-                    "terminal startup probes failed: {err}"
-                );
-                crate::terminal_probe::StartupProbe {
-                    cursor_position: None,
-                    default_colors: None,
-                    keyboard_enhancement_supported: None,
+            let started_at = std::time::Instant::now();
+            let keyboard_probe = if keyboard_modes::keyboard_enhancement_disabled() {
+                StartupKeyboardEnhancementProbe::Skip
+            } else {
+                StartupKeyboardEnhancementProbe::Query
+            };
+            match crate::terminal_probe::startup(
+                crate::terminal_probe::DEFAULT_TIMEOUT,
+                keyboard_probe,
+            ) {
+                Ok(probe) => {
+                    tracing::info!(
+                        duration_ms = %started_at.elapsed().as_millis(),
+                        cursor_position = probe.cursor_position.is_some(),
+                        default_colors = probe.default_colors.is_some(),
+                        keyboard_enhancement_supported = ?probe.keyboard_enhancement_supported,
+                        "terminal startup probes completed"
+                    );
+                    probe
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        duration_ms = %started_at.elapsed().as_millis(),
+                        "terminal startup probes failed: {err}"
+                    );
+                    crate::terminal_probe::StartupProbe {
+                        cursor_position: None,
+                        default_colors: None,
+                        keyboard_enhancement_supported: None,
+                    }
                 }
             }
-        }
-    };
+        },
+    )?;
+
+    #[cfg(unix)]
+    let backend = CrosstermBackend::new(stdout());
 
     #[cfg(unix)]
     crate::terminal_palette::set_default_colors_from_startup_probe(startup_probe.default_colors);
@@ -443,6 +486,9 @@ pub(crate) fn init() -> Result<InitializedTerminal> {
         .unwrap_or(/*default*/ false);
 
     #[cfg(not(unix))]
+    let stderr_guard = terminal_stderr::TerminalStderrGuard::install()?;
+
+    #[cfg(not(unix))]
     let mut backend = CrosstermBackend::new(stdout());
 
     #[cfg(not(unix))]
@@ -456,12 +502,24 @@ pub(crate) fn init() -> Result<InitializedTerminal> {
     probe_windows_default_colors();
 
     let tui = CustomTerminal::with_options_and_cursor_position(backend, cursor_pos)?;
-    let stderr_guard = terminal_stderr::TerminalStderrGuard::install()?;
     Ok(InitializedTerminal {
         terminal: tui,
         enhanced_keys_supported,
         stderr_guard,
     })
+}
+
+#[cfg(unix)]
+fn install_stderr_guard_before_startup_probe(
+    install_stderr_guard: impl FnOnce() -> Result<terminal_stderr::TerminalStderrGuard>,
+    run_startup_probe: impl FnOnce() -> crate::terminal_probe::StartupProbe,
+) -> Result<(
+    terminal_stderr::TerminalStderrGuard,
+    crate::terminal_probe::StartupProbe,
+)> {
+    let stderr_guard = install_stderr_guard()?;
+    let startup_probe = run_startup_probe();
+    Ok((stderr_guard, startup_probe))
 }
 
 #[cfg(not(unix))]
