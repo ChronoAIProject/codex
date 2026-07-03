@@ -4960,7 +4960,26 @@ fn active_turn_interrupt_race_extracts_actual_turn_id_from_mismatch() {
 
     assert_eq!(
         active_turn_interrupt_race(&error),
-        Some("turn-actual".to_string())
+        Some(ActiveTurnInterruptRace::ExpectedTurnMismatch {
+            actual_turn_id: "turn-actual".to_string(),
+        })
+    );
+}
+
+#[test]
+fn active_turn_interrupt_race_treats_missing_turn_as_stale_cache() {
+    let error = TypedRequestError::Server {
+        method: "turn/interrupt".to_string(),
+        source: JSONRPCErrorError {
+            code: -32602,
+            message: "no active turn to interrupt".to_string(),
+            data: None,
+        },
+    };
+
+    assert_eq!(
+        active_turn_interrupt_race(&error),
+        Some(ActiveTurnInterruptRace::Missing)
     );
 }
 

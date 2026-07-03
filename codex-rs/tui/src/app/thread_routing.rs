@@ -531,21 +531,46 @@ impl App {
                         {
                             Ok(()) => return Ok(true),
                             Err(error) if !retried_after_turn_mismatch => {
-                                let Some(actual_turn_id) = active_turn_interrupt_race(&error)
-                                else {
-                                    return Err(error).wrap_err("turn/interrupt failed in TUI");
-                                };
-                                if actual_turn_id == interrupt_turn_id {
-                                    return Err(error).wrap_err("turn/interrupt failed in TUI");
+                                match active_turn_interrupt_race(&error) {
+                                    Some(ActiveTurnInterruptRace::Missing) => {
+                                        if let Some(channel) =
+                                            self.thread_event_channels.get(&thread_id)
+                                        {
+                                            let mut store = channel.store.lock().await;
+                                            store.clear_active_turn_id();
+                                        }
+                                        return Ok(true);
+                                    }
+                                    Some(ActiveTurnInterruptRace::ExpectedTurnMismatch {
+                                        actual_turn_id,
+                                    }) if actual_turn_id != interrupt_turn_id => {
+                                        // Review flows can swap the active turn before the TUI
+                                        // processes the corresponding notification. Retry once with
+                                        // the server-reported turn id so Ctrl+C/Esc do not fatally
+                                        // exit on that stale cache, but let lifecycle notifications
+                                        // own the cached active turn id.
+                                        interrupt_turn_id = actual_turn_id;
+                                    }
+                                    Some(ActiveTurnInterruptRace::ExpectedTurnMismatch {
+                                        ..
+                                    })
+                                    | None => {
+                                        return Err(error).wrap_err("turn/interrupt failed in TUI");
+                                    }
                                 }
-                                // Review flows can swap the active turn before the TUI processes
-                                // the corresponding notification. Retry once with the
-                                // server-reported turn id so Ctrl+C/Esc do not fatally exit on that
-                                // stale cache, but let lifecycle notifications own the cached
-                                // active turn id.
-                                interrupt_turn_id = actual_turn_id;
                             }
                             Err(error) => {
+                                if active_turn_interrupt_race(&error)
+                                    == Some(ActiveTurnInterruptRace::Missing)
+                                {
+                                    if let Some(channel) =
+                                        self.thread_event_channels.get(&thread_id)
+                                    {
+                                        let mut store = channel.store.lock().await;
+                                        store.clear_active_turn_id();
+                                    }
+                                    return Ok(true);
+                                }
                                 return Err(error).wrap_err("turn/interrupt failed in TUI");
                             }
                         }
