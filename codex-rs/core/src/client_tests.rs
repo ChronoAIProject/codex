@@ -9,6 +9,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::compact_request_timeout;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -214,6 +215,18 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
     );
 
     Ok(())
+}
+
+#[test]
+fn compact_request_timeout_has_long_running_floor() {
+    assert_eq!(
+        compact_request_timeout(Duration::from_secs(5 * 60)),
+        Duration::from_secs(60 * 60)
+    );
+    assert_eq!(
+        compact_request_timeout(Duration::from_secs(2 * 60 * 60)),
+        Duration::from_secs(8 * 60 * 60)
+    );
 }
 
 fn test_model_provider() -> SharedModelProvider {

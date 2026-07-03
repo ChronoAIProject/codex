@@ -156,6 +156,7 @@ const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
+const COMPACT_REQUEST_TIMEOUT_MINIMUM: Duration = Duration::from_secs(60 * 60);
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
@@ -172,6 +173,12 @@ fn reasoning_effort_for_request(effort: ReasoningEffortConfig) -> ReasoningEffor
         ReasoningEffortConfig::Ultra => ReasoningEffortConfig::Max,
         effort => effort,
     }
+}
+
+fn compact_request_timeout(stream_idle_timeout: Duration) -> Duration {
+    stream_idle_timeout
+        .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER)
+        .max(COMPACT_REQUEST_TIMEOUT_MINIMUM)
 }
 
 fn session_telemetry_for_request(
@@ -596,10 +603,8 @@ impl ModelClient {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
         add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
-        let compact_request_timeout = client_setup
-            .api_provider
-            .stream_idle_timeout
-            .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
+        let compact_request_timeout =
+            compact_request_timeout(client_setup.api_provider.stream_idle_timeout);
         let client =
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
