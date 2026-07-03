@@ -874,7 +874,9 @@ fn mcp_initialize_request_params(
     supports_openai_form_elicitation: bool,
 ) -> InitializeRequestParams {
     let mut capabilities = ClientCapabilities::default();
-    capabilities.elicitation = Some(client_elicitation_capability);
+    if client_elicitation_capability != ElicitationCapability::default() {
+        capabilities.elicitation = Some(client_elicitation_capability);
+    }
     if supports_openai_form_elicitation {
         capabilities.extensions = Some(BTreeMap::from([(
             OPENAI_FORM_CAPABILITY.to_string(),
@@ -1029,6 +1031,11 @@ mod tests {
             /*supports_openai_form_elicitation*/ false,
         );
         assert_eq!(unsupported.capabilities.extensions, None);
+        assert_eq!(unsupported.capabilities.elicitation, None);
+        assert_eq!(
+            serde_json::to_value(&unsupported.capabilities).expect("serialize capabilities"),
+            serde_json::json!({})
+        );
 
         let supported = mcp_initialize_request_params(
             ElicitationCapability::default(),
