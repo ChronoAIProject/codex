@@ -51,11 +51,15 @@ const LOG_BATCH_SIZE: usize = 128;
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn default_filter() -> Targets {
-    Targets::new()
-        .with_default(LevelFilter::TRACE)
+    let mut filter = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|filter| filter.parse::<Targets>().ok())
+        .unwrap_or_else(|| Targets::new().with_default(LevelFilter::TRACE));
+    filter = filter
         .with_target("log", LevelFilter::OFF)
         .with_target("codex_otel.log_only", LevelFilter::OFF)
-        .with_target("codex_otel.trace_safe", LevelFilter::OFF)
+        .with_target("codex_otel.trace_safe", LevelFilter::OFF);
+    filter
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
