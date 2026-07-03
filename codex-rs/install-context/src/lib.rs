@@ -121,7 +121,8 @@ impl InstallContext {
     }
 
     pub fn rg_command(&self) -> PathBuf {
-        if let Some(package_layout) = &self.package_layout
+        if self.method != InstallMethod::Brew
+            && let Some(package_layout) = &self.package_layout
             && let Some(path_dir) = &package_layout.path_dir
         {
             let bundled_rg = path_dir.join(default_rg_command());
@@ -511,6 +512,32 @@ mod tests {
                 .join(default_rg_command())
                 .into_path_buf()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn brew_package_rg_uses_path_lookup() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let path_dir = package_dir.path().join(PATH_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&path_dir)?;
+        fs::write(path_dir.join(default_rg_command()), "")?;
+        let canonical_package_dir =
+            AbsolutePathBuf::from_absolute_path(package_dir.path().canonicalize()?)?;
+        let canonical_bin_dir = AbsolutePathBuf::from_absolute_path(bin_dir.canonicalize()?)?;
+        let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
+
+        let context = InstallContext {
+            method: InstallMethod::Brew,
+            package_layout: Some(CodexPackageLayout {
+                package_dir: canonical_package_dir,
+                bin_dir: canonical_bin_dir,
+                resources_dir: None,
+                path_dir: Some(canonical_path_dir),
+            }),
+        };
+        assert_eq!(context.rg_command(), default_rg_command());
         Ok(())
     }
 

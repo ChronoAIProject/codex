@@ -304,6 +304,26 @@ fn apply_zsh_fork_path_prepend_moves_existing_shell_parent_to_front() {
 }
 
 #[test]
+fn brew_install_does_not_prepend_package_path() {
+    let install_context = InstallContext {
+        method: InstallMethod::Brew,
+        package_layout: None,
+    };
+
+    assert!(!should_prepend_package_path(&install_context));
+}
+
+#[test]
+fn non_brew_install_can_prepend_package_path() {
+    let install_context = InstallContext {
+        method: InstallMethod::Other,
+        package_layout: None,
+    };
+
+    assert!(should_prepend_package_path(&install_context));
+}
+
+#[test]
 fn explicit_escalation_keeps_user_proxy_env_without_codex_marker() {
     let env = HashMap::from([
         (
