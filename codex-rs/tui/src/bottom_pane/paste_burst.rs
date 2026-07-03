@@ -187,6 +187,7 @@ pub(crate) enum CharDecision {
     BeginBufferFromPending,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RetroGrab {
     pub start_byte: usize,
     pub grabbed: String,
@@ -380,11 +381,11 @@ impl PasteBurst {
     /// Decide whether to begin buffering by retroactively capturing recent
     /// chars from the slice before the cursor.
     ///
-    /// Heuristic: if the retro-grabbed slice contains any whitespace or is
-    /// sufficiently long (>= 16 characters), treat it as paste-like to avoid
-    /// rendering the typed prefix momentarily before the paste is recognized.
-    /// This favors responsiveness and prevents flicker for typical pastes
-    /// (URLs, file paths, multiline text) while not triggering on short words.
+    /// Heuristic: if the retro-grabbed slice contains any whitespace, is sufficiently long
+    /// (>= 16 characters), or is a short non-ASCII burst, treat it as paste-like to avoid
+    /// rendering the typed prefix momentarily before the paste is recognized. This favors
+    /// responsiveness and prevents flicker for typical pastes (URLs, file paths, multiline text)
+    /// while not triggering on short ASCII words.
     ///
     /// Returns Some(RetroGrab) with the start byte and grabbed text when we
     /// decide to buffer retroactively; otherwise None.
@@ -396,8 +397,11 @@ impl PasteBurst {
     ) -> Option<RetroGrab> {
         let start_byte = retro_start_index(before, retro_chars);
         let grabbed = before[start_byte..].to_string();
-        let looks_pastey =
-            grabbed.chars().any(char::is_whitespace) || grabbed.chars().count() >= 16;
+        let grabbed_char_count = grabbed.chars().count();
+        let looks_pastey = grabbed.chars().any(char::is_whitespace)
+            || grabbed_char_count >= 16
+            || (grabbed_char_count >= usize::from(PASTE_BURST_MIN_CHARS.saturating_sub(1))
+                && grabbed.chars().any(|ch| !ch.is_ascii()));
         if looks_pastey {
             // Note: caller is responsible for removing this slice from UI text.
             self.begin_with_retro_grabbed(grabbed.clone(), now);
@@ -549,6 +553,46 @@ mod tests {
         assert_eq!(grab.start_byte, 1);
         assert_eq!(grab.grabbed, " b");
         assert!(burst.is_active());
+    }
+
+    /// Behavior: a short non-ASCII prefix can be the first line of a Windows paste where the
+    /// following newline arrives as Enter. Capture it as a burst before Enter so the newline is
+    /// buffered instead of submitting the first line.
+    #[test]
+    fn decide_begin_buffer_captures_short_non_ascii_prefix_before_newline() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+        assert!(burst.on_plain_char_no_hold(t0).is_none());
+
+        let t1 = t0 + Duration::from_millis(1);
+        assert!(burst.on_plain_char_no_hold(t1).is_none());
+
+        let t2 = t1 + Duration::from_millis(1);
+        assert!(matches!(
+            burst.on_plain_char_no_hold(t2),
+            Some(CharDecision::BeginBuffer { retro_chars: 2 })
+        ));
+        let grab = burst
+            .decide_begin_buffer(t2, "\u{041f}\u{0440}", /*retro_chars*/ 2)
+            .expect("short non-ASCII burst should be paste-like");
+        assert_eq!(
+            grab,
+            RetroGrab {
+                start_byte: 0,
+                grabbed: "\u{041f}\u{0440}".to_string(),
+            }
+        );
+        burst.append_char_to_buffer('\u{0438}', t2);
+
+        let enter = t2 + Duration::from_millis(1);
+        assert!(burst.append_newline_if_active(enter));
+
+        let flush_time =
+            enter + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
+        assert!(matches!(
+            burst.flush_if_due(flush_time),
+            FlushResult::Paste(ref s) if s == "\u{041f}\u{0440}\u{0438}\n"
+        ));
     }
 
     /// Behavior: after a paste-like burst, we keep an "enter suppression window" alive briefly so
