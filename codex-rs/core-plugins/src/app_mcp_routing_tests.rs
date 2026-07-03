@@ -4,9 +4,13 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 
 fn app(name: &str) -> AppDeclaration {
+    app_with_connector_id(name, &format!("connector_{name}"))
+}
+
+fn app_with_connector_id(name: &str, connector_id: &str) -> AppDeclaration {
     AppDeclaration {
         name: name.to_string(),
-        connector_id: AppConnectorId(format!("connector_{name}")),
+        connector_id: AppConnectorId(connector_id.to_string()),
         category: None,
     }
 }
@@ -58,7 +62,7 @@ fn app_mcp_routing_clears_apps_when_apps_route_is_unavailable() {
 }
 
 #[test]
-fn app_mcp_routing_preserves_apps_and_removes_conflicting_mcp_with_apps_route() {
+fn app_mcp_routing_preserves_conflicting_mcp_and_removes_app_with_apps_route() {
     let mut apps = vec![app("linear"), app("notion")];
     let mut mcp_servers = mcp_servers([("linear", 1), ("docs", 2), ("notion", 3)]);
 
@@ -76,6 +80,28 @@ fn app_mcp_routing_preserves_apps_and_removes_conflicting_mcp_with_apps_route() 
     assert_eq!(
         sorted_mcp_server_names(&mcp_servers),
         vec!["docs".to_string()]
+    );
+}
+
+#[test]
+fn app_mcp_routing_preserves_mcp_conflict_for_app_directory_connectors() {
+    let mut apps = vec![app_with_connector_id(
+        "context7",
+        "asdk_app_69ef18c674308191a2f952431f91ea61",
+    )];
+    let mut mcp_servers = mcp_servers([("context7", 1), ("docs", 2)]);
+
+    apply_app_mcp_routing_policy(
+        &mut apps,
+        &mut mcp_servers,
+        Some(AuthMode::Chatgpt),
+        /*plugin_active*/ true,
+    );
+
+    assert_eq!(sorted_app_names(&apps), vec!["context7".to_string()]);
+    assert_eq!(
+        sorted_mcp_server_names(&mcp_servers),
+        vec!["context7".to_string(), "docs".to_string()]
     );
 }
 

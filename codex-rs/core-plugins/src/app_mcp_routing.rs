@@ -21,10 +21,15 @@ pub(crate) fn apply_app_mcp_routing_policy<M>(
     if plugin_active && !apps.is_empty() {
         let app_declaration_names = apps
             .iter()
+            .filter(|app| !is_app_directory_connector_id(&app.connector_id.0))
             .map(|app| app.name.as_str())
             .collect::<HashSet<_>>();
         mcp_servers.retain(|name, _| !app_declaration_names.contains(name.as_str()));
     }
+}
+
+fn is_app_directory_connector_id(connector_id: &str) -> bool {
+    connector_id.starts_with("asdk_app_")
 }
 
 #[cfg(test)]
