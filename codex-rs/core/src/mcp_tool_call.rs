@@ -103,6 +103,7 @@ const MCP_RESULT_TELEMETRY_META_KEY: &str = "codex/telemetry";
 const MCP_RESULT_TELEMETRY_SPAN_KEY: &str = "span";
 const MCP_RESULT_TELEMETRY_TARGET_ID_KEY: &str = "target_id";
 const MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY: &str = "did_trigger_server_user_flow";
+const MCP_RESULT_APP_RESOURCE_CONTENTS_META_KEY: &str = "codex/mcpAppResourceContents";
 const MCP_RESULT_TELEMETRY_TARGET_ID_SPAN_ATTR: &str = "codex.mcp.target.id";
 const MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR: &str =
     "codex.mcp.server_user_flow.triggered";
@@ -604,6 +605,8 @@ async fn execute_mcp_tool_call(
             .contains(&InputModality::Image),
         Ok(result),
     )?;
+    let result =
+        hydrate_mcp_app_resource_contents(manager, &invocation.server, metadata, result).await;
     Ok(maybe_request_codex_apps_auth_elicitation(
         sess,
         turn_context,
@@ -614,6 +617,50 @@ async fn execute_mcp_tool_call(
         result,
     )
     .await)
+}
+
+async fn hydrate_mcp_app_resource_contents(
+    manager: &McpConnectionManager,
+    server: &str,
+    metadata: Option<&McpToolApprovalMetadata>,
+    mut result: CallToolResult,
+) -> CallToolResult {
+    let Some(uri) = metadata
+        .and_then(|metadata| metadata.mcp_app_resource_uri.as_deref())
+        .filter(|uri| !uri.is_empty())
+    else {
+        return result;
+    };
+
+    let Ok(resource_contents) = manager
+        .read_resource(
+            server,
+            rmcp::model::ReadResourceRequestParams::new(uri.to_string()),
+        )
+        .await
+    else {
+        return result;
+    };
+    let Ok(resource_contents) = serde_json::to_value(resource_contents) else {
+        return result;
+    };
+
+    insert_mcp_app_resource_contents_meta(&mut result, resource_contents);
+    result
+}
+
+fn insert_mcp_app_resource_contents_meta(
+    result: &mut CallToolResult,
+    resource_contents: JsonValue,
+) {
+    let mut meta = result
+        .meta
+        .take()
+        .and_then(|meta| meta.as_object().cloned())
+        .unwrap_or_default();
+    meta.entry(MCP_RESULT_APP_RESOURCE_CONTENTS_META_KEY)
+        .or_insert(resource_contents);
+    result.meta = Some(JsonValue::Object(meta));
 }
 
 async fn maybe_request_codex_apps_auth_elicitation(

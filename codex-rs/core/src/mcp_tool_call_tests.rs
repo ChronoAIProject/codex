@@ -348,6 +348,50 @@ fn mcp_app_resource_uri_reads_known_tool_meta_keys() {
 }
 
 #[test]
+fn mcp_app_resource_contents_are_added_to_result_meta() {
+    let mut result = CallToolResult {
+        content: vec![serde_json::json!({
+            "type": "text",
+            "text": "generation started",
+        })],
+        structured_content: Some(serde_json::json!({
+            "status": "in_progress",
+        })),
+        is_error: Some(false),
+        meta: Some(serde_json::json!({
+            "existing": true,
+        })),
+    };
+    let resource_contents = serde_json::json!({
+        "contents": [{
+            "uri": "ui://widget/canva.html",
+            "mimeType": "text/html",
+            "text": "<html>Canva preview</html>",
+        }],
+    });
+
+    insert_mcp_app_resource_contents_meta(&mut result, resource_contents.clone());
+
+    assert_eq!(
+        result,
+        CallToolResult {
+            content: vec![serde_json::json!({
+                "type": "text",
+                "text": "generation started",
+            })],
+            structured_content: Some(serde_json::json!({
+                "status": "in_progress",
+            })),
+            is_error: Some(false),
+            meta: Some(serde_json::json!({
+                "existing": true,
+                MCP_RESULT_APP_RESOURCE_CONTENTS_META_KEY: resource_contents,
+            })),
+        }
+    );
+}
+
+#[test]
 fn openai_file_params_are_only_honored_for_codex_apps() {
     let meta = serde_json::json!({
         "openai/fileParams": ["file"],
