@@ -21,6 +21,7 @@ pub enum DynamicToolSpec {
 pub struct DynamicToolFunctionSpec {
     pub name: String,
     pub description: String,
+    #[serde(default = "default_input_schema")]
     pub input_schema: JsonValue,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer_loading: bool,
@@ -171,3 +172,11 @@ where
         .map(Some)
         .map_err(D::Error::custom)
 }
+
+fn default_input_schema() -> JsonValue {
+    serde_json::json!({"type": "object", "properties": {}})
+}
+
+#[cfg(test)]
+#[path = "dynamic_tools_tests.rs"]
+mod tests;
