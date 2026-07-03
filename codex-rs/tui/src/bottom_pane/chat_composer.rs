@@ -227,8 +227,6 @@ use self::history_search::HistorySearchSession;
 use self::popup_state::ActivePopup;
 use self::popup_state::PopupState;
 use self::slash_input::SlashInput;
-use self::slash_input::SlashValidation;
-use self::slash_input::SubmissionValidation;
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
@@ -2626,17 +2624,12 @@ impl ChatComposer {
         &mut self,
         record_history: bool,
     ) -> Option<(String, Vec<TextElement>)> {
-        self.prepare_submission_text_with_options(
-            record_history,
-            SlashValidation::Immediate,
-            PendingPasteHandling::Expand,
-        )
+        self.prepare_submission_text_with_options(record_history, PendingPasteHandling::Expand)
     }
 
     fn prepare_submission_text_with_options(
         &mut self,
         record_history: bool,
-        slash_validation: SlashValidation,
         pending_paste_handling: PendingPasteHandling,
     ) -> Option<(String, Vec<TextElement>)> {
         let mut text = self.current_text();
@@ -2646,7 +2639,6 @@ impl ChatComposer {
         let original_local_image_paths = self.attachments.local_image_paths();
         let original_pending_pastes = self.draft.pending_pastes.clone();
         let mut text_elements = original_text_elements.clone();
-        let input_starts_with_space = original_input.starts_with(' ');
         self.draft.recent_submission_mention_bindings.clear();
         self.draft.textarea.set_text_clearing_elements("");
         self.draft.is_bash_mode = false;
@@ -2666,30 +2658,6 @@ impl ChatComposer {
         // If there is neither text nor attachments, suppress submission entirely.
         text = text.trim().to_string();
         text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
-
-        if slash_validation == SlashValidation::Immediate
-            && let SubmissionValidation::UnknownCommand(name) = self
-                .slash_input()
-                .validate_submission(&text, input_starts_with_space)
-        {
-            let message = format!(
-                r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
-            );
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::new_info_event(message, /*hint*/ None),
-            )));
-            self.set_text_content_with_mention_bindings(
-                original_input.clone(),
-                original_text_elements,
-                original_local_image_paths,
-                original_mention_bindings,
-            );
-            self.draft
-                .pending_pastes
-                .clone_from(&original_pending_pastes);
-            self.draft.textarea.set_cursor(original_input.len());
-            return None;
-        }
 
         let actual_chars = text.chars().count();
         if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
@@ -2776,11 +2744,6 @@ impl ChatComposer {
             };
             if let Some((text, text_elements)) = self.prepare_submission_text_with_options(
                 /*record_history*/ true,
-                if defer_slash_validation {
-                    SlashValidation::Deferred
-                } else {
-                    SlashValidation::Immediate
-                },
                 if preserve_pending_pastes {
                     PendingPasteHandling::Preserve
                 } else {
@@ -5780,7 +5743,7 @@ mod tests {
     }
 
     #[test]
-    fn vim_mode_stays_insert_after_suppressed_submission() {
+    fn vim_mode_stays_insert_after_oversized_submission() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5798,12 +5761,15 @@ mod tests {
         composer.set_vim_enabled(/*enabled*/ true);
 
         composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        composer.set_text_content("/not-a-command".to_string(), Vec::new(), Vec::new());
+        composer.set_text_content(
+            "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1),
+            Vec::new(),
+            Vec::new(),
+        );
         let (result, _) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(matches!(result, InputResult::None));
-        assert_eq!(composer.draft.textarea.text(), "/not-a-command");
         assert_eq!(
             composer.vim_mode_indicator_span(),
             Some("Vim: Insert".green())
@@ -8236,6 +8202,44 @@ mod tests {
     }
 
     #[test]
+    fn unknown_slash_command_submits_as_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer
+            .draft
+            .textarea
+            .set_text_clearing_elements("/does-not-exist hello world");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            result,
+            InputResult::Submitted {
+                text: "/does-not-exist hello world".to_string(),
+                text_elements: Vec::new(),
+            }
+        );
+        assert!(composer.draft.textarea.is_empty());
+        match rx.try_recv() {
+            Ok(event) => panic!("unexpected event: {event:?}"),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            Err(err) => panic!("unexpected channel state: {err:?}"),
+        }
+    }
+
+    #[test]
     fn kill_buffer_persists_after_submit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -10002,11 +10006,7 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
 
-        composer
-            .draft
-            .textarea
-            .set_text_clearing_elements("/unknown ");
-        composer.draft.textarea.set_cursor("/unknown ".len());
+        composer.draft.textarea.set_text_clearing_elements("");
         let large_content = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
         composer.handle_paste(large_content.clone());
         let placeholder = composer
@@ -10016,6 +10016,8 @@ mod tests {
             .expect("expected pending paste")
             .0
             .clone();
+        let oversized_text = "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1);
+        composer.draft.textarea.insert_str(&oversized_text);
 
         let (result, _) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -10023,11 +10025,12 @@ mod tests {
         assert_eq!(composer.draft.pending_pastes.len(), 1);
         assert_eq!(
             composer.draft.textarea.text(),
-            format!("/unknown {placeholder}")
+            format!("{placeholder}{oversized_text}")
         );
 
-        composer.draft.textarea.set_cursor(/*pos*/ 0);
-        composer.draft.textarea.insert_str(" ");
+        composer.draft.textarea.set_text_clearing_elements("");
+        composer.draft.textarea.insert_element(&placeholder);
+        composer.draft.textarea.set_cursor(placeholder.len());
         let (result, _) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
@@ -10035,7 +10038,7 @@ mod tests {
                 text,
                 text_elements,
             } => {
-                assert_eq!(text, format!("/unknown {large_content}"));
+                assert_eq!(text, large_content);
                 assert!(text_elements.is_empty());
             }
             _ => panic!("expected Submitted"),

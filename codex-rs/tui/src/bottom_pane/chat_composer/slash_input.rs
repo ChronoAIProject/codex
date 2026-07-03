@@ -26,17 +26,6 @@ use super::ChatComposer;
 use super::InputResult;
 use super::QueuedInputAction;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SlashValidation {
-    Immediate,
-    Deferred,
-}
-
-pub(super) enum SubmissionValidation {
-    Valid,
-    UnknownCommand(String),
-}
-
 pub(super) struct InlineCommand<'a> {
     pub(super) command: SlashCommandItem,
     pub(super) rest: &'a str,
@@ -62,27 +51,6 @@ impl<'a> SlashInput<'a> {
             is_bash_mode,
             command_flags,
             service_tier_commands,
-        }
-    }
-
-    pub(super) fn validate_submission(
-        &self,
-        text: &str,
-        input_starts_with_space: bool,
-    ) -> SubmissionValidation {
-        if !self.enabled {
-            return SubmissionValidation::Valid;
-        }
-        let Some((name, _rest, _rest_offset)) = parse_slash_name(text) else {
-            return SubmissionValidation::Valid;
-        };
-        if input_starts_with_space || name.contains('/') {
-            return SubmissionValidation::Valid;
-        }
-        if self.command(name).is_some() {
-            SubmissionValidation::Valid
-        } else {
-            SubmissionValidation::UnknownCommand(name.to_string())
         }
     }
 

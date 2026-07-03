@@ -1608,23 +1608,26 @@ async fn repeated_token_activity_refreshes_keep_only_latest_card() {
 }
 
 #[tokio::test]
-async fn unrecognized_slash_command_is_not_added_to_local_recall() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn unrecognized_slash_command_submits_as_text_and_is_recallable() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
 
-    submit_composer_text(&mut chat, "/does-not-exist");
+    chat.bottom_pane
+        .set_composer_text("/does-not-exist".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|cell| lines_to_single_string(cell))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        rendered.contains("Unrecognized command '/does-not-exist'"),
-        "expected unrecognized-command message, got: {rendered:?}"
-    );
-    assert_eq!(chat.bottom_pane.composer_text(), "/does-not-exist");
-    assert_eq!(recall_latest_after_clearing(&mut chat), "");
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "/does-not-exist".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/does-not-exist");
 }
 
 #[tokio::test]
