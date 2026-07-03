@@ -228,16 +228,43 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
     );
 }
 
-#[test]
-fn shell_command_handler_rejects_login_when_disallowed() {
-    let err =
-        ShellCommandHandler::resolve_use_login_shell(Some(true), /*allow_login_shell*/ false)
-            .expect_err("explicit login should be rejected");
+#[tokio::test]
+async fn shell_command_handler_explicit_login_overrides_non_login_default() {
+    let (session, turn_context) = make_session_and_context().await;
+    let turn_environment = turn_context
+        .environments
+        .primary()
+        .expect("primary environment");
+    let cwd = turn_environment
+        .cwd()
+        .to_abs_path()
+        .expect("native environment cwd");
+    let params = ShellCommandToolCallParams {
+        command: "echo hello".to_string(),
+        workdir: None,
+        login: Some(true),
+        timeout_ms: None,
+        sandbox_permissions: None,
+        additional_permissions: None,
+        prefix_rule: None,
+        justification: None,
+    };
 
-    assert!(
-        err.to_string()
-            .contains("login shell is disabled by config"),
-        "unexpected error: {err}"
+    let exec_params = ShellCommandHandler::to_exec_params(
+        &params,
+        &session,
+        &turn_context,
+        turn_environment,
+        cwd,
+        /*allow_login_shell*/ false,
+    )
+    .expect("explicit login should override the non-login default");
+
+    assert_eq!(
+        exec_params.command,
+        session
+            .user_shell()
+            .derive_exec_args("echo hello", /*use_login_shell*/ true)
     );
 }
 

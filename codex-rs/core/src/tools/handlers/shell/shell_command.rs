@@ -71,12 +71,6 @@ impl ShellCommandHandler {
         login: Option<bool>,
         allow_login_shell: bool,
     ) -> Result<bool, FunctionCallError> {
-        if !allow_login_shell && login == Some(true) {
-            return Err(FunctionCallError::RespondToModel(
-                "login shell is disabled by config; omit `login` or set it to false.".to_string(),
-            ));
-        }
-
         Ok(login.unwrap_or(allow_login_shell))
     }
 
