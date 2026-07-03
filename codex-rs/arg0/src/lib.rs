@@ -163,20 +163,17 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
 }
 
 fn prepare_path_env_var_with_aliases(
-    install_context: &InstallContext,
+    _install_context: &InstallContext,
     existing_path: Option<OsString>,
     prepare_aliases: impl FnOnce(Option<OsString>) -> std::io::Result<(Arg0PathEntryGuard, OsString)>,
 ) -> (Option<Arg0PathEntryGuard>, Option<OsString>) {
-    let package_path = path_env_with_package_path_dir(install_context, existing_path.clone());
-    let path_for_aliases = package_path.clone().or(existing_path);
-
-    match prepare_aliases(path_for_aliases) {
+    match prepare_aliases(existing_path) {
         Ok((path_entry, updated_path_env_var)) => (Some(path_entry), Some(updated_path_env_var)),
         Err(err) => {
             // It is possible that Codex will proceed successfully even if
             // creating helper aliases fails, so warn the user and move on.
             eprintln!("WARNING: proceeding, even though we could not create PATH aliases: {err}");
-            (None, package_path)
+            (None, None)
         }
     }
 }
@@ -436,17 +433,6 @@ fn prepare_path_entry_for_codex_aliases(
     ))
 }
 
-fn path_env_with_package_path_dir(
-    install_context: &InstallContext,
-    existing_path: Option<OsString>,
-) -> Option<OsString> {
-    let path_dir = install_context
-        .package_layout
-        .as_ref()
-        .and_then(|package_layout| package_layout.path_dir.as_ref())?;
-    Some(path_env_with_entry(path_dir.as_path(), existing_path))
-}
-
 fn path_env_with_entry(path_entry: &Path, existing_path: Option<OsString>) -> OsString {
     #[cfg(unix)]
     const PATH_SEPARATOR: &str = ":";
@@ -605,29 +591,44 @@ mod tests {
     }
 
     #[test]
-    fn path_env_can_prepend_package_path_before_arg0_alias_dir() -> anyhow::Result<()> {
+    fn arg0_alias_dir_does_not_prepend_package_path_to_process_path() -> anyhow::Result<()> {
         let fixture = package_path_test_fixture()?;
 
-        let package_path = super::path_env_with_package_path_dir(
+        let (_path_entry_guard, updated_path_env_var) = super::prepare_path_env_var_with_aliases(
             &fixture.install_context,
             Some(fixture.existing_dir.as_os_str().to_owned()),
-        )
-        .expect("package path dir should update PATH");
-        let updated_path = super::path_env_with_entry(&fixture.arg0_dir, Some(package_path));
+            |path_for_aliases| {
+                assert_eq!(
+                    std::env::split_paths(
+                        path_for_aliases
+                            .as_ref()
+                            .expect("existing PATH should be passed to alias setup")
+                    )
+                    .collect::<Vec<_>>(),
+                    vec![fixture.existing_dir.clone()],
+                );
+                let temp_dir = TempDir::new()?;
+                let lock_file = create_lock(temp_dir.path())?;
+                Ok((
+                    Arg0PathEntryGuard::new(temp_dir, lock_file, Arg0DispatchPaths::default()),
+                    super::path_env_with_entry(&fixture.arg0_dir, path_for_aliases),
+                ))
+            },
+        );
 
+        let updated_path = updated_path_env_var.expect("alias setup should update PATH");
+        let updated_path_entries = std::env::split_paths(&updated_path).collect::<Vec<_>>();
+
+        assert!(!updated_path_entries.contains(&fixture.path_dir.as_path().to_path_buf()));
         assert_eq!(
-            std::env::split_paths(&updated_path).collect::<Vec<_>>(),
-            vec![
-                fixture.arg0_dir,
-                fixture.path_dir.as_path().to_path_buf(),
-                fixture.existing_dir
-            ],
+            updated_path_entries,
+            vec![fixture.arg0_dir, fixture.existing_dir]
         );
         Ok(())
     }
 
     #[test]
-    fn package_path_survives_arg0_alias_setup_failure() -> anyhow::Result<()> {
+    fn alias_setup_failure_preserves_existing_process_path() -> anyhow::Result<()> {
         let fixture = package_path_test_fixture()?;
 
         let (path_entry_guard, updated_path_env_var) = super::prepare_path_env_var_with_aliases(
@@ -636,28 +637,19 @@ mod tests {
             |path_for_aliases| {
                 assert_eq!(
                     std::env::split_paths(
-                        &path_for_aliases.expect("package PATH should be passed to alias setup")
+                        path_for_aliases
+                            .as_ref()
+                            .expect("existing PATH should be passed to alias setup")
                     )
                     .collect::<Vec<_>>(),
-                    vec![
-                        fixture.path_dir.as_path().to_path_buf(),
-                        fixture.existing_dir.clone()
-                    ],
+                    vec![fixture.existing_dir.clone()],
                 );
                 Err(std::io::Error::other("alias setup failed"))
             },
         );
 
         assert!(path_entry_guard.is_none());
-        let updated_path_env_var =
-            updated_path_env_var.expect("package PATH should survive alias setup failure");
-        assert_eq!(
-            std::env::split_paths(&updated_path_env_var).collect::<Vec<_>>(),
-            vec![
-                fixture.path_dir.as_path().to_path_buf(),
-                fixture.existing_dir
-            ],
-        );
+        assert_eq!(updated_path_env_var, None);
         Ok(())
     }
 
