@@ -548,6 +548,7 @@ impl ModelClient {
             &client_setup.api_provider,
             prompt,
             model_info,
+            client_setup.auth.as_ref(),
             settings.effort,
             settings.summary,
             settings.service_tier,
@@ -814,6 +815,7 @@ impl ModelClient {
         provider: &codex_api::Provider,
         prompt: &Prompt,
         model_info: &ModelInfo,
+        auth: Option<&CodexAuth>,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
@@ -845,6 +847,8 @@ impl ModelClient {
             }
             input.splice(0..0, prefix);
             (String::new(), None)
+        } else if auth.is_some_and(CodexAuth::uses_codex_backend) {
+            (String::new(), Some(tools))
         } else {
             (prompt.base_instructions.text.clone(), Some(tools))
         };
@@ -1392,6 +1396,7 @@ impl ModelClientSession {
                 &client_setup.api_provider,
                 prompt,
                 model_info,
+                client_setup.auth.as_ref(),
                 effort.clone(),
                 summary,
                 service_tier.clone(),
@@ -1505,6 +1510,7 @@ impl ModelClientSession {
                 &client_setup.api_provider,
                 prompt,
                 model_info,
+                client_setup.auth.as_ref(),
                 effort.clone(),
                 summary,
                 service_tier.clone(),
