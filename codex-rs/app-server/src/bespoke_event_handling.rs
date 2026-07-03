@@ -13,6 +13,7 @@ use crate::thread_status::ThreadWatchActiveGuard;
 use crate::thread_status::ThreadWatchManager;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
 use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
+use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
 use codex_app_server_protocol::CommandAction as V2ParsedCommand;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
@@ -47,7 +48,10 @@ use codex_app_server_protocol::NetworkPolicyAmendment as V2NetworkPolicyAmendmen
 use codex_app_server_protocol::NetworkPolicyRuleAction as V2NetworkPolicyRuleAction;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
+use codex_app_server_protocol::PlanDeltaNotification;
 use codex_app_server_protocol::RawResponseItemCompletedNotification;
+use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
+use codex_app_server_protocol::ReasoningTextDeltaNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
@@ -151,6 +155,11 @@ pub(crate) async fn apply_bespoke_event_handling(
         id: event_turn_id,
         msg,
     } = event;
+    if let Some(delta) = streaming_delta_from_event(&msg, &conversation_id, &event_turn_id) {
+        coalesce_or_emit_streaming_delta(delta, &outgoing, &thread_state).await;
+        return;
+    }
+    flush_streaming_delta(&outgoing, &thread_state).await;
     match msg {
         EventMsg::TurnStarted(payload) => {
             // While not technically necessary as it was already done on TurnComplete, be extra cautios and abort any pending server requests.
@@ -876,10 +885,6 @@ pub(crate) async fn apply_bespoke_event_handling(
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::AgentMessageContentDelta(_)
-        | EventMsg::PlanDelta(_)
-        | EventMsg::ReasoningContentDelta(_)
-        | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::AgentReasoningSectionBreak(_)) => {
             let notification = item_event_to_server_notification(
                 msg,
@@ -1335,6 +1340,135 @@ async fn handle_turn_plan_update(
     outgoing
         .send_server_notification(ServerNotification::TurnPlanUpdated(notification))
         .await;
+}
+
+fn streaming_delta_from_event(
+    msg: &EventMsg,
+    conversation_id: &ThreadId,
+    event_turn_id: &str,
+) -> Option<ServerNotification> {
+    match msg {
+        EventMsg::AgentMessageContentDelta(event) => Some(ServerNotification::AgentMessageDelta(
+            AgentMessageDeltaNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.to_string(),
+                item_id: event.item_id.clone(),
+                delta: event.delta.clone(),
+            },
+        )),
+        EventMsg::PlanDelta(event) => Some(ServerNotification::PlanDelta(PlanDeltaNotification {
+            thread_id: conversation_id.to_string(),
+            turn_id: event_turn_id.to_string(),
+            item_id: event.item_id.clone(),
+            delta: event.delta.clone(),
+        })),
+        EventMsg::ReasoningContentDelta(event) => Some(
+            ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.to_string(),
+                item_id: event.item_id.clone(),
+                delta: event.delta.clone(),
+                summary_index: event.summary_index,
+            }),
+        ),
+        EventMsg::ReasoningRawContentDelta(event) => Some(ServerNotification::ReasoningTextDelta(
+            ReasoningTextDeltaNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.to_string(),
+                item_id: event.item_id.clone(),
+                delta: event.delta.clone(),
+                content_index: event.content_index,
+            },
+        )),
+        _ => None,
+    }
+}
+
+async fn coalesce_or_emit_streaming_delta(
+    delta: ServerNotification,
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+) {
+    let notification = {
+        let mut state = thread_state.lock().await;
+        match state.pending_streaming_delta.take() {
+            Some(mut pending) => {
+                if coalesce_server_notification_delta(&mut pending, &delta) {
+                    state.pending_streaming_delta = Some(pending);
+                    None
+                } else {
+                    state.pending_streaming_delta = Some(delta);
+                    Some(pending)
+                }
+            }
+            None => {
+                state.pending_streaming_delta = Some(delta);
+                None
+            }
+        }
+    };
+    if let Some(notification) = notification {
+        outgoing.send_server_notification(notification).await;
+    }
+}
+
+fn coalesce_server_notification_delta(
+    pending: &mut ServerNotification,
+    next: &ServerNotification,
+) -> bool {
+    match (pending, next) {
+        (
+            ServerNotification::AgentMessageDelta(pending),
+            ServerNotification::AgentMessageDelta(next),
+        ) if pending.thread_id == next.thread_id
+            && pending.turn_id == next.turn_id
+            && pending.item_id == next.item_id =>
+        {
+            pending.delta.push_str(&next.delta);
+            true
+        }
+        (ServerNotification::PlanDelta(pending), ServerNotification::PlanDelta(next))
+            if pending.thread_id == next.thread_id
+                && pending.turn_id == next.turn_id
+                && pending.item_id == next.item_id =>
+        {
+            pending.delta.push_str(&next.delta);
+            true
+        }
+        (
+            ServerNotification::ReasoningSummaryTextDelta(pending),
+            ServerNotification::ReasoningSummaryTextDelta(next),
+        ) if pending.thread_id == next.thread_id
+            && pending.turn_id == next.turn_id
+            && pending.item_id == next.item_id
+            && pending.summary_index == next.summary_index =>
+        {
+            pending.delta.push_str(&next.delta);
+            true
+        }
+        (
+            ServerNotification::ReasoningTextDelta(pending),
+            ServerNotification::ReasoningTextDelta(next),
+        ) if pending.thread_id == next.thread_id
+            && pending.turn_id == next.turn_id
+            && pending.item_id == next.item_id
+            && pending.content_index == next.content_index =>
+        {
+            pending.delta.push_str(&next.delta);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(crate) async fn flush_streaming_delta(
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+) {
+    let notification = thread_state.lock().await.pending_streaming_delta.take();
+    if let Some(notification) = notification {
+        outgoing.send_server_notification(notification).await;
+    }
 }
 
 struct TurnCompletionMetadata {
@@ -3695,6 +3829,52 @@ mod tests {
                 assert_eq!(n.plan[0].status, TurnPlanStepStatus::Pending);
                 assert_eq!(n.plan[1].step, "second");
                 assert_eq!(n.plan[1].status, TurnPlanStepStatus::Completed);
+            }
+            other => bail!("unexpected message: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no extra messages expected");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_message_deltas_are_coalesced_until_next_event() -> Result<()> {
+        let thread_state = new_thread_state();
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            ThreadId::new(),
+        );
+
+        for delta in ["Hel", "lo", "!"] {
+            let notification =
+                ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    delta: delta.to_string(),
+                });
+            coalesce_or_emit_streaming_delta(notification, &outgoing, &thread_state).await;
+        }
+
+        assert!(
+            rx.try_recv().is_err(),
+            "deltas should be held until flushed"
+        );
+
+        flush_streaming_delta(&outgoing, &thread_state).await;
+
+        let message = recv_broadcast_message(&mut rx).await?;
+        match message {
+            OutgoingMessage::AppServerNotification(ServerNotification::AgentMessageDelta(n)) => {
+                assert_eq!(n.thread_id, "thread-1");
+                assert_eq!(n.turn_id, "turn-1");
+                assert_eq!(n.item_id, "item-1");
+                assert_eq!(n.delta, "Hello!");
             }
             other => bail!("unexpected message: {other:?}"),
         }

@@ -328,6 +328,11 @@ pub(super) async fn ensure_listener_task_running(
                     if let EventMsg::RawResponseItem(raw_response_item_event) = &event.msg
                         && !raw_events_enabled
                     {
+                        crate::bespoke_event_handling::flush_streaming_delta(
+                            &thread_outgoing,
+                            &thread_state,
+                        )
+                        .await;
                         maybe_emit_hook_prompt_item_completed(
                             conversation_id,
                             &event.id,
