@@ -2753,6 +2753,25 @@ mod tests {
     }
 
     #[test]
+    fn exec_image_preserves_prompt_positional() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "exec",
+            "--image",
+            "screenshot.png",
+            "describe this image",
+        ])
+        .expect("parse should succeed");
+
+        let Some(Subcommand::Exec(exec)) = cli.subcommand else {
+            panic!("expected exec subcommand");
+        };
+
+        assert_eq!(exec.prompt.as_deref(), Some("describe this image"));
+        assert_eq!(exec.shared.images, vec![PathBuf::from("screenshot.png")]);
+    }
+
+    #[test]
     fn dangerous_bypass_conflicts_with_approval_policy() {
         let err = MultitoolCli::try_parse_from([
             "codex",
