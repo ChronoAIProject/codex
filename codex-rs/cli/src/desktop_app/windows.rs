@@ -5,7 +5,7 @@ use tokio::process::Command;
 
 const CODEX_WINDOWS_INSTALLER_URL: &str =
     "https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi";
-const CODEX_MICROSOFT_STORE_WEB_URL: &str = "https://apps.microsoft.com/detail/9plm9xgg6vks";
+const CODEX_WINDOWS_APP_PAGE_URL: &str = "https://developers.openai.com/codex/app/windows";
 
 pub async fn run_windows_app_open_or_install(
     workspace: PathBuf,
@@ -23,8 +23,11 @@ pub async fn run_windows_app_open_or_install(
     let download_url = download_url_override
         .as_deref()
         .unwrap_or(CODEX_WINDOWS_INSTALLER_URL);
-    if open_url(download_url).await.is_err() && download_url_override.is_none() {
-        open_url(CODEX_MICROSOFT_STORE_WEB_URL).await?;
+    if open_url(download_url).await.is_err()
+        && let Some(fallback_url) =
+            installer_open_failure_fallback(download_url_override.as_deref())
+    {
+        open_url(fallback_url).await?;
     }
     eprintln!("After installing Codex Desktop, open workspace {display_workspace}.");
     Ok(())
@@ -70,6 +73,12 @@ fn codex_new_thread_url(workspace: &str) -> String {
     format!("codex://threads/new?{query}")
 }
 
+fn installer_open_failure_fallback(download_url_override: Option<&str>) -> Option<&'static str> {
+    download_url_override
+        .is_none()
+        .then_some(CODEX_WINDOWS_APP_PAGE_URL)
+}
+
 fn display_workspace_path(workspace: &Path) -> String {
     let path = workspace.display().to_string();
     if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
@@ -85,6 +94,7 @@ fn display_workspace_path(workspace: &Path) -> String {
 mod tests {
     use super::codex_new_thread_url;
     use super::display_workspace_path;
+    use super::installer_open_failure_fallback;
     use pretty_assertions::assert_eq;
     use std::path::Path;
 
@@ -125,6 +135,18 @@ mod tests {
         assert_eq!(
             codex_new_thread_url(r"\\?\C:\Users\akuma\repos\koba"),
             r"codex://threads/new?path=%5C%5C%3F%5CC%3A%5CUsers%5Cakuma%5Crepos%5Ckoba"
+        );
+    }
+
+    #[test]
+    fn windows_installer_failure_falls_back_to_official_app_page() {
+        assert_eq!(
+            installer_open_failure_fallback(None),
+            Some("https://developers.openai.com/codex/app/windows")
+        );
+        assert_eq!(
+            installer_open_failure_fallback(Some("https://example.com/Codex.exe")),
+            None
         );
     }
 }
