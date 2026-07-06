@@ -547,6 +547,16 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
 
     sess.deliver_event_raw(Event {
         id: turn_context.sub_id.clone(),
+        msg: EventMsg::Warning(WarningEvent {
+            message:
+                "Rolled back conversation history only. Workspace file changes were not restored."
+                    .to_string(),
+        }),
+    })
+    .await;
+
+    sess.deliver_event_raw(Event {
+        id: turn_context.sub_id.clone(),
         msg: rollback_msg,
     })
     .await;

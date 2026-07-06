@@ -3193,6 +3193,34 @@ async fn thread_rollback_clears_history_when_num_turns_exceeds_existing_turns() 
 }
 
 #[tokio::test]
+async fn thread_rollback_warns_that_workspace_files_are_not_restored() {
+    let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("session should not have additional references"),
+    )
+    .await;
+
+    let full_history = vec![user_message("turn 1 user")];
+    sess.replace_history(full_history.clone(), Some(tc.to_turn_context_item()))
+        .await;
+    let rollout_items: Vec<RolloutItem> = full_history
+        .into_iter()
+        .map(RolloutItem::ResponseItem)
+        .collect();
+    sess.persist_rollout_items(&rollout_items).await;
+
+    handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+
+    let warning = wait_for_warning(&rx).await;
+    assert_eq!(
+        warning.message,
+        "Rolled back conversation history only. Workspace file changes were not restored."
+    );
+    let rollback_event = wait_for_thread_rolled_back(&rx).await;
+    assert_eq!(rollback_event.num_turns, 1);
+}
+
+#[tokio::test]
 async fn thread_rollback_fails_without_persisted_thread_history() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
@@ -4030,6 +4058,22 @@ async fn wait_for_thread_rollback_failed(rx: &async_channel::Receiver<Event>) ->
             {
                 return payload;
             }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_warning(rx: &async_channel::Receiver<Event>) -> WarningEvent {
+    let deadline = StdDuration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let remaining = deadline.saturating_sub(start.elapsed());
+        let evt = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("timeout waiting for event")
+            .expect("event");
+        match evt.msg {
+            EventMsg::Warning(payload) => return payload,
             _ => continue,
         }
     }
