@@ -138,6 +138,9 @@ enum Subcommand {
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
 
+    /// Inspect Language Server Protocol integration status.
+    Lsp(LspCommand),
+
     /// Manage Codex plugins.
     Plugin(PluginCli),
 
@@ -222,6 +225,28 @@ struct CompletionCommand {
 struct DebugCommand {
     #[command(subcommand)]
     subcommand: DebugSubcommand,
+}
+
+#[derive(Debug, Parser)]
+struct LspCommand {
+    #[command(subcommand)]
+    subcommand: LspSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum LspSubcommand {
+    /// Show detected Language Server Protocol support.
+    Status,
+
+    /// Show Language Server Protocol diagnostics.
+    Diagnostics(LspDiagnosticsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct LspDiagnosticsCommand {
+    /// Restrict diagnostics to a single file.
+    #[arg(long = "file", value_name = "FILE")]
+    file: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1061,6 +1086,18 @@ async fn cli_main(
                 loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
             mcp_cli.run(loader_overrides).await?;
         }
+        Some(Subcommand::Lsp(LspCommand { subcommand })) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "lsp",
+            )?;
+            match subcommand {
+                LspSubcommand::Status => {}
+                LspSubcommand::Diagnostics(LspDiagnosticsCommand { file: _ }) => {}
+            }
+            anyhow::bail!("`codex lsp` is not supported yet");
+        }
         Some(Subcommand::Plugin(plugin_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1664,6 +1701,7 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Unarchive(_)
         | Subcommand::Fork(_)
         | Subcommand::Mcp(_)
+        | Subcommand::Lsp(_)
         | Subcommand::Sandbox(_)
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
@@ -2120,6 +2158,7 @@ fn unsupported_subcommand_name_for_strict_config(
         }
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
+        Some(Subcommand::Lsp(_)) => Some("lsp"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(_)) => Some("app"),
@@ -2691,6 +2730,27 @@ mod tests {
 
         assert!(cli.subcommand.is_none());
         assert_eq!(cli.interactive.prompt.as_deref(), Some("import"));
+    }
+
+    #[test]
+    fn lsp_commands_do_not_parse_as_interactive_prompts() {
+        let cli = MultitoolCli::try_parse_from(["codex", "lsp", "status"]).expect("parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Lsp(LspCommand {
+                subcommand: LspSubcommand::Status
+            }))
+        );
+
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "lsp", "diagnostics", "--file", "src/main.rs"])
+                .expect("parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Lsp(LspCommand {
+                subcommand: LspSubcommand::Diagnostics(LspDiagnosticsCommand { file })
+            })) if file == Some(PathBuf::from("src/main.rs"))
+        );
     }
 
     #[test]
