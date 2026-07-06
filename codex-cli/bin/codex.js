@@ -118,11 +118,19 @@ const binaryPath = findCodexExecutable();
  */
 function detectPackageManager() {
   const userAgent = process.env.npm_config_user_agent || "";
+  if (/\bpnpm\//.test(userAgent)) {
+    return "pnpm";
+  }
+
   if (/\bbun\//.test(userAgent)) {
     return "bun";
   }
 
   const execPath = process.env.npm_execpath || "";
+  if (execPath.includes("pnpm")) {
+    return "pnpm";
+  }
+
   if (execPath.includes("bun")) {
     return "bun";
   }
@@ -137,10 +145,13 @@ function detectPackageManager() {
   return userAgent ? "npm" : null;
 }
 
+const packageManager = detectPackageManager();
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  packageManager === "bun"
     ? "CODEX_MANAGED_BY_BUN"
-    : "CODEX_MANAGED_BY_NPM";
+    : packageManager === "pnpm"
+      ? "CODEX_MANAGED_BY_PNPM"
+      : "CODEX_MANAGED_BY_NPM";
 const env = {
   ...process.env,
   [packageManagerEnvVar]: "1",

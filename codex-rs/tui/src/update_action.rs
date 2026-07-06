@@ -10,6 +10,8 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
+    /// Update via `pnpm add -g @openai/codex@latest`.
+    PnpmGlobalLatest,
     /// Update via `bun install -g @openai/codex@latest`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
@@ -23,6 +25,21 @@ pub enum UpdateAction {
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
+        Self::from_install_context_with_pnpm_env(
+            context,
+            /*managed_by_pnpm*/ std::env::var_os("CODEX_MANAGED_BY_PNPM").is_some(),
+        )
+    }
+
+    #[cfg(any(not(debug_assertions), test))]
+    fn from_install_context_with_pnpm_env(
+        context: &InstallContext,
+        managed_by_pnpm: bool,
+    ) -> Option<Self> {
+        if managed_by_pnpm {
+            return Some(UpdateAction::PnpmGlobalLatest);
+        }
+
         match &context.method {
             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
             InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
@@ -39,6 +56,7 @@ impl UpdateAction {
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
@@ -134,6 +152,23 @@ mod tests {
                 package_layout: None,
             }),
             Some(UpdateAction::StandaloneWindows)
+        );
+    }
+
+    #[test]
+    fn pnpm_managed_install_maps_to_pnpm_update_command() {
+        let action = UpdateAction::from_install_context_with_pnpm_env(
+            &InstallContext {
+                method: InstallMethod::Npm,
+                package_layout: None,
+            },
+            /*managed_by_pnpm*/ true,
+        );
+
+        assert_eq!(action, Some(UpdateAction::PnpmGlobalLatest));
+        assert_eq!(
+            UpdateAction::PnpmGlobalLatest.command_args(),
+            ("pnpm", &["add", "-g", "@openai/codex"][..])
         );
     }
 
