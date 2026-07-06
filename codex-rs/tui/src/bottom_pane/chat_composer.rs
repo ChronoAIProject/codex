@@ -207,6 +207,8 @@ use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
+use crate::wrapping::word_wrap_line;
+use crate::wrapping::word_wrap_lines;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -722,10 +724,7 @@ impl ChatComposer {
         area: Rect,
         textarea_right_reserve: u16,
     ) -> [Rect; 4] {
-        let footer_props = self.footer_props();
-        let footer_hint_height = self
-            .custom_footer_height()
-            .unwrap_or_else(|| footer_height(&footer_props));
+        let footer_hint_height = self.footer_hint_height(area.width);
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         let popup_constraint = match &self.popups.active {
@@ -775,6 +774,20 @@ impl ChatComposer {
         } else {
             FOOTER_SPACING_HEIGHT
         }
+    }
+
+    fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
+        use crate::render::line_utils::prefix_lines;
+
+        ratatui::widgets::Widget::render(
+            Paragraph::new(prefix_lines(
+                lines,
+                " ".repeat(FOOTER_INDENT_COLS).into(),
+                " ".repeat(FOOTER_INDENT_COLS).into(),
+            )),
+            area,
+            buf,
+        );
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -3496,6 +3509,30 @@ impl ChatComposer {
             .map(|items| if items.is_empty() { 0 } else { 1 })
     }
 
+    fn footer_hint_height(&self, area_width: u16) -> u16 {
+        if let Some(custom_height) = self.custom_footer_height() {
+            return custom_height;
+        }
+
+        let footer_props = self.footer_props();
+        if uses_passive_footer_status_layout(&footer_props)
+            && let Some(line) = passive_footer_status_line(&footer_props)
+        {
+            let width = area_width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+            return word_wrap_line(&line, width.max(1)).len() as u16;
+        }
+
+        footer_height(&footer_props)
+    }
+
+    fn wrapped_passive_status_lines(
+        &self,
+        line: &Line<'static>,
+        available_width: usize,
+    ) -> Vec<Line<'static>> {
+        word_wrap_lines(vec![line.clone()], available_width.max(1))
+    }
+
     pub(crate) fn sync_popups(&mut self) {
         self.sync_slash_command_elements();
         if self.history_search.is_some() {
@@ -4175,9 +4212,7 @@ impl ChatComposer {
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
-                let custom_height = self.custom_footer_height();
-                let footer_hint_height =
-                    custom_height.unwrap_or_else(|| footer_height(&footer_props));
+                let footer_hint_height = self.footer_hint_height(area.width);
                 let footer_spacing = Self::footer_spacing(footer_hint_height);
                 let hint_rect = if footer_spacing > 0 && footer_hint_height > 0 {
                     let [_, hint_rect] = Layout::vertical([
@@ -4211,10 +4246,10 @@ impl ChatComposer {
                     } else {
                         None
                     };
-                    let mut truncated_status_line = if status_line_active {
-                        combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
-                        })
+                    let mut status_lines = if status_line_active {
+                        combined_status_line
+                            .as_ref()
+                            .map(|line| self.wrapped_passive_status_lines(line, available_width))
                     } else {
                         None
                     };
@@ -4233,8 +4268,9 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         footer_hint_items_width(items)
                     } else if status_line_active {
-                        truncated_status_line
+                        status_lines
                             .as_ref()
+                            .and_then(|lines| lines.last())
                             .map(|line| line.width() as u16)
                             .unwrap_or(0)
                     } else {
@@ -4267,12 +4303,12 @@ impl ChatComposer {
                     if status_line_active
                         && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
                         && left_width > max_left
-                        && let Some(line) = combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
+                        && let Some(lines) = combined_status_line
+                            .as_ref()
+                            .map(|line| self.wrapped_passive_status_lines(line, max_left as usize))
                     {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
+                        left_width = lines.last().map(|line| line.width() as u16).unwrap_or(0);
+                        status_lines = Some(lines);
                     }
                     let can_show_left_and_context =
                         can_show_left_with_context(hint_rect, left_width, right_width);
@@ -4322,8 +4358,8 @@ impl ChatComposer {
                         match summary_left {
                             SummaryLeft::Default => {
                                 if status_line_active {
-                                    if let Some(line) = truncated_status_line.clone() {
-                                        render_footer_line(hint_rect, buf, line);
+                                    if let Some(lines) = status_lines.clone() {
+                                        Self::render_footer_lines(hint_rect, buf, lines);
                                     } else {
                                         render_footer_from_props(
                                             hint_rect,
@@ -4359,8 +4395,8 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
-                        if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                        if let Some(lines) = status_lines {
+                            Self::render_footer_lines(hint_rect, buf, lines);
                         }
                     } else {
                         render_footer_from_props(
@@ -4794,6 +4830,18 @@ mod tests {
                 )));
                 composer.set_text_content("!".to_string(), Vec::new(), Vec::new());
                 let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            },
+        );
+
+        snapshot_composer_state_with_width(
+            "footer_status_line_wraps",
+            /*width*/ 48,
+            /*enhanced_keys_supported*/ true,
+            |composer| {
+                composer.set_status_line_enabled(/*enabled*/ true);
+                composer.set_status_line(Some(Line::from(
+                    "gpt-5.4 high fast · ~/code/codex-1 · feat/long-branch-name · Context 0% used",
+                )));
             },
         );
     }
