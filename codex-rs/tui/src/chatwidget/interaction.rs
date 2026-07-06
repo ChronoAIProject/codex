@@ -268,7 +268,7 @@ impl ChatWidget {
         &mut self,
         copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
     ) {
-        match self.transcript.last_agent_markdown.clone() {
+        match self.transcript.latest_non_empty_agent_markdown() {
             Some(markdown) if !markdown.is_empty() => match copy_fn(&markdown) {
                 Ok(lease) => {
                     self.clipboard_lease = lease;

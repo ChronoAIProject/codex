@@ -61,6 +61,10 @@ impl TranscriptState {
     }
 
     pub(super) fn record_agent_markdown(&mut self, markdown: String) {
+        if markdown.is_empty() {
+            return;
+        }
+
         match self.agent_turn_markdowns.last_mut() {
             Some(entry) if entry.user_turn_count == self.visible_user_turn_count => {
                 entry.markdown = markdown.clone();
@@ -82,6 +86,20 @@ impl TranscriptState {
 
     pub(super) fn record_visible_user_turn(&mut self) {
         self.visible_user_turn_count = self.visible_user_turn_count.saturating_add(1);
+    }
+
+    pub(super) fn latest_non_empty_agent_markdown(&self) -> Option<String> {
+        self.agent_turn_markdowns
+            .iter()
+            .rev()
+            .find(|entry| !entry.markdown.is_empty())
+            .map(|entry| entry.markdown.clone())
+            .or_else(|| {
+                self.last_agent_markdown
+                    .as_ref()
+                    .filter(|markdown| !markdown.is_empty())
+                    .cloned()
+            })
     }
 
     pub(super) fn reset_copy_history(&mut self) {
@@ -147,5 +165,18 @@ mod tests {
 
         assert_eq!(state.last_agent_markdown.as_deref(), Some("first"));
         assert!(!state.copy_history_evicted_by_rollback);
+    }
+
+    #[test]
+    fn latest_copy_source_skips_empty_markdown_entries() {
+        let mut state = TranscriptState::default();
+        state.record_visible_user_turn();
+        state.record_agent_markdown("response".to_string());
+        state.record_agent_markdown(String::new());
+
+        assert_eq!(
+            state.latest_non_empty_agent_markdown().as_deref(),
+            Some("response")
+        );
     }
 }
