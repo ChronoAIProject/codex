@@ -742,7 +742,7 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
     let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
     let output = run_git_command_with_timeout_from(
         git,
-        &["diff", "--no-textconv", "--no-ext-diff", &sha.0],
+        &["diff", "--no-textconv", "--no-ext-diff", "--binary", &sha.0],
         cwd,
         fsmonitor,
     )
@@ -1084,6 +1084,49 @@ mod tests {
                 "version --build-options".to_string(),
                 format!("-c {disabled_hooks} -c core.fsmonitor=true status --porcelain"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_against_sha_includes_tracked_binary_patch() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo = temp_dir.path();
+
+        let run_git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .expect("run git command");
+            assert_eq!(status.code(), Some(0), "git {args:?}");
+        };
+
+        run_git(&["init", "--initial-branch=main", "-q"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "Test User"]);
+
+        let image = repo.join("image.bin");
+        std::fs::write(&image, [0xff, 0xd8, 0xff, 0x00, b'a', b'b', b'c'])
+            .expect("write original binary file");
+        run_git(&["add", "image.bin"]);
+        run_git(&["commit", "-q", "-m", "initial"]);
+
+        let base_sha = get_head_commit_hash(repo)
+            .await
+            .expect("read base commit hash");
+        std::fs::write(&image, [0xff, 0xd8, 0xff, 0x00, b'd', b'e', b'f'])
+            .expect("write modified binary file");
+
+        let diff = diff_against_sha(repo, &base_sha)
+            .await
+            .expect("collect diff");
+        assert!(
+            diff.contains("GIT binary patch"),
+            "diff should include an applyable binary patch: {diff}"
+        );
+        assert!(
+            !diff.contains("Binary files a/image.bin and b/image.bin differ"),
+            "diff should not fall back to a binary summary: {diff}"
         );
     }
 }
