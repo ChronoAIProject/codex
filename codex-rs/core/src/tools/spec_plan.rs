@@ -5,6 +5,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
+use crate::tools::flat_tool_name;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -262,12 +263,12 @@ fn build_model_visible_specs_and_registry(
     specs.extend(hosted_specs);
 
     let registry = ToolRegistry::from_tools(runtimes);
-    let model_visible_specs = merge_into_namespaces(specs)
-        .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
-        })
-        .collect();
+    let merged_specs = merge_into_namespaces(specs);
+    let model_visible_specs = if namespace_tools_enabled(turn_context) {
+        merged_specs
+    } else {
+        flatten_namespace_specs(merged_specs)
+    };
 
     (model_visible_specs, registry)
 }
@@ -585,6 +586,29 @@ fn merge_into_namespaces(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
     }
 
     merged_specs
+}
+
+fn flatten_namespace_specs(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
+    let mut flattened_specs = Vec::new();
+    for spec in specs {
+        match spec {
+            ToolSpec::Namespace(namespace) => {
+                let namespace_name = namespace.name;
+                flattened_specs.extend(namespace.tools.into_iter().map(|tool| match tool {
+                    ResponsesApiNamespaceTool::Function(mut tool) => {
+                        tool.name = flat_tool_name(&ToolName::namespaced(
+                            namespace_name.clone(),
+                            tool.name,
+                        ))
+                        .into_owned();
+                        ToolSpec::Function(tool)
+                    }
+                }));
+            }
+            spec => flattened_specs.push(spec),
+        }
+    }
+    flattened_specs
 }
 
 fn code_mode_namespace_descriptions(

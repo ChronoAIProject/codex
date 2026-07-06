@@ -248,6 +248,15 @@ impl ModelProvider for ConfiguredModelProvider {
         &self.info
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            namespace_tools: self.info.requires_openai_auth
+                || self.info.supports_remote_compaction()
+                || self.info.uses_openai_actor_authorization(),
+            ..ProviderCapabilities::default()
+        }
+    }
+
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -456,13 +465,58 @@ mod tests {
     }
 
     #[test]
-    fn configured_provider_uses_default_capabilities() {
+    fn configured_openai_provider_uses_default_capabilities() {
         let provider = create_model_provider(
             ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             /*auth_manager*/ None,
         );
 
         assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+    }
+
+    #[test]
+    fn configured_oss_provider_disables_namespace_tools() {
+        let provider = create_model_provider(
+            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: false,
+                ..ProviderCapabilities::default()
+            }
+        );
+    }
+
+    #[test]
+    fn configured_azure_provider_keeps_namespace_tools() {
+        let provider_info = ModelProviderInfo {
+            name: "Azure".into(),
+            base_url: Some("https://example.openai.azure.com/openai".into()),
+            env_key: Some("AZURE_OPENAI_API_KEY".into()),
+            requires_openai_auth: false,
+            ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        };
+        let provider = create_model_provider(provider_info, /*auth_manager*/ None);
+
+        assert!(provider.capabilities().namespace_tools);
+    }
+
+    #[test]
+    fn configured_actor_authorized_provider_keeps_namespace_tools() {
+        let provider_info = ModelProviderInfo {
+            http_headers: Some(std::collections::HashMap::from([(
+                "X-OpenAI-Actor-Authorization".to_string(),
+                "actor-token".to_string(),
+            )])),
+            requires_openai_auth: false,
+            ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        };
+        let provider = create_model_provider(provider_info, /*auth_manager*/ None);
+
+        assert!(provider.capabilities().namespace_tools);
     }
 
     #[test]

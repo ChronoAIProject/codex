@@ -9,6 +9,8 @@ use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -270,6 +272,15 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
     let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
     update_config(turn, |config| {
         config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_oss_provider(turn: &mut TurnContext) {
+    let provider_info =
+        create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
+    update_config(turn, |config| {
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
@@ -823,6 +834,22 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         "tool_search",
         &ToolName::namespaced("mcp__searchable", "lookup").to_string(),
     ]);
+}
+
+#[tokio::test]
+async fn mcp_tools_flatten_for_providers_without_namespace_tools() {
+    let plan = probe_with(
+        use_oss_provider,
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["mcp__directlookup"]);
+    assert!(plan.namespace_function_names("mcp__direct").is_empty());
+    plan.assert_registered_contains(&[&ToolName::namespaced("mcp__direct", "lookup").to_string()]);
 }
 
 #[tokio::test]
