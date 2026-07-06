@@ -263,6 +263,9 @@ impl ChatWidget {
             SlashCommand::Review => {
                 self.open_review_popup();
             }
+            SlashCommand::Undo => {
+                self.submit_op(AppCommand::thread_rollback(/*num_turns*/ 1));
+            }
             SlashCommand::Rename => {
                 self.session_telemetry
                     .counter("codex.thread.rename", /*inc*/ 1, &[]);
@@ -1069,6 +1072,7 @@ impl ChatWidget {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Review
+            | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Personality
             | SlashCommand::Plan

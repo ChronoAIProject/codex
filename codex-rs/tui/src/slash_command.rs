@@ -29,6 +29,7 @@ pub enum SlashCommand {
     Import,
     Hooks,
     Review,
+    Undo,
     Rename,
     New,
     Archive,
@@ -87,6 +88,7 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Undo => "undo the last turn",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Archive => "archive this session and exit",
@@ -201,6 +203,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Import
             | SlashCommand::Review
+            | SlashCommand::Undo
             | SlashCommand::Plan
             | SlashCommand::Clear
             | SlashCommand::Logout
@@ -304,5 +307,11 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn undo_command_parses() {
+        assert_eq!(SlashCommand::Undo.command(), "undo");
+        assert_eq!(SlashCommand::from_str("undo"), Ok(SlashCommand::Undo));
     }
 }
