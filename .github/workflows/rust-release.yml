@@ -128,6 +128,30 @@ jobs:
             artifact_name: aarch64-unknown-linux-musl-app-server
             binaries: "codex-app-server"
             build_dmg: "false"
+          - runner: ${{ github.event.repository.name }}-linux-x64-xl
+            target: x86_64-unknown-linux-gnu
+            bundle: primary
+            artifact_name: x86_64-unknown-linux-gnu
+            binaries: "codex codex-responses-api-proxy"
+            build_dmg: "false"
+          - runner: ${{ github.event.repository.name }}-linux-x64-xl
+            target: x86_64-unknown-linux-gnu
+            bundle: app-server
+            artifact_name: x86_64-unknown-linux-gnu-app-server
+            binaries: "codex-app-server"
+            build_dmg: "false"
+          - runner: ${{ github.event.repository.name }}-linux-arm64
+            target: aarch64-unknown-linux-gnu
+            bundle: primary
+            artifact_name: aarch64-unknown-linux-gnu
+            binaries: "codex codex-responses-api-proxy"
+            build_dmg: "false"
+          - runner: ${{ github.event.repository.name }}-linux-arm64
+            target: aarch64-unknown-linux-gnu
+            bundle: app-server
+            artifact_name: aarch64-unknown-linux-gnu-app-server
+            binaries: "codex-app-server"
+            build_dmg: "false"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -382,7 +406,7 @@ jobs:
             --zsh-manifest "${RUNNER_TEMP}/codex-zsh"
 
       - name: Build Python runtime wheel
-        if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
+        if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' && contains(matrix.target, 'musl') }}
         shell: bash
         run: |
           set -euo pipefail

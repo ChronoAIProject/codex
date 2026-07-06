@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 import urllib.error
@@ -79,6 +80,35 @@ def test_generation_has_single_maintenance_entrypoint_script() -> None:
     """Keep artifact workflows routed through one script instead of side entrypoints."""
     scripts = sorted(p.name for p in (ROOT / "scripts").glob("*.py"))
     assert scripts == ["update_sdk_artifacts.py"]
+
+
+def test_rust_release_publishes_glibc_linux_package_artifacts() -> None:
+    """Desktop Linux packaging needs glibc artifacts, not only standalone MUSL ones."""
+    workflow = (ROOT.parents[1] / ".github" / "workflows" / "rust-release.yml").read_text()
+    targets = {
+        "x86_64-unknown-linux-gnu": {
+            "primary": "x86_64-unknown-linux-gnu",
+            "app-server": "x86_64-unknown-linux-gnu-app-server",
+        },
+        "aarch64-unknown-linux-gnu": {
+            "primary": "aarch64-unknown-linux-gnu",
+            "app-server": "aarch64-unknown-linux-gnu-app-server",
+        },
+    }
+
+    for target, bundles in targets.items():
+        for bundle, artifact_name in bundles.items():
+            assert re.search(
+                rf"target: {target}\n"
+                rf"\s+bundle: {bundle}\n"
+                rf"\s+artifact_name: {artifact_name}\n",
+                workflow,
+            ), f"missing rust-release package row for {target} {bundle}"
+
+    assert (
+        "matrix.bundle == 'primary' && runner.os != 'macOS' && contains(matrix.target, 'musl')"
+        in workflow
+    )
 
 
 def test_root_fmt_recipes_use_shared_formatter_driver() -> None:
