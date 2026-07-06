@@ -21,6 +21,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::warn;
 
+const MULTI_FACTOR_AUTHENTICATION_REQUIRED: &str = "Multi-factor authentication required";
 const REMOTE_CONTROL_ENROLL_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_CONTROL_SERVER_TOKEN_REFRESH_BACKOFF_MIN_SECS: u64 = 24;
 const REMOTE_CONTROL_SERVER_TOKEN_REFRESH_BACKOFF_MAX_SECS: u64 = 36;
@@ -258,8 +259,13 @@ where
     if !status.is_success() {
         let headers_str = format_headers(&headers);
         return Err(RemoteControlServerRequestError::io_error(
-            format!(
-                "remote control {response_kind} failed at `{url}`: HTTP {status}, {headers_str}, body: {body_preview}"
+            response_error_message(
+                response_kind,
+                url,
+                status,
+                &headers_str,
+                &body,
+                &body_preview,
             ),
             Some(status),
             retry_at,
@@ -273,6 +279,36 @@ where
             "failed to parse remote control {response_kind} response from `{url}`: HTTP {status}, {headers_str}, body: {body_preview}, decode error: {err}"
         ))
     })
+}
+
+fn response_error_message(
+    response_kind: &str,
+    url: &str,
+    status: StatusCode,
+    headers_str: &str,
+    body: &[u8],
+    body_preview: &str,
+) -> String {
+    let mut message = format!(
+        "remote control {response_kind} failed at `{url}`: HTTP {status}, {headers_str}, body: {body_preview}"
+    );
+    if is_mfa_required_response(status, body) {
+        message.push_str(
+            ". Multi-factor authentication is required to enable Codex remote control; enable MFA for your ChatGPT account, sign in to Codex again, then retry mobile setup.",
+        );
+    }
+    message
+}
+
+fn is_mfa_required_response(status: StatusCode, body: &[u8]) -> bool {
+    if status != StatusCode::FORBIDDEN {
+        return false;
+    }
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    body.get("detail").and_then(serde_json::Value::as_str)
+        == Some(MULTI_FACTOR_AUTHENTICATION_REQUIRED)
 }
 
 fn update_remote_control_server_token(

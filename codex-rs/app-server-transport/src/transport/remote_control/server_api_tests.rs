@@ -71,6 +71,51 @@ async fn timed_out_request(partial_response: Option<&'static [u8]>) -> io::Error
     err
 }
 
+async fn remote_control_response_error(
+    status: StatusCode,
+    body: serde_json::Value,
+) -> (String, io::Error) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let url = format!(
+        "http://{}/backend-api/wham/remote/control/server/enroll",
+        listener
+            .local_addr()
+            .expect("listener should have a local address")
+    );
+    let (reason, body) = (
+        status.canonical_reason().unwrap_or("Unknown Status"),
+        body.to_string(),
+    );
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("request should connect");
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("response should write");
+        stream.flush().await.expect("response should flush");
+    });
+
+    let err = send_remote_control_server_request::<_, serde_json::Value>(
+        &url,
+        &auth(),
+        "installation-id",
+        &json!({"name": "test-server"}),
+        "enroll",
+        "server enrollment",
+        TEST_REQUEST_TIMEOUT,
+    )
+    .await
+    .expect_err("error response should fail");
+    server_task.await.expect("server task should finish");
+    (url, err)
+}
+
 fn enrollment(now: OffsetDateTime) -> RemoteControlEnrollment {
     RemoteControlEnrollment {
         remote_control_target: normalize_remote_control_url("http://localhost/backend-api/")
@@ -83,6 +128,23 @@ fn enrollment(now: OffsetDateTime) -> RemoteControlEnrollment {
         expires_at: Some(now + time::Duration::seconds(300)),
         next_refresh_at: None,
     }
+}
+
+#[tokio::test]
+async fn mfa_required_enrollment_failure_includes_remediation() {
+    let (url, err) = remote_control_response_error(
+        StatusCode::FORBIDDEN,
+        json!({"detail": "Multi-factor authentication required"}),
+    )
+    .await;
+
+    assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "remote control server enrollment failed at `{url}`: HTTP 403 Forbidden, request-id: <none>, cf-ray: <none>, body: {{\"detail\":\"Multi-factor authentication required\"}}. Multi-factor authentication is required to enable Codex remote control; enable MFA for your ChatGPT account, sign in to Codex again, then retry mobile setup."
+        )
+    );
 }
 
 #[test]
