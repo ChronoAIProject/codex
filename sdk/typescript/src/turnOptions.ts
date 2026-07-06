@@ -3,4 +3,6 @@ export type TurnOptions = {
   outputSchema?: unknown;
   /** AbortSignal to cancel the turn. */
   signal?: AbortSignal;
+  /** Additional directories to make available to Codex for this turn. */
+  additionalDirectories?: string[];
 };

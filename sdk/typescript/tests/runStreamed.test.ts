@@ -2,6 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 
 import { ThreadEvent } from "../src/index";
 
+import { codexExecSpy } from "./codexExecSpy";
 import {
   assistantMessage,
   responseCompleted,
@@ -57,6 +58,54 @@ describe("Codex", () => {
       expect(thread.id).toEqual(expect.any(String));
     } finally {
       cleanup();
+      await close();
+    }
+  });
+
+  it("passes per-turn additional directories when streaming", async () => {
+    const { url, close } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("Additional directories applied", "item_1"),
+          responseCompleted("response_1"),
+        ),
+      ],
+    });
+
+    const { args: spawnArgs, restore } = codexExecSpy();
+    const { client, cleanup } = createMockClient(url);
+
+    try {
+      const thread = client.startThread({
+        additionalDirectories: ["/workspace/frontend"],
+      });
+      const streamed = await thread.runStreamed("test additional dirs", {
+        additionalDirectories: ["/workspace/backend", "/workspace/shared"],
+      });
+      await drainEvents(streamed.events);
+
+      const commandArgs = spawnArgs[0];
+      expect(commandArgs).toBeDefined();
+      if (!commandArgs) {
+        throw new Error("Command args missing");
+      }
+
+      const addDirArgs: string[] = [];
+      for (let i = 0; i < commandArgs.length; i += 1) {
+        if (commandArgs[i] === "--add-dir") {
+          addDirArgs.push(commandArgs[i + 1] ?? "");
+        }
+      }
+      expect(addDirArgs).toEqual([
+        "/workspace/frontend",
+        "/workspace/backend",
+        "/workspace/shared",
+      ]);
+    } finally {
+      cleanup();
+      restore();
       await close();
     }
   });

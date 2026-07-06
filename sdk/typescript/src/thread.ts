@@ -91,7 +91,10 @@ export class Thread {
       webSearchMode: options?.webSearchMode,
       webSearchEnabled: options?.webSearchEnabled,
       approvalPolicy: options?.approvalPolicy,
-      additionalDirectories: options?.additionalDirectories,
+      additionalDirectories: [
+        ...(options?.additionalDirectories ?? []),
+        ...(turnOptions.additionalDirectories ?? []),
+      ],
     });
     try {
       for await (const item of generator) {
