@@ -1567,6 +1567,82 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
     cancel_token.cancel();
 }
 
+#[tokio::test]
+async fn optional_servers_do_not_start_during_manager_init() {
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let (tx_event, rx_event) = async_channel::unbounded();
+    let codex_home = tempdir().expect("tempdir");
+    let mcp_servers = HashMap::from([(
+        "optional".to_string(),
+        EffectiveMcpServer::configured(McpServerConfig {
+            auth: Default::default(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+    )]);
+
+    let cancel_token = CancellationToken::new();
+    let manager = McpConnectionManager::new(
+        &mcp_servers,
+        OAuthCredentialsStoreMode::default(),
+        AuthKeyringBackendKind::default(),
+        HashMap::new(),
+        &approval_policy,
+        String::new(),
+        tx_event,
+        cancel_token.clone(),
+        PermissionProfile::default(),
+        McpRuntimeContext::new(
+            Arc::new(EnvironmentManager::without_environments()),
+            PathBuf::from("/tmp"),
+        ),
+        codex_home.path().to_path_buf(),
+        CodexAppsToolsCache::default(),
+        CodexAppsToolsCacheKey {
+            account_id: None,
+            chatgpt_user_id: None,
+            is_workspace_account: false,
+        },
+        /*prefix_mcp_tool_names*/ true,
+        ElicitationCapability::default(),
+        /*supports_openai_form_elicitation*/ false,
+        ToolPluginProvenance::default(),
+        /*auth*/ None,
+        /*elicitation_reviewer*/ None,
+        ElicitationRequestRouter::default(),
+    )
+    .await;
+
+    let optional_client = manager.clients.get("optional").expect("optional client");
+    assert!(!optional_client.startup_complete.load(Ordering::Acquire));
+    while let Ok(event) = rx_event.try_recv() {
+        assert!(
+            !matches!(event.msg, EventMsg::McpStartupUpdate(_)),
+            "optional server should not emit startup updates during manager init"
+        );
+    }
+    cancel_token.cancel();
+}
+
 #[test]
 fn elicitation_capability_uses_2025_06_18_shape_for_form_only_support() {
     let capability = Some(ElicitationCapability::default());
