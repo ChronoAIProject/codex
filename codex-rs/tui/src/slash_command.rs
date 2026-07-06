@@ -33,6 +33,7 @@ pub enum SlashCommand {
     New,
     Archive,
     Delete,
+    #[strum(to_string = "resume", serialize = "session")]
     Resume,
     Fork,
     App,
@@ -283,6 +284,12 @@ mod tests {
     fn pet_alias_parses_to_pets_command() {
         assert_eq!(SlashCommand::Pets.command(), "pets");
         assert_eq!(SlashCommand::from_str("pet"), Ok(SlashCommand::Pets));
+    }
+
+    #[test]
+    fn session_alias_parses_to_resume_command() {
+        assert_eq!(SlashCommand::Resume.command(), "resume");
+        assert_eq!(SlashCommand::from_str("session"), Ok(SlashCommand::Resume));
     }
 
     #[test]
