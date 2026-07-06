@@ -609,6 +609,7 @@ client_request_definitions! {
     },
     ThreadRollback => "thread/rollback" {
         params: v2::ThreadRollbackParams,
+        inspect_params: true,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRollbackResponse,
     },
@@ -3534,6 +3535,20 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("thread/realtime/start"));
+    }
+
+    #[test]
+    fn thread_rollback_is_marked_experimental() {
+        let request = ClientRequest::ThreadRollback {
+            request_id: RequestId::Integer(1),
+            params: v2::ThreadRollbackParams {
+                thread_id: "thr_123".to_string(),
+                num_turns: 1,
+            },
+        };
+
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
+        assert_eq!(reason, Some("thread/rollback"));
     }
 
     #[test]

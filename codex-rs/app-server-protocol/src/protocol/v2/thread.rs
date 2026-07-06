@@ -1052,6 +1052,13 @@ pub struct ThreadRollbackParams {
     pub num_turns: u32,
 }
 
+impl crate::experimental_api::ExperimentalApi for ThreadRollbackParams {
+    fn experimental_reason(&self) -> Option<&'static str> {
+        let _ = self;
+        Some("thread/rollback")
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
