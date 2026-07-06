@@ -84,15 +84,32 @@ impl fmt::Display for RouteFailureClass {
     }
 }
 
-/// Marker enabling fixed system/PAC/WPAD, environment, then direct routing.
+/// Marker enabling outbound proxy handling for a route.
+///
 /// Resolved endpoints and platform details remain internal to the client builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutboundProxyConfig;
+pub struct OutboundProxyConfig {
+    mode: OutboundProxyMode,
+}
 
 impl OutboundProxyConfig {
     pub const fn respect_system_proxy() -> Self {
-        Self
+        Self {
+            mode: OutboundProxyMode::SystemThenEnv,
+        }
     }
+
+    pub const fn respect_env_proxy() -> Self {
+        Self {
+            mode: OutboundProxyMode::EnvOnly,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundProxyMode {
+    SystemThenEnv,
+    EnvOnly,
 }
 
 /// Error while building a resolver-aware reqwest client.
@@ -154,12 +171,18 @@ fn configure_proxy_for_route(
         return configure_env_proxy_handling(env, builder, /*origin*/ None, route_class);
     };
 
-    match resolve_system_proxy(request_url, origin) {
-        SystemProxyDecision::Direct => Ok(builder.no_proxy()),
-        SystemProxyDecision::Proxy { url } => {
-            configure_concrete_proxy(builder, route_class, &url, /*no_proxy*/ None)
-        }
-        SystemProxyDecision::Unavailable { .. } => {
+    let config = config.expect("config is checked above");
+    match config.mode {
+        OutboundProxyMode::SystemThenEnv => match resolve_system_proxy(request_url, origin) {
+            SystemProxyDecision::Direct => Ok(builder.no_proxy()),
+            SystemProxyDecision::Proxy { url } => {
+                configure_concrete_proxy(builder, route_class, &url, /*no_proxy*/ None)
+            }
+            SystemProxyDecision::Unavailable { .. } => {
+                configure_env_proxy_handling(env, builder, Some(origin), route_class)
+            }
+        },
+        OutboundProxyMode::EnvOnly => {
             configure_env_proxy_handling(env, builder, Some(origin), route_class)
         }
     }
@@ -187,6 +210,13 @@ fn configure_env_proxy_handling(
     route_class: ClientRouteClass,
 ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
     if let Some(origin) = origin {
+        let no_proxy = proxy_env_value(env, "NO_PROXY");
+        if no_proxy
+            .as_deref()
+            .is_some_and(|no_proxy| no_proxy_matches_origin(no_proxy, origin))
+        {
+            return Ok(builder.no_proxy());
+        }
         let proxy_url = match origin.scheme.as_str() {
             "https" => {
                 proxy_env_value(env, "HTTPS_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
@@ -197,8 +227,7 @@ fn configure_env_proxy_handling(
             _ => proxy_env_value(env, "ALL_PROXY"),
         };
         if let Some(proxy_url) = proxy_url {
-            let no_proxy = proxy_env_value(env, "NO_PROXY")
-                .and_then(|value| reqwest::NoProxy::from_string(&value));
+            let no_proxy = no_proxy.and_then(|value| reqwest::NoProxy::from_string(&value));
             return configure_concrete_proxy(builder, route_class, &proxy_url, no_proxy);
         }
     }
@@ -346,7 +375,6 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     request_url.to_string()
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
     no_proxy
         .split(',')
@@ -355,7 +383,6 @@ fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
         .any(|entry| no_proxy_entry_matches_origin(entry, origin))
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     if entry == "*" {
         return true;
@@ -396,7 +423,6 @@ fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     origin.host == entry
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     let mut remaining = host;
     let mut first = true;

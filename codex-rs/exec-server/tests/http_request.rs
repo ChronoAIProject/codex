@@ -19,6 +19,7 @@ use codex_exec_server_protocol::JSONRPCResponse;
 use codex_exec_server_protocol::RequestId;
 use common::exec_server::ExecServerHarness;
 use common::exec_server::exec_server;
+use common::exec_server::exec_server_with_env;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -159,6 +160,52 @@ async fn exec_server_http_request_can_stop_at_redirects() -> anyhow::Result<()> 
             .await
             .is_err(),
         "redirect target should not be requested"
+    );
+
+    server.shutdown().await?;
+    Ok(())
+}
+
+/// What this tests: `NO_PROXY` is evaluated against the concrete request URL
+/// before the exec-server builds its reqwest client, so a bypassed destination
+/// does not fail because a general proxy env var is malformed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_server_http_request_honors_no_proxy_for_request_url() -> anyhow::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/mcp?case=no-proxy", listener.local_addr()?);
+    let mut server = exec_server_with_env([
+        ("HTTP_PROXY", "://invalid-proxy-url"),
+        ("http_proxy", "://invalid-proxy-url"),
+        ("NO_PROXY", "127.0.0.1"),
+        ("no_proxy", "127.0.0.1"),
+    ])
+    .await?;
+    initialize_exec_server(&mut server).await?;
+
+    let http_request_id = server
+        .send_request(
+            "http/request",
+            serde_json::to_value(HttpRequestParams {
+                method: "GET".to_string(),
+                url,
+                headers: Vec::new(),
+                body: None,
+                timeout_ms: Some(5_000),
+                redirect_policy: HttpRedirectPolicy::Follow,
+                request_id: "no-proxy-request".to_string(),
+                stream_response: false,
+            })?,
+        )
+        .await?;
+
+    let captured = accept_http_request(&listener).await?;
+    assert_eq!(captured.request_line, "GET /mcp?case=no-proxy HTTP/1.1");
+    respond_with_status_and_headers(captured.stream, "200 OK", &[], b"direct").await?;
+
+    let response: HttpRequestResponse = wait_for_response(&mut server, http_request_id).await?;
+    assert_eq!(
+        (response.status, response.body.into_inner()),
+        (200, b"direct".to_vec())
     );
 
     server.shutdown().await?;

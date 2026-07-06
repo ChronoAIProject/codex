@@ -8,7 +8,9 @@
 use std::error::Error as StdError;
 use std::time::Duration;
 
-use codex_client::build_reqwest_client_with_custom_ca;
+use codex_client::ClientRouteClass;
+use codex_client::OutboundProxyConfig;
+use codex_client::build_reqwest_client_for_route;
 use codex_client::with_chatgpt_cloudflare_cookie_store;
 use codex_exec_server_protocol::JSONRPCErrorError;
 use futures::FutureExt;
@@ -49,13 +51,15 @@ pub(crate) struct PendingReqwestHttpBodyStream {
 /// Validates `http/request` parameters and runs the actual `reqwest` call used
 /// by the exec-server route and the local [`HttpClient`] backend.
 pub(crate) struct ReqwestHttpRequestRunner {
-    client: reqwest::Client,
+    timeout_ms: Option<u64>,
+    redirect_policy: HttpRedirectPolicy,
 }
 
 impl ReqwestHttpClient {
     fn build_client(
         timeout_ms: Option<u64>,
         redirect_policy: HttpRedirectPolicy,
+        request_url: &str,
     ) -> Result<reqwest::Client, ExecServerError> {
         let builder = match timeout_ms {
             None => reqwest::Client::builder(),
@@ -67,8 +71,14 @@ impl ReqwestHttpClient {
             HttpRedirectPolicy::Follow => builder,
             HttpRedirectPolicy::Stop => builder.redirect(reqwest::redirect::Policy::none()),
         };
-        build_reqwest_client_with_custom_ca(with_chatgpt_cloudflare_cookie_store(builder))
-            .map_err(|error| ExecServerError::HttpRequest(error.to_string()))
+        let route_config = OutboundProxyConfig::respect_env_proxy();
+        build_reqwest_client_for_route(
+            with_chatgpt_cloudflare_cookie_store(builder),
+            request_url,
+            ClientRouteClass::Other,
+            Some(&route_config),
+        )
+        .map_err(|error| ExecServerError::HttpRequest(error.to_string()))
     }
 }
 
@@ -125,9 +135,10 @@ impl ReqwestHttpRequestRunner {
         timeout_ms: Option<u64>,
         redirect_policy: HttpRedirectPolicy,
     ) -> Result<Self, JSONRPCErrorError> {
-        let client = ReqwestHttpClient::build_client(timeout_ms, redirect_policy)
-            .map_err(|error| internal_error(error.to_string()))?;
-        Ok(Self { client })
+        Ok(Self {
+            timeout_ms,
+            redirect_policy,
+        })
     }
 
     pub(crate) async fn run(
@@ -147,6 +158,9 @@ impl ReqwestHttpRequestRunner {
                 )));
             }
         }
+        let client =
+            ReqwestHttpClient::build_client(self.timeout_ms, self.redirect_policy, url.as_str())
+                .map_err(|error| internal_error(error.to_string()))?;
 
         let request_span = tracing::info_span!(
             "codex.exec_server.http_request",
@@ -159,7 +173,7 @@ impl ReqwestHttpRequestRunner {
         );
         let mut headers = Self::build_headers(params.headers)?;
         codex_otel::inject_span_w3c_trace_headers(&request_span, &mut headers);
-        let mut request = self.client.request(method.clone(), url).headers(headers);
+        let mut request = client.request(method.clone(), url).headers(headers);
         if let Some(body) = params.body {
             request = request.body(body.into_inner());
         }
