@@ -86,3 +86,26 @@ fn memories_config_clamps_rate_limit_remaining_threshold() {
         }
     );
 }
+
+#[test]
+fn deserialize_tui_status_line_accepts_structured_items() {
+    let cfg: Tui = toml::from_str(
+        r#"
+            status_line = [
+                "model-with-reasoning",
+                { type = "command", command = ["statusline"], timeout_ms = 200 },
+                "current-dir",
+            ]
+        "#,
+    )
+    .expect("structured status line item should deserialize");
+
+    assert_eq!(
+        cfg.status_line,
+        Some(vec![
+            "model-with-reasoning".to_string(),
+            "command".to_string(),
+            "current-dir".to_string(),
+        ])
+    );
+}

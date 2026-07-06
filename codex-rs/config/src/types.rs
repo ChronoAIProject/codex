@@ -28,6 +28,7 @@ use std::fmt;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 
 pub use crate::tui_keymap::KeybindingSpec;
@@ -718,7 +719,7 @@ pub struct Tui {
     ///
     /// When set, the TUI renders the selected items as the status line.
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_status_line_items")]
     pub status_line: Option<Vec<String>>,
 
     /// Color status line items with colors derived from the active syntax theme.
@@ -779,6 +780,30 @@ pub struct Tui {
 
 const fn default_true() -> bool {
     true
+}
+
+fn deserialize_status_line_items<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StatusLineItem {
+        Id(String),
+        Structured { r#type: String },
+    }
+
+    Option::<Vec<StatusLineItem>>::deserialize(deserializer).map(|items| {
+        items.map(|items| {
+            items
+                .into_iter()
+                .map(|item| match item {
+                    StatusLineItem::Id(id) => id,
+                    StatusLineItem::Structured { r#type } => r#type,
+                })
+                .collect()
+        })
+    })
 }
 
 /// Settings for notices we display to users via the tui and app-server clients
