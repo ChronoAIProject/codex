@@ -40,6 +40,10 @@ pub struct ConfigProfile {
     pub model_catalog_json: Option<AbsolutePathBuf>,
     pub personality: Option<Personality>,
     pub chatgpt_base_url: Option<String>,
+    pub http_proxy: Option<String>,
+    pub https_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub all_proxy: Option<String>,
     /// Optional path to a file containing model instructions.
     pub model_instructions_file: Option<AbsolutePathBuf>,
     /// Deprecated: ignored.

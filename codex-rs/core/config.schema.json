@@ -379,6 +379,9 @@
       "additionalProperties": false,
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
       "properties": {
+        "all_proxy": {
+          "type": "string"
+        },
         "analytics": {
           "$ref": "#/definitions/AnalyticsConfigToml"
         },
@@ -721,6 +724,12 @@
           },
           "type": "object"
         },
+        "http_proxy": {
+          "type": "string"
+        },
+        "https_proxy": {
+          "type": "string"
+        },
         "include_apps_instructions": {
           "type": "boolean"
         },
@@ -764,6 +773,9 @@
         },
         "model_verbosity": {
           "$ref": "#/definitions/Verbosity"
+        },
+        "no_proxy": {
+          "type": "string"
         },
         "oss_provider": {
           "type": "string"
@@ -4607,6 +4619,9 @@
       ],
       "description": "Agent-related settings (thread limits, etc.)."
     },
+    "all_proxy": {
+      "type": "string"
+    },
     "allow_login_shell": {
       "default": true,
       "description": "Whether the model may request a login shell for shell-based tools. Default to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
@@ -5155,6 +5170,13 @@
       ],
       "description": "Lifecycle hooks configured inline in TOML plus user-level overrides."
     },
+    "http_proxy": {
+      "description": "Standard outbound proxy environment overrides.",
+      "type": "string"
+    },
+    "https_proxy": {
+      "type": "string"
+    },
     "include_apps_instructions": {
       "description": "Whether to inject the `<apps_instructions>` developer block.",
       "type": "boolean"
@@ -5293,6 +5315,9 @@
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
+    },
+    "no_proxy": {
+      "type": "string"
     },
     "notice": {
       "allOf": [

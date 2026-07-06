@@ -372,6 +372,12 @@ pub struct ConfigToml {
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
 
+    /// Standard outbound proxy environment overrides.
+    pub http_proxy: Option<String>,
+    pub https_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub all_proxy: Option<String>,
+
     /// Optional product SKU forwarded on host-owned Codex Apps MCP requests.
     pub apps_mcp_product_sku: Option<String>,
 
@@ -1017,5 +1023,54 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
+    }
+
+    #[test]
+    fn proxy_settings_deserialize_from_config_and_profiles() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+http_proxy = "http://127.0.0.1:8080"
+https_proxy = "http://127.0.0.1:8443"
+no_proxy = "localhost,127.0.0.1"
+all_proxy = "socks5://127.0.0.1:1080"
+
+[profiles.corp]
+http_proxy = "http://proxy.corp:8080"
+https_proxy = "http://secure-proxy.corp:8443"
+no_proxy = "internal.corp"
+all_proxy = "socks5://proxy.corp:1080"
+"#,
+        )
+        .expect("proxy settings should deserialize");
+
+        assert_eq!(
+            (
+                config.http_proxy.as_deref(),
+                config.https_proxy.as_deref(),
+                config.no_proxy.as_deref(),
+                config.all_proxy.as_deref(),
+            ),
+            (
+                Some("http://127.0.0.1:8080"),
+                Some("http://127.0.0.1:8443"),
+                Some("localhost,127.0.0.1"),
+                Some("socks5://127.0.0.1:1080"),
+            )
+        );
+        let profile = config.profiles.get("corp").expect("corp profile");
+        assert_eq!(
+            (
+                profile.http_proxy.as_deref(),
+                profile.https_proxy.as_deref(),
+                profile.no_proxy.as_deref(),
+                profile.all_proxy.as_deref(),
+            ),
+            (
+                Some("http://proxy.corp:8080"),
+                Some("http://secure-proxy.corp:8443"),
+                Some("internal.corp"),
+                Some("socks5://proxy.corp:1080"),
+            )
+        );
     }
 }
