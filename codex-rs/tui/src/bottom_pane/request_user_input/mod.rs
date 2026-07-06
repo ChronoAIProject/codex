@@ -63,8 +63,9 @@ const UNANSWERED_CONFIRM_GO_BACK_DESC: &str = "Return to the first unanswered qu
 const UNANSWERED_CONFIRM_SUBMIT: &str = "Proceed";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_SINGULAR: &str = "question";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_PLURAL: &str = "questions";
-const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(/*secs*/ 60);
 const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_secs(/*secs*/ 60);
+#[cfg(test)]
+const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(/*secs*/ 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
@@ -278,23 +279,30 @@ impl RequestUserInputOverlay {
         }
     }
 
+    fn auto_resolution_timeout(&self) -> Option<Duration> {
+        self.request.auto_resolution_ms.map(Duration::from_millis)
+    }
+
     fn auto_resolution_timing_at(&self, now: Instant) -> AutoResolutionTiming {
-        // The TUI currently treats autoResolutionMs as an enable signal. The
-        // model-provided duration value is reserved for future runtime policy.
-        if self.request.auto_resolution_ms.is_none() || self.auto_resolution_snoozed {
+        let Some(timeout) = self.auto_resolution_timeout() else {
+            return AutoResolutionTiming::Disabled;
+        };
+        if self.auto_resolution_snoozed {
             return AutoResolutionTiming::Disabled;
         }
 
         let elapsed = now.saturating_duration_since(self.request_started_at);
-        if elapsed < AUTO_RESOLUTION_HIDDEN_GRACE {
+        let visible_countdown = timeout.min(AUTO_RESOLUTION_VISIBLE_COUNTDOWN);
+        let hidden_grace = timeout.saturating_sub(visible_countdown);
+        if elapsed < hidden_grace {
             return AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE.saturating_sub(elapsed),
+                remaining: hidden_grace.saturating_sub(elapsed),
             };
         }
-        let visible_elapsed = elapsed.saturating_sub(AUTO_RESOLUTION_HIDDEN_GRACE);
-        if visible_elapsed < AUTO_RESOLUTION_VISIBLE_COUNTDOWN {
+        let visible_elapsed = elapsed.saturating_sub(hidden_grace);
+        if visible_elapsed < visible_countdown {
             return AutoResolutionTiming::VisibleCountdown {
-                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN.saturating_sub(visible_elapsed),
+                remaining: visible_countdown.saturating_sub(visible_elapsed),
             };
         }
         AutoResolutionTiming::Due
@@ -1702,8 +1710,16 @@ mod tests {
         turn_id: &str,
         questions: Vec<ToolRequestUserInputQuestion>,
     ) -> ToolRequestUserInputParams {
+        request_event_with_auto_resolution_ms(turn_id, questions, 120_000)
+    }
+
+    fn request_event_with_auto_resolution_ms(
+        turn_id: &str,
+        questions: Vec<ToolRequestUserInputQuestion>,
+        auto_resolution_ms: u64,
+    ) -> ToolRequestUserInputParams {
         let mut request = request_event(turn_id, questions);
-        request.auto_resolution_ms = Some(60_000);
+        request.auto_resolution_ms = Some(auto_resolution_ms);
         request
     }
 
@@ -1935,6 +1951,39 @@ mod tests {
             matches!(event, AppEvent::InsertHistoryCell(_)),
             "expected history cell event"
         );
+    }
+
+    #[test]
+    fn auto_resolution_uses_requested_timeout() {
+        let (tx, mut rx) = test_sender();
+        let mut overlay = RequestUserInputOverlay::new(
+            request_event_with_auto_resolution_ms(
+                "turn-1",
+                vec![question_with_options("q1", "First")],
+                240_000,
+            ),
+            tx,
+            /*has_input_focus*/ true,
+            /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
+        let now = Instant::now();
+        overlay.request_started_at = now;
+
+        assert_eq!(
+            overlay.auto_resolution_timing_at(now + Duration::from_secs(/*secs*/ 120)),
+            AutoResolutionTiming::HiddenGrace {
+                remaining: Duration::from_secs(/*secs*/ 60),
+            }
+        );
+        assert!(!overlay.pre_draw_tick(now + Duration::from_secs(/*secs*/ 120)));
+        assert_eq!(
+            overlay.auto_resolution_timing_at(now + Duration::from_secs(/*secs*/ 180)),
+            AutoResolutionTiming::VisibleCountdown {
+                remaining: Duration::from_secs(/*secs*/ 60),
+            }
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
