@@ -600,11 +600,20 @@ impl Client {
 
         let used_percent = f64::from(snapshot.used_percent);
         let window_minutes = Self::window_minutes_from_seconds(snapshot.limit_window_seconds);
-        let resets_at = Some(i64::from(snapshot.reset_at));
+        let resets_at = if snapshot.reset_after_seconds > 0 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                .and_then(|now| now.checked_add(i64::from(snapshot.reset_after_seconds)))
+                .unwrap_or_else(|| i64::from(snapshot.reset_at))
+        } else {
+            i64::from(snapshot.reset_at)
+        };
         Some(RateLimitWindow {
             used_percent,
             window_minutes,
-            resets_at,
+            resets_at: Some(resets_at),
         })
     }
 
@@ -815,6 +824,34 @@ mod tests {
         assert_eq!(snapshots[0].primary, None);
         assert_eq!(snapshots[1].limit_id.as_deref(), Some("codex_other"));
         assert_eq!(snapshots[1].limit_name.as_deref(), Some("codex_other"));
+    }
+
+    #[test]
+    fn rate_limit_window_prefers_reset_after_seconds_over_reset_at() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let window = Client::map_rate_limit_window(Some(Some(Box::new(
+            crate::types::RateLimitWindowSnapshot {
+                used_percent: 25,
+                limit_window_seconds: 604_800,
+                reset_after_seconds: 600,
+                reset_at: 1,
+            },
+        ))))
+        .unwrap();
+
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let resets_at = window.resets_at.unwrap();
+        assert!(resets_at >= before + 600);
+        assert!(resets_at <= after + 600);
+        assert_ne!(resets_at, 1);
     }
 
     #[test]
