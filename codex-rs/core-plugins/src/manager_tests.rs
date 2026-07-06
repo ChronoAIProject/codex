@@ -5781,7 +5781,7 @@ fn refresh_non_curated_plugin_cache_continues_after_plugin_error() {
 }
 
 #[tokio::test]
-async fn load_plugins_ignores_project_config_files() {
+async fn load_plugins_uses_project_config_files() {
     let codex_home = TempDir::new().unwrap();
     let project_root = codex_home.path().join("project");
     let plugin_root = codex_home
@@ -5823,7 +5823,9 @@ async fn load_plugins_ignores_project_config_files() {
     )
     .await;
 
-    assert_eq!(plugins, Vec::new());
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0].config_name, "sample@test");
+    assert!(plugins[0].is_active());
 }
 
 #[tokio::test]

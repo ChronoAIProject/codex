@@ -206,7 +206,7 @@ pub(crate) fn project_effective_user_config(
     config_layer_stack: &ConfigLayerStack,
     codex_home: &Path,
 ) -> Option<toml::Value> {
-    let mut user_config = config_layer_stack.effective_user_config()?;
+    let mut user_config = config_layer_stack.effective_config();
     let policy = MarketplacePolicy::from_requirements(config_layer_stack.requirements());
     if !policy.is_restricted() {
         return Some(user_config);

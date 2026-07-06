@@ -17,6 +17,16 @@ fn config_layer_stack_with_user_config(
     requirements_toml: &str,
     user_config: Option<(&str, AbsolutePathBuf)>,
 ) -> ConfigLayerStack {
+    let layers = user_config
+        .map(|(contents, file)| vec![(contents, user_config_layer(file))])
+        .unwrap_or_default();
+    config_layer_stack_with_layers(requirements_toml, layers)
+}
+
+fn config_layer_stack_with_layers(
+    requirements_toml: &str,
+    layers: Vec<(&str, ConfigLayerSource)>,
+) -> ConfigLayerStack {
     let with_sources = compose_requirements([RequirementsLayerEntry::from_toml(
         RequirementSource::Unknown,
         requirements_toml,
@@ -26,19 +36,25 @@ fn config_layer_stack_with_user_config(
     let requirements_toml = with_sources.clone().into_toml();
     let requirements =
         codex_config::ConfigRequirements::try_from(with_sources).expect("normalize requirements");
-    let layers = user_config
-        .map(|(contents, file)| {
-            vec![ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file,
-                    profile: None,
-                },
-                toml::from_str(contents).expect("parse user config"),
-            )]
+    let layers = layers
+        .into_iter()
+        .map(|(contents, source)| {
+            ConfigLayerEntry::new(source, toml::from_str(contents).expect("parse config"))
         })
-        .unwrap_or_default();
+        .collect();
     ConfigLayerStack::new(layers, requirements, requirements_toml)
         .expect("build config layer stack")
+}
+
+fn user_config_layer(file: AbsolutePathBuf) -> ConfigLayerSource {
+    ConfigLayerSource::User {
+        file,
+        profile: None,
+    }
+}
+
+fn project_config_layer(dot_codex_folder: AbsolutePathBuf) -> ConfigLayerSource {
+    ConfigLayerSource::Project { dot_codex_folder }
 }
 
 fn parse_source(source: &str, ref_name: Option<&str>) -> MarketplaceSource {
@@ -438,6 +454,48 @@ enabled = true
     let raw = stack.effective_user_config().expect("raw user config");
     assert!(raw["marketplaces"]["blocked"].is_table());
     assert!(raw["plugins"]["sample@blocked"].is_table());
+}
+
+#[test]
+fn project_plugin_config_overrides_user_plugin_config() {
+    let codex_home = TempDir::new().expect("create Codex home");
+    let user_config_file = AbsolutePathBuf::try_from(codex_home.path().join("config.toml"))
+        .expect("absolute user config path");
+    let project_dot_codex = AbsolutePathBuf::try_from(codex_home.path().join("project/.codex"))
+        .expect("absolute project config path");
+    let stack = config_layer_stack_with_layers(
+        r#"
+[marketplaces]
+restrict_to_allowed_sources = false
+"#,
+        vec![
+            (
+                r#"
+[plugins."sample@test"]
+enabled = false
+"#,
+                user_config_layer(user_config_file),
+            ),
+            (
+                r#"
+[plugins."sample@test"]
+enabled = true
+"#,
+                project_config_layer(project_dot_codex),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        configured_plugins_from_stack(&stack, codex_home.path()),
+        HashMap::from([(
+            "sample@test".to_string(),
+            PluginConfig {
+                enabled: true,
+                mcp_servers: HashMap::new(),
+            },
+        )])
+    );
 }
 
 #[test]
