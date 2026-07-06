@@ -34,6 +34,7 @@ pub enum SlashCommand {
     Archive,
     Delete,
     Resume,
+    Cwd,
     Fork,
     App,
     Init,
@@ -89,6 +90,7 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Cwd => "change the current working directory: /cwd <path>",
             SlashCommand::Archive => "archive this session and exit",
             SlashCommand::Delete => "permanently delete this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
@@ -166,6 +168,7 @@ impl SlashCommand {
                 | SlashCommand::Side
                 | SlashCommand::Btw
                 | SlashCommand::Resume
+                | SlashCommand::Cwd
                 | SlashCommand::SandboxReadRoot
         )
     }
@@ -208,6 +211,7 @@ impl SlashCommand {
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
             | SlashCommand::Resume
+            | SlashCommand::Cwd
             | SlashCommand::Model
             | SlashCommand::Personality
             | SlashCommand::Permissions
@@ -283,6 +287,12 @@ mod tests {
     fn pet_alias_parses_to_pets_command() {
         assert_eq!(SlashCommand::Pets.command(), "pets");
         assert_eq!(SlashCommand::from_str("pet"), Ok(SlashCommand::Pets));
+    }
+
+    #[test]
+    fn cwd_command_parses_and_supports_inline_args() {
+        assert_eq!(SlashCommand::from_str("cwd"), Ok(SlashCommand::Cwd));
+        assert!(SlashCommand::Cwd.supports_inline_args());
     }
 
     #[test]

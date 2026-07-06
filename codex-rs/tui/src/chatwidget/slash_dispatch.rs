@@ -236,6 +236,9 @@ impl ChatWidget {
             SlashCommand::Resume => {
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
             }
+            SlashCommand::Cwd => {
+                self.add_error_message("Usage: /cwd <path>".to_string());
+            }
             SlashCommand::Fork => {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
@@ -875,6 +878,22 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::ResumeSessionByIdOrName(args));
             }
+            SlashCommand::Cwd if !trimmed.is_empty() => {
+                self.submit_op(AppCommand::override_turn_context(
+                    Some(PathBuf::from(args)),
+                    /*approval_policy*/ None,
+                    /*approvals_reviewer*/ None,
+                    /*permission_profile*/ None,
+                    /*active_permission_profile*/ None,
+                    /*windows_sandbox_level*/ None,
+                    /*model*/ None,
+                    /*effort*/ None,
+                    /*summary*/ None,
+                    /*service_tier*/ None,
+                    /*collaboration_mode*/ None,
+                    /*personality*/ None,
+                ));
+            }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot { path: args });
@@ -1065,6 +1084,7 @@ impl ChatWidget {
             | SlashCommand::Delete
             | SlashCommand::Clear
             | SlashCommand::Resume
+            | SlashCommand::Cwd
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact

@@ -74,6 +74,7 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.collaboration_modes_enabled || *cmd != SlashCommand::Plan)
         .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
+        .filter(|(_, cmd)| *cmd != SlashCommand::Cwd)
         .filter(|(_, cmd)| flags.token_activity_command_enabled || *cmd != SlashCommand::Usage)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
         .filter(|(_, cmd)| flags.personality_command_enabled || *cmd != SlashCommand::Personality)
@@ -115,6 +116,9 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
         (!repeated_os.is_empty() && repeated_os.bytes().all(|byte| byte == b'o'))
             .then_some(SlashCommand::Goal)
     })?;
+    if cmd == SlashCommand::Cwd {
+        return Some(cmd);
+    }
     builtins_for_input(BuiltinCommandFlags {
         token_activity_command_enabled: true,
         side_conversation_active: false,
