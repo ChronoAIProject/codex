@@ -3540,6 +3540,11 @@ mod tests {
                 assert_eq!(n.turn.started_at, Some(42));
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
                 assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert!(n.should_notify());
+                assert_eq!(
+                    serde_json::to_value(&n)?["shouldNotify"],
+                    serde_json::Value::Bool(true)
+                );
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3590,6 +3595,7 @@ mod tests {
                 assert_eq!(n.turn.error, None);
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
                 assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert!(!n.should_notify());
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3647,6 +3653,7 @@ mod tests {
                 );
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
                 assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert!(n.should_notify());
             }
             other => bail!("unexpected message: {other:?}"),
         }

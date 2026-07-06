@@ -19,6 +19,7 @@ use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::ser::SerializeStruct;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -386,12 +387,31 @@ pub struct Usage {
     pub output_tokens: i32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct TurnCompletedNotification {
     pub thread_id: String,
     pub turn: Turn,
+}
+
+impl Serialize for TurnCompletedNotification {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("TurnCompletedNotification", 3)?;
+        state.serialize_field("threadId", &self.thread_id)?;
+        state.serialize_field("turn", &self.turn)?;
+        state.serialize_field("shouldNotify", &self.should_notify())?;
+        state.end()
+    }
+}
+
+impl TurnCompletedNotification {
+    pub fn should_notify(&self) -> bool {
+        matches!(self.turn.status, TurnStatus::Completed | TurnStatus::Failed)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
