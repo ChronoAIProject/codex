@@ -418,6 +418,12 @@ impl ChatWidget {
             SlashCommand::Mention => {
                 self.insert_str("@");
             }
+            SlashCommand::Voice => {
+                self.add_info_message(
+                    "Voice transcription is not available in the TUI yet.".to_string(),
+                    /*hint*/ None,
+                );
+            }
             SlashCommand::Skills => {
                 self.open_skills_menu();
             }
@@ -1058,6 +1064,7 @@ impl ChatWidget {
             | SlashCommand::Diff
             | SlashCommand::App
             | SlashCommand::Rename
+            | SlashCommand::Voice
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Feedback
             | SlashCommand::New

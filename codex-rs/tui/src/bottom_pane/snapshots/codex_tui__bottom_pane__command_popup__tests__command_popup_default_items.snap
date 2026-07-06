@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/command_popup.rs
+assertion_line: 430
 expression: commands
 ---
 /model - choose what model and reasoning effort to use
@@ -29,6 +30,7 @@ expression: commands
 /raw - toggle raw scrollback mode for copy-friendly terminal selection
 /diff - show git diff (including untracked files)
 /mention - mention a file
+/voice - start voice transcription
 /status - show current session configuration and token usage
 /title - configure which items appear in the terminal title
 /statusline - configure which items appear in the status line

@@ -47,6 +47,7 @@ pub enum SlashCommand {
     Raw,
     Diff,
     Mention,
+    Voice,
     Status,
     Usage,
     DebugConfig,
@@ -99,6 +100,7 @@ impl SlashCommand {
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
+            SlashCommand::Voice => "start voice transcription",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
@@ -215,6 +217,7 @@ impl SlashCommand {
             | SlashCommand::Raw
             | SlashCommand::Rename
             | SlashCommand::Mention
+            | SlashCommand::Voice
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
@@ -304,5 +307,12 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn voice_command_is_registered() {
+        assert_eq!(SlashCommand::Voice.command(), "voice");
+        assert_eq!(SlashCommand::from_str("voice"), Ok(SlashCommand::Voice));
+        assert!(SlashCommand::Voice.available_during_task());
     }
 }
