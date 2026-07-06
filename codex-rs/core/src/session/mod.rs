@@ -94,6 +94,7 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -906,6 +907,7 @@ fn get_service_tier(
     }
     configured_service_tier.filter(|service_tier| {
         service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+            || ServiceTier::from_request_value(service_tier).is_some()
             || model_info.supports_service_tier(service_tier)
     })
 }

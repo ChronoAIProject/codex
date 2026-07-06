@@ -317,29 +317,24 @@ async fn service_tier_change_is_applied_on_next_http_turn() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn flex_service_tier_is_applied_to_http_turn() -> Result<()> {
+async fn flex_service_tier_is_applied_to_http_turn_without_catalog_support() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let model_slug = "test-flex-model";
-    let mut flex_model = test_model_info(
+    let model_slug = "test-no-tier-model";
+    let model = test_model_info(
         model_slug,
         model_slug,
-        "supports flex tier",
+        "no service tiers",
         default_input_modalities(),
     );
-    flex_model.service_tiers = vec![ModelServiceTier {
-        id: ServiceTier::Flex.request_value().to_string(),
-        name: "flex".to_string(),
-        description: "Flexible processing.".to_string(),
-    }];
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
 
     let mut builder = test_codex()
         .with_model(model_slug)
         .with_config(move |config| {
             config.model_catalog = Some(ModelsResponse {
-                models: vec![flex_model],
+                models: vec![model],
             });
         });
     let test = builder.build(&server).await?;
