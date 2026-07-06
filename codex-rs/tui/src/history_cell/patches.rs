@@ -61,10 +61,29 @@ pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
-pub(crate) fn new_view_image_tool_call(path: LegacyAppPathString, cwd: &Path) -> PlainHistoryCell {
-    let display_path = path
+#[derive(Debug)]
+pub(crate) struct ImageHistoryCell {
+    lines: Vec<Line<'static>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) preview_path: Option<AbsolutePathBuf>,
+}
+
+impl HistoryCell for ImageHistoryCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.lines.clone()
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.lines.clone())
+    }
+}
+
+pub(crate) fn new_view_image_tool_call(path: LegacyAppPathString, cwd: &Path) -> ImageHistoryCell {
+    let preview_path = path
         .to_inferred_path_uri()
-        .and_then(|path| path.to_abs_path().ok())
+        .and_then(|path| path.to_abs_path().ok());
+    let display_path = preview_path
+        .as_ref()
         .map(|path| display_path_for(path.as_path(), cwd))
         .unwrap_or_else(|| path.into_string());
 
@@ -73,7 +92,10 @@ pub(crate) fn new_view_image_tool_call(path: LegacyAppPathString, cwd: &Path) ->
         vec!["  └ ".dim(), display_path.dim()].into(),
     ];
 
-    PlainHistoryCell { lines }
+    ImageHistoryCell {
+        lines,
+        preview_path,
+    }
 }
 
 pub(crate) fn new_image_generation_call(

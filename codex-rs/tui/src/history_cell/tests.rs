@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::Tool;
+use codex_utils_path_uri::LegacyAppPathString;
 use rmcp::model::Content;
 
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
@@ -489,6 +490,46 @@ fn image_generation_call_renders_saved_path() {
             expected_saved_path,
         ],
     );
+}
+
+#[test]
+fn view_image_history_cell_keeps_native_preview_path() {
+    let image_path = test_path_buf("/tmp/project/screenshot.png").abs();
+    let cell = new_view_image_tool_call(
+        LegacyAppPathString::from_abs_path(&image_path),
+        test_path_buf("/tmp/project").as_path(),
+    );
+
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)),
+        vec![
+            "• Viewed Image".to_string(),
+            "  └ screenshot.png".to_string(),
+        ],
+    );
+    assert_eq!(cell.preview_path.as_ref(), Some(&image_path));
+    assert_eq!(
+        render_lines(&cell.raw_lines()),
+        vec![
+            "• Viewed Image".to_string(),
+            "  └ screenshot.png".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn view_image_history_cell_omits_preview_path_for_unresolved_paths() {
+    let path = LegacyAppPathString::from_path(Path::new("relative-image.png"));
+    let cell = new_view_image_tool_call(path, test_path_buf("/tmp/project").as_path());
+
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)),
+        vec![
+            "• Viewed Image".to_string(),
+            "  └ relative-image.png".to_string(),
+        ],
+    );
+    assert_eq!(cell.preview_path, None);
 }
 
 fn session_configured_event(model: &str) -> ThreadSessionState {
