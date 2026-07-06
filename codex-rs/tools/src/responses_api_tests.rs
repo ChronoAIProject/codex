@@ -85,6 +85,76 @@ fn dynamic_tool_to_responses_api_tool_preserves_defer_loading() {
 }
 
 #[test]
+fn dynamic_tool_to_responses_api_tool_wraps_root_one_of_as_object() {
+    let tool = DynamicToolFunctionSpec {
+        name: "automation_update".to_string(),
+        description: "Create, update, view, or delete recurring automations.".to_string(),
+        input_schema: json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "const": "create" },
+                        "title": { "type": "string" }
+                    },
+                    "required": ["mode", "title"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "const": "delete" },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["mode", "id"],
+                    "additionalProperties": false
+                }
+            ]
+        }),
+        defer_loading: true,
+    };
+
+    let value = serde_json::to_value(
+        dynamic_tool_to_responses_api_tool(&tool).expect("convert dynamic tool"),
+    )
+    .expect("serialize tool");
+
+    assert_eq!(
+        value,
+        json!({
+            "name": "automation_update",
+            "description": "Create, update, view, or delete recurring automations.",
+            "strict": false,
+            "defer_loading": true,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "mode": { "type": "string", "enum": ["create"] },
+                            "title": { "type": "string" }
+                        },
+                        "required": ["mode", "title"],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "mode": { "type": "string", "enum": ["delete"] }
+                        },
+                        "required": ["mode", "id"],
+                        "additionalProperties": false
+                    }
+                ]
+            }
+        })
+    );
+}
+
+#[test]
 fn mcp_tool_to_deferred_responses_api_tool_sets_defer_loading() {
     let tool = rmcp::model::Tool::new(
         "lookup_order",

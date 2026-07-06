@@ -1,4 +1,6 @@
 use crate::JsonSchema;
+use crate::JsonSchemaPrimitiveType;
+use crate::JsonSchemaType;
 use crate::ToolDefinition;
 use crate::ToolName;
 use crate::parse_dynamic_tool;
@@ -125,14 +127,24 @@ pub fn mcp_tool_to_deferred_responses_api_tool(
 }
 
 pub fn tool_definition_to_responses_api_tool(tool_definition: ToolDefinition) -> ResponsesApiTool {
+    let mut parameters = tool_definition.input_schema;
+    normalize_responses_api_parameters(&mut parameters);
+
     ResponsesApiTool {
         name: tool_definition.name,
         description: tool_definition.description,
         strict: false,
         defer_loading: tool_definition.defer_loading.then_some(true),
-        parameters: tool_definition.input_schema,
+        parameters,
         output_schema: tool_definition.output_schema,
     }
+}
+
+fn normalize_responses_api_parameters(parameters: &mut JsonSchema) {
+    parameters.schema_type = Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object));
+    parameters
+        .properties
+        .get_or_insert_with(std::collections::BTreeMap::new);
 }
 
 #[cfg(test)]
