@@ -2845,12 +2845,10 @@ impl Session {
         } else {
             turn_context.environments.clone()
         };
-        if deferred_executor_enabled {
-            self.services
-                .agents_md_manager
-                .refresh(&turn_context.config, &environments)
-                .await;
-        }
+        self.services
+            .agents_md_manager
+            .refresh(&turn_context.config, &environments)
+            .await;
         let loaded_agents_md = self.services.agents_md_manager.get_loaded().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
