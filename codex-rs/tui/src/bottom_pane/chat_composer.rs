@@ -263,6 +263,10 @@ use ratatui::style::Color;
 /// placeholder in the UI.
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 
+fn should_create_large_paste_placeholder(pasted: &str) -> bool {
+    !pasted.contains('\n')
+}
+
 fn user_input_too_large_message(actual_chars: usize) -> String {
     format!(
         "Message exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters ({actual_chars} provided)."
@@ -872,7 +876,8 @@ impl ChatComposer {
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let char_count = pasted.chars().count();
-        if char_count > LARGE_PASTE_CHAR_THRESHOLD {
+        if char_count > LARGE_PASTE_CHAR_THRESHOLD && should_create_large_paste_placeholder(&pasted)
+        {
             let placeholder = self.next_large_paste_placeholder(char_count);
             self.draft.textarea.insert_element(&placeholder);
             self.draft.pending_pastes.push((placeholder, pasted));
@@ -7551,6 +7556,30 @@ mod tests {
             InputResult::Submitted { text, .. } => assert_eq!(text, large),
             _ => panic!("expected Submitted"),
         }
+        assert!(composer.draft.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn handle_paste_large_multiline_inserts_text() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let pasted = format!(
+            "{}\n{}",
+            "x".repeat(LARGE_PASTE_CHAR_THRESHOLD),
+            "task details"
+        );
+
+        let needs_redraw = composer.handle_paste(pasted.clone());
+
+        assert!(needs_redraw);
+        assert_eq!(composer.draft.textarea.text(), pasted);
         assert!(composer.draft.pending_pastes.is_empty());
     }
 
