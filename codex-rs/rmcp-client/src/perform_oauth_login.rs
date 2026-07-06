@@ -467,6 +467,19 @@ fn append_callback_id_to_redirect_uri(redirect_uri: &str, callback_id: &str) -> 
     Ok(parsed.to_string())
 }
 
+fn redirect_uri_for_oauth_callback(
+    redirect_uri: &str,
+    callback_url: Option<&str>,
+    server_url: &str,
+) -> Result<String> {
+    if callback_url.is_some() {
+        return Ok(redirect_uri.to_string());
+    }
+
+    let callback_id = callback_id_from_server_url(server_url)?;
+    append_callback_id_to_redirect_uri(redirect_uri, &callback_id)
+}
+
 fn callback_path_from_redirect_uri(redirect_uri: &str) -> Result<String> {
     let parsed = Url::parse(redirect_uri)
         .with_context(|| format!("invalid redirect URI `{redirect_uri}`"))?;
@@ -519,8 +532,8 @@ impl OauthLoginFlow {
         };
 
         let redirect_uri = resolve_redirect_uri(&server, callback_url)?;
-        let callback_id = callback_id_from_server_url(server_url)?;
-        let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+        let redirect_uri =
+            redirect_uri_for_oauth_callback(&redirect_uri, callback_url, server_url)?;
         let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
 
         let (tx, rx) = oneshot::channel();
@@ -729,6 +742,7 @@ mod tests {
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
+    use super::redirect_uri_for_oauth_callback;
     use super::start_authorization;
 
     async fn spawn_oauth_metadata_server() -> String {
@@ -898,6 +912,28 @@ mod tests {
             redirect_uri,
             "https://callbacks.example.com/oauth/callback/abc123?provider=github"
         );
+    }
+
+    #[test]
+    fn generated_redirect_uri_gets_callback_id_but_configured_redirect_uri_is_exact() {
+        let server_url = "https://mcp.example.com/mcp";
+        let callback_id = callback_id_from_server_url(server_url).expect("server URL should parse");
+
+        let generated =
+            redirect_uri_for_oauth_callback("http://127.0.0.1:1234/callback", None, server_url)
+                .expect("redirect URI should parse");
+        let configured = redirect_uri_for_oauth_callback(
+            "http://127.0.0.1:1234/callback",
+            Some("http://127.0.0.1:1234/callback"),
+            server_url,
+        )
+        .expect("redirect URI should parse");
+
+        assert_eq!(
+            generated,
+            format!("http://127.0.0.1:1234/callback/{callback_id}")
+        );
+        assert_eq!(configured, "http://127.0.0.1:1234/callback");
     }
 
     #[test]
