@@ -273,13 +273,16 @@ pub fn default_user_shell() -> DetectedShell {
 }
 
 pub fn default_user_shell_from_path(user_shell_path: Option<PathBuf>) -> DetectedShell {
-    if cfg!(windows) {
-        get_shell(ShellType::PowerShell, /*path*/ None).unwrap_or_else(ultimate_fallback_shell)
-    } else {
-        let user_default_shell = user_shell_path
-            .and_then(|shell| detect_shell_type(&shell))
-            .and_then(|shell_type| get_shell(shell_type, /*path*/ None));
+    let user_default_shell = user_shell_path
+        .as_ref()
+        .and_then(|shell| detect_shell_type(shell).map(|shell_type| (shell_type, shell)))
+        .and_then(|(shell_type, shell)| get_shell(shell_type, Some(shell)));
 
+    if cfg!(windows) {
+        user_default_shell
+            .or_else(|| get_shell(ShellType::PowerShell, /*path*/ None))
+            .unwrap_or_else(ultimate_fallback_shell)
+    } else {
         let shell_with_fallback = if cfg!(target_os = "macos") {
             user_default_shell
                 .or_else(|| get_shell(ShellType::Zsh, /*path*/ None))
@@ -363,6 +366,35 @@ mod tests {
         assert_eq!(
             detect_shell_type(PathBuf::from("cmd.exe")),
             Some(ShellType::Cmd)
+        );
+    }
+
+    #[test]
+    fn default_user_shell_uses_supplied_path() {
+        let unique = format!(
+            "codex-shell-detect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let temp_dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&temp_dir).unwrap();
+        let shell_path = temp_dir.join("bash");
+        std::fs::write(&shell_path, "").unwrap();
+
+        let detected = default_user_shell_from_path(Some(shell_path.clone()));
+
+        std::fs::remove_file(&shell_path).unwrap();
+        std::fs::remove_dir(&temp_dir).unwrap();
+
+        assert_eq!(
+            detected,
+            DetectedShell {
+                shell_type: ShellType::Bash,
+                shell_path,
+            }
         );
     }
 }
