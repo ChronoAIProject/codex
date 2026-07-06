@@ -1479,6 +1479,7 @@ pub enum HookEventName {
     SubagentStart,
     SubagentStop,
     Stop,
+    SessionEnd,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -5869,6 +5870,18 @@ mod tests {
 
         let event: SessionConfiguredEvent = serde_json::from_value(value)?;
         assert_eq!(event.permission_profile, PermissionProfile::read_only());
+        Ok(())
+    }
+
+    #[test]
+    fn hook_event_name_round_trips_session_end() -> Result<()> {
+        let event_name: HookEventName = serde_json::from_str(r#""session_end""#)?;
+
+        assert_eq!(HookEventName::SessionEnd, event_name);
+        assert_eq!(
+            serde_json::to_string(&HookEventName::SessionEnd)?,
+            r#""session_end""#
+        );
         Ok(())
     }
 
