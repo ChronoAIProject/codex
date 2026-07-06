@@ -1,5 +1,6 @@
 use super::*;
 use crate::types::ConsumeRateLimitResetCreditCode;
+use crate::types::RateLimitResetCredit;
 use crate::types::RateLimitResetCreditsSummary;
 use pretty_assertions::assert_eq;
 
@@ -35,12 +36,26 @@ fn rate_limit_reset_contract_uses_expected_paths_and_payloads() {
 
     let status: RateLimitStatusWithResetCredits = serde_json::from_value(serde_json::json!({
         "plan_type": "plus",
-        "rate_limit_reset_credits": { "available_count": 3 }
+        "rate_limit_reset_credits": {
+            "available_count": 3,
+            "credits": [
+                {
+                    "granted_at": "2026-06-17T00:00:00Z",
+                    "expires_at": "2026-07-17T00:00:00Z"
+                }
+            ]
+        }
     }))
     .unwrap();
     assert_eq!(
         status.rate_limit_reset_credits,
-        Some(RateLimitResetCreditsSummary { available_count: 3 })
+        Some(RateLimitResetCreditsSummary {
+            available_count: 3,
+            credits: vec![RateLimitResetCredit {
+                granted_at: Some("2026-06-17T00:00:00Z".to_string()),
+                expires_at: Some("2026-07-17T00:00:00Z".to_string()),
+            }]
+        })
     );
 
     let response: ConsumeRateLimitResetCreditResponse = serde_json::from_value(serde_json::json!({

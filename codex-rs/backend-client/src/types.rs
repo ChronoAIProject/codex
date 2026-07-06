@@ -21,6 +21,14 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RateLimitResetCreditsSummary {
     pub available_count: i64,
+    #[serde(default)]
+    pub credits: Vec<RateLimitResetCredit>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RateLimitResetCredit {
+    pub granted_at: Option<String>,
+    pub expires_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
