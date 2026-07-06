@@ -34,6 +34,7 @@ use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::RealtimeConversationListVoicesResponseEvent;
 use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision;
@@ -59,6 +60,8 @@ use std::sync::Arc;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
+
+const ROLLBACK_FILESYSTEM_WARNING: &str = "Thread rollback only rewound the conversation. File changes made by the rolled-back turn were not reverted.";
 
 pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
@@ -518,6 +521,8 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
 
     let rollback_event = ThreadRolledBackEvent { num_turns };
     let rollback_msg = EventMsg::ThreadRolledBack(rollback_event.clone());
+    let should_warn_about_filesystem_changes =
+        rollback_removes_completed_patch_changes(stored_history.items.as_slice(), num_turns);
     let replay_items = stored_history
         .items
         .into_iter()
@@ -545,11 +550,61 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .await;
     }
 
+    if should_warn_about_filesystem_changes {
+        sess.send_event(
+            turn_context.as_ref(),
+            EventMsg::Warning(WarningEvent {
+                message: ROLLBACK_FILESYSTEM_WARNING.to_string(),
+            }),
+        )
+        .await;
+    }
+
     sess.deliver_event_raw(Event {
         id: turn_context.sub_id.clone(),
         msg: rollback_msg,
     })
     .await;
+}
+
+fn rollback_removes_completed_patch_changes(rollout_items: &[RolloutItem], num_turns: u32) -> bool {
+    let mut pending_rollback_turns = usize::try_from(num_turns).unwrap_or(usize::MAX);
+    let mut segment_counts_as_user_turn = false;
+    let mut segment_has_completed_patch_change = false;
+    for item in rollout_items.iter().rev() {
+        match item {
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                pending_rollback_turns = pending_rollback_turns
+                    .saturating_add(usize::try_from(rollback.num_turns).unwrap_or(usize::MAX));
+            }
+            RolloutItem::EventMsg(EventMsg::TurnStarted(_)) => {
+                if segment_counts_as_user_turn {
+                    if pending_rollback_turns > 0 {
+                        if segment_has_completed_patch_change {
+                            return true;
+                        }
+                        pending_rollback_turns = pending_rollback_turns.saturating_sub(1);
+                    }
+                    segment_counts_as_user_turn = false;
+                    segment_has_completed_patch_change = false;
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::UserMessage(_)) => {
+                segment_counts_as_user_turn = true;
+            }
+            RolloutItem::EventMsg(EventMsg::PatchApplyEnd(patch))
+                if patch.status == PatchApplyStatus::Completed && !patch.changes.is_empty() =>
+            {
+                segment_has_completed_patch_change = true;
+            }
+            RolloutItem::ResponseItem(response_item) if is_user_turn_boundary(response_item) => {
+                segment_counts_as_user_turn = true;
+            }
+            RolloutItem::InterAgentCommunication(_) => segment_counts_as_user_turn = true,
+            _ => {}
+        }
+    }
+    pending_rollback_turns > 0 && segment_counts_as_user_turn && segment_has_completed_patch_change
 }
 
 pub(super) async fn persist_thread_memory_mode_update(

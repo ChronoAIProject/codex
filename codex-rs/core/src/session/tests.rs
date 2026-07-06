@@ -119,11 +119,14 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::CreditsSnapshot;
+use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkApprovalProtocol;
+use codex_protocol::protocol::PatchApplyEndEvent;
+use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::RealtimeAudioFrame;
@@ -146,6 +149,7 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::protocol::WarningEvent;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -182,6 +186,7 @@ use codex_protocol::mcp::CallToolResult as McpCallToolResult;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -3163,6 +3168,94 @@ async fn thread_rollback_drops_last_turn_from_history() {
 }
 
 #[tokio::test]
+async fn thread_rollback_warns_when_dropped_turn_had_patch_changes() {
+    let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("session should not have additional references"),
+    )
+    .await;
+
+    let turn_context_item = tc.to_turn_context_item();
+    sess.persist_rollout_items(&[
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: Some(128_000),
+            collaboration_mode_kind: ModeKind::Default,
+        })),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: "turn 1 user".to_string(),
+            images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
+            ..Default::default()
+        })),
+        RolloutItem::TurnContext(turn_context_item.clone()),
+        RolloutItem::ResponseItem(user_message("turn 1 user")),
+        RolloutItem::ResponseItem(assistant_message("turn 1 assistant")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-2".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: Some(128_000),
+            collaboration_mode_kind: ModeKind::Default,
+        })),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: "turn 2 user".to_string(),
+            images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
+            ..Default::default()
+        })),
+        RolloutItem::TurnContext(turn_context_item),
+        RolloutItem::EventMsg(EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+            call_id: "patch-1".to_string(),
+            turn_id: "turn-2".to_string(),
+            stdout: "Success. Updated files.".to_string(),
+            stderr: String::new(),
+            success: true,
+            changes: HashMap::from([(
+                PathBuf::from("edited.txt"),
+                FileChange::Add {
+                    content: "created by codex\n".to_string(),
+                },
+            )]),
+            status: PatchApplyStatus::Completed,
+        })),
+        RolloutItem::ResponseItem(user_message("turn 2 user")),
+        RolloutItem::ResponseItem(assistant_message("turn 2 assistant")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-2".to_string(),
+            last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ])
+    .await;
+
+    handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+
+    let warning = wait_for_thread_rollback_filesystem_warning(&rx).await;
+    assert_eq!(
+        warning.message,
+        "Thread rollback only rewound the conversation. File changes made by the rolled-back turn were not reverted."
+    );
+    let rollback_event = wait_for_thread_rolled_back(&rx).await;
+    assert_eq!(rollback_event.num_turns, 1);
+}
+
+#[tokio::test]
 async fn thread_rollback_clears_history_when_num_turns_exceeds_existing_turns() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
     attach_thread_persistence(
@@ -4010,6 +4103,29 @@ async fn wait_for_thread_rolled_back(rx: &async_channel::Receiver<Event>) -> Thr
             .expect("event");
         match evt.msg {
             EventMsg::ThreadRolledBack(payload) => return payload,
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_thread_rollback_filesystem_warning(
+    rx: &async_channel::Receiver<Event>,
+) -> WarningEvent {
+    let deadline = StdDuration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let remaining = deadline.saturating_sub(start.elapsed());
+        let evt = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("timeout waiting for event")
+            .expect("event");
+        match evt.msg {
+            EventMsg::Warning(payload)
+                if payload.message
+                    == "Thread rollback only rewound the conversation. File changes made by the rolled-back turn were not reverted." =>
+            {
+                return payload;
+            }
             _ => continue,
         }
     }
