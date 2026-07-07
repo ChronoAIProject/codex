@@ -191,8 +191,11 @@ where
             }
         }
         InsertHistoryMode::Standard => {
+            let visible_history_rows = terminal.visible_history_rows();
             let writer = terminal.backend_mut();
-            let cursor_top = if area.bottom() < screen_size.height {
+            let cursor_top = if area.bottom() < screen_size.height
+                && (area.top() == 0 || visible_history_rows < area.top())
+            {
                 // If the viewport is not at the bottom of the screen, scroll it down to make room.
                 // Don't scroll it past the bottom of the screen.
                 let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
@@ -1061,6 +1064,28 @@ mod tests {
         assert!(
             url_row <= prompt_row + 2,
             "expected URL content to appear immediately after prompt (allowing at most one spacer row), got prompt_row={prompt_row}, url_row={url_row}, rows={rows:?}",
+        );
+    }
+
+    #[test]
+    fn vt100_full_visible_history_does_not_push_viewport_down() {
+        let width: u16 = 20;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        term.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 2, /*width*/ width, /*height*/ 2,
+        ));
+        term.note_history_rows_inserted(/*inserted_rows*/ 2);
+
+        insert_history_lines(&mut term, vec![Line::from("after interrupt")])
+            .expect("insert history");
+
+        assert_eq!(
+            term.viewport_area,
+            Rect::new(
+                /*x*/ 0, /*y*/ 2, /*width*/ width, /*height*/ 2
+            )
         );
     }
 }
