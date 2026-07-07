@@ -595,8 +595,10 @@ impl CodexAuth {
         }
 
         self.get_current_token_data().map(|t| {
-            t.id_token
-                .chatgpt_plan_type
+            parse_chatgpt_jwt_claims(&t.access_token)
+                .ok()
+                .and_then(|info| info.chatgpt_plan_type)
+                .or(t.id_token.chatgpt_plan_type)
                 .map(AccountPlanType::from)
                 .unwrap_or(AccountPlanType::Unknown)
         })

@@ -1258,16 +1258,6 @@ fn write_auth_file(params: AuthFileParams, codex_home: &Path) -> std::io::Result
 }
 
 fn fake_jwt_for_auth_file_params(params: &AuthFileParams) -> std::io::Result<String> {
-    #[derive(Serialize)]
-    struct Header {
-        alg: &'static str,
-        typ: &'static str,
-    }
-
-    let header = Header {
-        alg: "none",
-        typ: "JWT",
-    };
     let mut auth_payload = serde_json::json!({
         "chatgpt_user_id": "user-12345",
         "user_id": "user-12345",
@@ -1286,6 +1276,20 @@ fn fake_jwt_for_auth_file_params(params: &AuthFileParams) -> std::io::Result<Str
         "email_verified": true,
         "https://api.openai.com/auth": auth_payload,
     });
+    fake_jwt_for_payload(payload)
+}
+
+fn fake_jwt_for_payload(payload: serde_json::Value) -> std::io::Result<String> {
+    #[derive(Serialize)]
+    struct Header {
+        alg: &'static str,
+        typ: &'static str,
+    }
+
+    let header = Header {
+        alg: "none",
+        typ: "JWT",
+    };
     let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
     let header_b64 = b64(&serde_json::to_vec(&header)?);
     let payload_b64 = b64(&serde_json::to_vec(&payload)?);
@@ -2118,6 +2122,52 @@ async fn plan_type_maps_known_plan() {
         codex_home.path(),
     )
     .expect("failed to write auth file");
+
+    let auth = super::load_auth(
+        codex_home.path(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::Direct,
+        /*agent_identity_authapi_base_url*/ None,
+        /*auth_route_config*/ None,
+    )
+    .await
+    .expect("load auth")
+    .expect("auth available");
+
+    pretty_assertions::assert_eq!(auth.account_plan_type(), Some(AccountPlanType::Pro));
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn plan_type_prefers_access_token_claim() {
+    let codex_home = tempdir().unwrap();
+    let _access_token_guard = remove_access_token_env_var();
+    let id_token = fake_jwt_for_auth_file_params(&AuthFileParams {
+        openai_api_key: None,
+        chatgpt_plan_type: Some("plus".to_string()),
+        chatgpt_account_id: None,
+    })
+    .expect("fake id token");
+    let access_token = fake_jwt_for_payload(json!({
+        "chatgpt_plan_type": "pro"
+    }))
+    .expect("fake access token");
+    std::fs::write(
+        get_auth_file(codex_home.path()),
+        serde_json::to_string_pretty(&json!({
+            "tokens": {
+                "id_token": id_token,
+                "access_token": access_token,
+                "refresh_token": "test-refresh-token"
+            },
+            "last_refresh": Utc::now(),
+        }))
+        .expect("serialize auth file"),
+    )
+    .expect("write auth file");
 
     let auth = super::load_auth(
         codex_home.path(),

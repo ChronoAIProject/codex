@@ -72,6 +72,8 @@ impl IdTokenInfo {
 struct IdClaims {
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    chatgpt_plan_type: Option<PlanType>,
     #[serde(rename = "https://api.openai.com/profile", default)]
     profile: Option<ProfileClaims>,
     #[serde(rename = "https://api.openai.com/auth", default)]
@@ -144,7 +146,7 @@ pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoErr
         Some(auth) => Ok(IdTokenInfo {
             email,
             raw_jwt: jwt.to_string(),
-            chatgpt_plan_type: auth.chatgpt_plan_type,
+            chatgpt_plan_type: auth.chatgpt_plan_type.or(claims.chatgpt_plan_type),
             chatgpt_user_id: auth.chatgpt_user_id.or(auth.user_id),
             chatgpt_account_id: auth.chatgpt_account_id,
             chatgpt_account_is_fedramp: auth.chatgpt_account_is_fedramp,
@@ -152,7 +154,7 @@ pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoErr
         None => Ok(IdTokenInfo {
             email,
             raw_jwt: jwt.to_string(),
-            chatgpt_plan_type: None,
+            chatgpt_plan_type: claims.chatgpt_plan_type,
             chatgpt_user_id: None,
             chatgpt_account_id: None,
             chatgpt_account_is_fedramp: false,
