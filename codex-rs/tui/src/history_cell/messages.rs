@@ -505,6 +505,6 @@ pub(crate) fn new_reasoning_summary_block(
         "".to_string(),
         full_reasoning_buffer.to_string(),
         &cwd,
-        /*transcript_only*/ true,
+        /*transcript_only*/ false,
     ))
 }

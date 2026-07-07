@@ -2300,6 +2300,9 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
     let cell =
         new_reasoning_summary_block("Detailed reasoning goes here.".to_string(), &test_cwd());
 
+    let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
+    assert_eq!(rendered_display, vec!["• Detailed reasoning goes here."]);
+
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
 }
