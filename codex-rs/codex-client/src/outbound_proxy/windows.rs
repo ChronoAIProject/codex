@@ -189,15 +189,7 @@ fn current_user_ie_proxy_config() -> Result<IeProxyConfig, RouteFailureClass> {
     };
     let ok = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut raw) };
     if ok == FALSE {
-        let error = last_error();
-        if error == ERROR_FILE_NOT_FOUND {
-            // Match WinHTTP's fallback by attempting WPAD when no IE proxy settings exist.
-            return Ok(IeProxyConfig {
-                auto_detect: true,
-                ..Default::default()
-            });
-        }
-        return Err(classify_winhttp_error(error));
+        return ie_proxy_config_from_error(last_error());
     }
 
     let auto_config_url = GlobalWideString::from_raw(raw.lpszAutoConfigUrl).into_string();
@@ -212,7 +204,15 @@ fn current_user_ie_proxy_config() -> Result<IeProxyConfig, RouteFailureClass> {
     })
 }
 
-#[derive(Debug, Default)]
+fn ie_proxy_config_from_error(error: u32) -> Result<IeProxyConfig, RouteFailureClass> {
+    if error == ERROR_FILE_NOT_FOUND {
+        Ok(IeProxyConfig::default())
+    } else {
+        Err(classify_winhttp_error(error))
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
 struct IeProxyConfig {
     auto_detect: bool,
     auto_config_url: Option<String>,
