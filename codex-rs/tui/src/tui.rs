@@ -79,6 +79,24 @@ pub(crate) fn running_in_vscode_terminal() -> bool {
     keyboard_modes::running_in_vscode_terminal()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiPlatform {
+    Windows,
+    Other,
+}
+
+fn current_platform() -> TuiPlatform {
+    if cfg!(windows) {
+        TuiPlatform::Windows
+    } else {
+        TuiPlatform::Other
+    }
+}
+
+fn should_enable_focus_change(platform: TuiPlatform) -> bool {
+    !matches!(platform, TuiPlatform::Windows)
+}
+
 fn should_emit_notification(condition: NotificationCondition, terminal_focused: bool) -> bool {
     match condition {
         NotificationCondition::Unfocused => !terminal_focused,
@@ -98,8 +116,10 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    use super::TuiPlatform;
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
+    use super::should_enable_focus_change;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
@@ -128,6 +148,12 @@ mod tests {
             NotificationCondition::Unfocused,
             /*terminal_focused*/ false
         ));
+    }
+
+    #[test]
+    fn focus_change_mode_is_not_enabled_on_windows() {
+        assert!(!should_enable_focus_change(TuiPlatform::Windows));
+        assert!(should_enable_focus_change(TuiPlatform::Other));
     }
 
     #[test]
@@ -186,7 +212,9 @@ pub fn set_modes() -> Result<()> {
     // gracefully if unsupported.
     keyboard_modes::enable_keyboard_enhancement();
 
-    let _ = execute!(stdout(), EnableFocusChange);
+    if should_enable_focus_change(current_platform()) {
+        let _ = execute!(stdout(), EnableFocusChange);
+    }
     Ok(())
 }
 
