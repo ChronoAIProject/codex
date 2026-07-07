@@ -567,6 +567,45 @@ width = 320
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_survives_runtime_feature_resolution_error() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"
+model = "gpt-user"
+experimental_thread_store_endpoint = "https://example.invalid"
+"#,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let read: ConfigReadResponse = to_response(resp)?;
+
+    assert_eq!(read.config.model.as_deref(), Some("gpt-user"));
+    assert_eq!(
+        read.config
+            .additional
+            .get("experimental_thread_store_endpoint"),
+        Some(&json!("https://example.invalid"))
+    );
+    assert_eq!(read.config.additional.get("features"), Some(&json!(null)));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_read_includes_project_layers_for_cwd() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_config(&codex_home, r#"model = "gpt-user""#)?;

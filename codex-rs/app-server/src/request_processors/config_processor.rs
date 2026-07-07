@@ -85,25 +85,32 @@ impl ConfigRequestProcessor {
     ) -> Result<ConfigReadResponse, JSONRPCErrorError> {
         let fallback_cwd = params.cwd.as_ref().map(PathBuf::from);
         let mut response = self.config_manager.read(params).await.map_err(map_error)?;
-        let config = self.load_latest_config(fallback_cwd).await?;
-        for feature_key in SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT {
-            let Some(feature) = feature_for_key(feature_key) else {
-                continue;
-            };
-            let features = response
-                .config
-                .additional
-                .entry("features".to_string())
-                .or_insert_with(|| json!({}));
-            if !features.is_object() {
-                *features = json!({});
+        match self.load_latest_config(fallback_cwd).await {
+            Ok(config) => {
+                for feature_key in SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT {
+                    let Some(feature) = feature_for_key(feature_key) else {
+                        continue;
+                    };
+                    let features = response
+                        .config
+                        .additional
+                        .entry("features".to_string())
+                        .or_insert_with(|| json!({}));
+                    if !features.is_object() {
+                        *features = json!({});
+                    }
+                    if let Some(features) = features.as_object_mut() {
+                        features.insert(
+                            (*feature_key).to_string(),
+                            json!(config.features.enabled(feature)),
+                        );
+                    }
+                }
             }
-            if let Some(features) = features.as_object_mut() {
-                features.insert(
-                    (*feature_key).to_string(),
-                    json!(config.features.enabled(feature)),
-                );
-            }
+            Err(err) => tracing::warn!(
+                error = %err.message,
+                "failed to resolve runtime feature enablement for config/read"
+            ),
         }
         Ok(response)
     }
