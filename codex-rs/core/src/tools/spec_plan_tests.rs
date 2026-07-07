@@ -27,6 +27,7 @@ use codex_tools::ToolExecutor;
 use codex_tools::ToolExposure;
 use codex_tools::ToolName;
 use codex_tools::ToolOutput;
+use codex_tools::ToolPayload;
 use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -810,6 +811,13 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
     )
     .await;
     bedrock_namespace_capability.assert_visible_contains(&["tool_search"]);
+    assert!(
+        matches!(
+            bedrock_namespace_capability.visible_spec("tool_search"),
+            ToolSpec::Function(_)
+        ),
+        "bedrock should expose tool_search as a function"
+    );
 
     let enabled = probe_with(
         |turn| {
@@ -819,10 +827,48 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
     )
     .await;
     enabled.assert_visible_contains(&["tool_search"]);
+    assert!(
+        matches!(
+            enabled.visible_spec("tool_search"),
+            ToolSpec::ToolSearch { .. }
+        ),
+        "openai should keep the native tool_search type"
+    );
     enabled.assert_registered_contains(&[
         "tool_search",
         &ToolName::namespaced("mcp__searchable", "lookup").to_string(),
     ]);
+}
+
+#[test]
+fn bare_tool_search_function_calls_use_tool_search_payload() -> anyhow::Result<()> {
+    let call = ToolRouter::build_tool_call(codex_protocol::models::ResponseItem::FunctionCall {
+        id: Some("fc_1".to_string()),
+        name: "tool_search".to_string(),
+        arguments: json!({
+            "query": "calendar",
+            "limit": 2,
+        })
+        .to_string(),
+        call_id: "call-search".to_string(),
+        namespace: None,
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("tool_search function should build a tool call");
+
+    assert_eq!(call.tool_name, ToolName::plain("tool_search"));
+    assert_eq!(call.call_id, "call-search");
+    assert_eq!(
+        call.payload,
+        ToolPayload::ToolSearch {
+            arguments: codex_protocol::models::SearchToolCallParams {
+                query: "calendar".to_string(),
+                limit: Some(2),
+            },
+        }
+    );
+
+    Ok(())
 }
 
 #[tokio::test]

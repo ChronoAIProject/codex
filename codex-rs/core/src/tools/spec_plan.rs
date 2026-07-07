@@ -278,6 +278,14 @@ fn spec_for_model_request(
     tool_name: &ToolName,
     spec: ToolSpec,
 ) -> ToolSpec {
+    let spec = if turn_context.provider.info().is_openai()
+        || !matches!(spec, ToolSpec::ToolSearch { .. })
+    {
+        spec
+    } else {
+        tool_search_as_function(spec)
+    };
+
     let tool_mode = effective_tool_mode(turn_context);
     if matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
         && exposure != ToolExposure::DirectModelOnly
@@ -287,6 +295,24 @@ fn spec_for_model_request(
         codex_tools::augment_tool_spec_for_code_mode(spec)
     } else {
         spec
+    }
+}
+
+fn tool_search_as_function(spec: ToolSpec) -> ToolSpec {
+    match spec {
+        ToolSpec::ToolSearch {
+            description,
+            parameters,
+            ..
+        } => ToolSpec::Function(codex_tools::ResponsesApiTool {
+            name: TOOL_SEARCH_TOOL_NAME.to_string(),
+            description,
+            strict: false,
+            defer_loading: None,
+            parameters,
+            output_schema: None,
+        }),
+        spec => spec,
     }
 }
 
