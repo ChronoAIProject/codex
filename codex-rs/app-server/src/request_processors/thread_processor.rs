@@ -1144,10 +1144,18 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        if !dynamic_tools.is_empty() {
-            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-        }
+        let dynamic_tools = match dynamic_tools {
+            Some(dynamic_tools) => {
+                if dynamic_tools.is_empty() {
+                    return Err(invalid_request(
+                        "dynamicTools must contain at least one tool when provided",
+                    ));
+                }
+                validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
+                dynamic_tools
+            }
+            None => Vec::new(),
+        };
         // Count callable functions rather than top-level namespace containers.
         let dynamic_tool_count: usize = dynamic_tools
             .iter()
