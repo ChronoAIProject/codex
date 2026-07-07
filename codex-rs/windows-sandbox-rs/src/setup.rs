@@ -306,6 +306,11 @@ impl SetupMarker {
         {
             return None;
         }
+        if offline_proxy_settings.proxy_ports.is_empty()
+            && self.allow_local_binding == offline_proxy_settings.allow_local_binding
+        {
+            return None;
+        }
         Some(format!(
             "offline firewall settings changed (stored_ports={:?}, desired_ports={:?}, stored_allow_local_binding={}, desired_allow_local_binding={})",
             self.proxy_ports,
@@ -1486,6 +1491,27 @@ mod tests {
                 "offline firewall settings changed (stored_ports=[3128], desired_ports=[1081, 8080], stored_allow_local_binding=false, desired_allow_local_binding=true)"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn setup_marker_request_mismatch_reason_preserves_proxy_ports_when_desired_is_empty() {
+        let marker = super::SetupMarker {
+            version: super::SETUP_VERSION,
+            offline_username: "offline".to_string(),
+            online_username: "online".to_string(),
+            created_at: None,
+            proxy_ports: vec![7892],
+            allow_local_binding: false,
+        };
+        let desired = super::OfflineProxySettings {
+            proxy_ports: Vec::new(),
+            allow_local_binding: false,
+        };
+
+        assert_eq!(
+            marker.request_mismatch_reason(super::SandboxNetworkIdentity::Offline, &desired),
+            None
         );
     }
 
