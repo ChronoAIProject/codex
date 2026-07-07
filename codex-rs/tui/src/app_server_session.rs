@@ -1463,6 +1463,7 @@ fn thread_resume_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
+        exclude_turns: true,
         ..ThreadResumeParams::default()
     }
 }
@@ -2057,6 +2058,7 @@ mod tests {
         assert_eq!(fork.permissions, None);
         assert_eq!(start.thread_source, Some(ThreadSource::User));
         assert_eq!(fork.thread_source, Some(ThreadSource::User));
+        assert!(resume.exclude_turns);
     }
 
     #[test]
