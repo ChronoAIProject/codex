@@ -518,6 +518,44 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_list_default_includes_openai_threads_for_custom_provider() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_runtime_config(codex_home.path(), "http://unused.invalid")?;
+    let openai_thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-00-00",
+        "2025-01-02T11:00:00Z",
+        "remote thread",
+        Some("openai"),
+        /*git_info*/ None,
+    )?;
+    let configured_thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T10-00-00",
+        "2025-01-02T10:00:00Z",
+        "local thread",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*model_providers*/ None,
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+
+    let thread_ids = data.into_iter().map(|thread| thread.id).collect::<Vec<_>>();
+    assert_eq!(thread_ids, vec![openai_thread_id, configured_thread_id]);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_list_respects_cwd_filters() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;

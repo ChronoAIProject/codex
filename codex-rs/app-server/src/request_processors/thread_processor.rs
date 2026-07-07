@@ -10,6 +10,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
+const OPENAI_PROVIDER_ID: &str = "openai";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
@@ -3731,7 +3732,13 @@ impl ThreadRequestProcessor {
                 }
             }
             None if relation_filter.is_some() => None,
-            None => Some(vec![self.config.model_provider_id.clone()]),
+            None => {
+                let mut providers = vec![self.config.model_provider_id.clone()];
+                if self.config.model_provider_id != OPENAI_PROVIDER_ID {
+                    providers.push(OPENAI_PROVIDER_ID.to_string());
+                }
+                Some(providers)
+            }
         };
         let (allowed_sources_vec, source_kind_filter) =
             if relation_filter.is_some() && source_kinds.is_none() {
