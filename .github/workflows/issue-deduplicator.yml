@@ -75,7 +75,7 @@ jobs:
             - Compare the current issue against the existing issues to find up to five that appear to describe the same underlying problem or request.
             - Prioritize concrete overlap in symptoms, reproduction details, error signatures, and user intent.
             - Prefer active unresolved issues when confidence is similar.
-            - Closed issues can still be valid duplicates if they clearly match.
+            - Treat closed issues as context only; do not return them as duplicates.
             - Return fewer matches rather than speculative ones.
             - If confidence is low, return an empty list.
             - Include at most five issue numbers.
@@ -398,7 +398,7 @@ jobs:
             }
 
             const lines = [
-              'Potential duplicates detected. Please review them and close your issue if it is a duplicate.',
+              'Potential duplicates detected. Please review whether these reports describe the same issue.',
               '',
               ...filteredIssues.map((value) => `- #${String(value)}`),
               '',
