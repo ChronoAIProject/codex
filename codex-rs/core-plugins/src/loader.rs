@@ -62,6 +62,10 @@ const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
 const CONFIG_TOML_FILE: &str = "config.toml";
 const CURATED_PLUGIN_CACHE_VERSION_SHA_PREFIX_LEN: usize = 8;
+const BUNDLED_CHROME_BROWSER_CLIENT: &str = "scripts/browser-client.mjs";
+const BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_IMPL: &str =
+    "ariaSnapshot(e,r){return this.ariaSnapshotWithRefs(e,r).text}ariaSnapshotWithRefs(e,r){";
+const BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_WITH_INCREMENTAL_IMPL: &str = "ariaSnapshot(e,r){return this.ariaSnapshotWithRefs(e,r).text}incrementalAriaSnapshot(e,r){let n=this.ariaSnapshotWithRefs(e,r);return{full:n.text,iframeRefs:n.iframeRefs,iframeDepths:n.iframeDepths}}ariaSnapshotWithRefs(e,r){";
 
 /// Hook declarations and warnings resolved without loading other plugin capabilities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -598,7 +602,11 @@ fn refresh_non_curated_plugin_cache_with_mode(
                 && store.active_plugin_version(&plugin_id).as_deref()
                     == Some(plugin_version.as_str())
             {
-                return Ok(false);
+                return repair_bundled_chrome_browser_client(&plugin_id, &store).map_err(|err| {
+                    format!(
+                        "failed to repair bundled Chrome browser client for {plugin_key}: {err}"
+                    )
+                });
             }
 
             match manifest_fallback_contents.as_deref() {
@@ -611,6 +619,9 @@ fn refresh_non_curated_plugin_cache_with_mode(
                 None => store.install_with_version(source_path, plugin_id.clone(), plugin_version),
             }
             .map_err(|err| format!("failed to refresh plugin cache for {plugin_key}: {err}"))?;
+            repair_bundled_chrome_browser_client(&plugin_id, &store).map_err(|err| {
+                format!("failed to repair bundled Chrome browser client for {plugin_key}: {err}")
+            })?;
             Ok(true)
         })();
         match refresh_result {
@@ -626,6 +637,37 @@ fn refresh_non_curated_plugin_cache_with_mode(
         cache_refreshed,
         errors: refresh_errors,
     })
+}
+
+fn repair_bundled_chrome_browser_client(
+    plugin_id: &PluginId,
+    store: &PluginStore,
+) -> Result<bool, String> {
+    if plugin_id.marketplace_name != crate::OPENAI_BUNDLED_MARKETPLACE_NAME
+        || plugin_id.plugin_name != "chrome"
+    {
+        return Ok(false);
+    }
+    let Some(plugin_root) = store.active_plugin_root(plugin_id) else {
+        return Ok(false);
+    };
+    let browser_client_path = plugin_root.join(BUNDLED_CHROME_BROWSER_CLIENT);
+    let Ok(contents) = fs::read_to_string(browser_client_path.as_path()) else {
+        return Ok(false);
+    };
+    if contents.contains(BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_WITH_INCREMENTAL_IMPL)
+        || !contents.contains(BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_IMPL)
+    {
+        return Ok(false);
+    }
+
+    let repaired = contents.replace(
+        BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_IMPL,
+        BUNDLED_CHROME_BROWSER_CLIENT_ARIA_SNAPSHOT_WITH_INCREMENTAL_IMPL,
+    );
+    fs::write(browser_client_path.as_path(), repaired)
+        .map_err(|err| format!("failed to write browser client: {err}"))?;
+    Ok(true)
 }
 
 #[cfg(test)]

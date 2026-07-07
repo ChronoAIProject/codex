@@ -5513,6 +5513,58 @@ enabled = true
 }
 
 #[test]
+fn refresh_non_curated_plugin_cache_repairs_bundled_chrome_dom_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    write_plugin_with_version(&repo_root, "chrome", "chrome", Some("1.2.3"));
+    write_file(
+        &repo_root.join("chrome/scripts/browser-client.mjs"),
+        r#"let snapshot = o.incrementalAriaSnapshot(i,{mode:"ai"});
+class InjectedScript {
+  ariaSnapshot(e,r){return this.ariaSnapshotWithRefs(e,r).text}ariaSnapshotWithRefs(e,r){return {text:"Example Domain", iframeRefs:[], iframeDepths:{}}}
+}"#,
+    );
+    write_file(
+        &repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "openai-bundled",
+  "plugins": [
+    {
+      "name": "chrome",
+      "source": {
+        "source": "local",
+        "path": "./chrome"
+      }
+    }
+  ]
+}"#,
+    );
+
+    assert!(
+        refresh_non_curated_plugin_cache(
+            tmp.path(),
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            &["chrome@openai-bundled".to_string()],
+        )
+        .expect("cache refresh should repair bundled Chrome plugin")
+    );
+
+    let browser_client = fs::read_to_string(
+        tmp.path()
+            .join("plugins/cache/openai-bundled/chrome/1.2.3/scripts/browser-client.mjs"),
+    )
+    .unwrap();
+    assert!(browser_client.contains("o.incrementalAriaSnapshot(i,{mode:\"ai\"})"));
+    assert!(
+        browser_client.contains(
+            "incrementalAriaSnapshot(e,r){let n=this.ariaSnapshotWithRefs(e,r);return{full:n.text,iframeRefs:n.iframeRefs,iframeDepths:n.iframeDepths}}"
+        )
+    );
+}
+
+#[test]
 fn refresh_non_curated_plugin_cache_refreshes_configured_git_source() {
     let tmp = tempfile::tempdir().unwrap();
     let repo_root = tmp.path().join("repo");
