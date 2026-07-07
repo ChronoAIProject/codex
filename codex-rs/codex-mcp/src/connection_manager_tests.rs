@@ -827,6 +827,47 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn validate_required_servers_times_out_pending_startup() {
+    let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
+        .boxed()
+        .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionManager::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    manager.required_servers.push("required".to_string());
+    manager.clients.insert(
+        "required".to_string(),
+        AsyncManagedClient {
+            client: pending_client,
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_filter: ToolFilter::default(),
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            startup_reconnect: None,
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let validation = tokio::spawn(async move { manager.validate_required_servers().await });
+    tokio::time::advance(REQUIRED_SERVER_VALIDATION_TIMEOUT).await;
+
+    let error = validation
+        .await
+        .expect("validation task")
+        .expect_err("pending required server should fail validation");
+    assert_eq!(
+        error.to_string(),
+        "required MCP servers failed to initialize: required: required MCP server `required` did not initialize within 30 seconds"
+    );
+}
+
 #[tokio::test]
 async fn list_all_tools_accepts_canonical_namespaced_tool_names() {
     let managed_client =

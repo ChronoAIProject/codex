@@ -84,6 +84,7 @@ use tracing::warn;
 const MCP_UI_META_KEY: &str = "ui";
 const MCP_UI_VISIBILITY_META_KEY: &str = "visibility";
 const MCP_UI_MODEL_VISIBILITY: &str = "model";
+const REQUIRED_SERVER_VALIDATION_TIMEOUT: Duration = DEFAULT_STARTUP_TIMEOUT;
 
 /// Returns whether a tool may be included in model-facing tool declarations.
 ///
@@ -315,9 +316,21 @@ impl McpConnectionManager {
                     continue;
                 };
 
-                match async_managed_client.client().await {
-                    Ok(_) => {}
-                    Err(error) => failures.push(McpStartupFailure {
+                match tokio::time::timeout(
+                    REQUIRED_SERVER_VALIDATION_TIMEOUT,
+                    async_managed_client.client(),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Err(_) => failures.push(McpStartupFailure {
+                        server: server_name.clone(),
+                        error: format!(
+                            "required MCP server `{server_name}` did not initialize within {} seconds",
+                            REQUIRED_SERVER_VALIDATION_TIMEOUT.as_secs()
+                        ),
+                    }),
+                    Ok(Err(error)) => failures.push(McpStartupFailure {
                         server: server_name.clone(),
                         error: startup_outcome_error_message(error),
                     }),
