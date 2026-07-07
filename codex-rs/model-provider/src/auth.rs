@@ -14,6 +14,8 @@ use codex_login::auth::AgentIdentityAuthError;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::RefreshTokenFailedError;
+use codex_protocol::error::RefreshTokenFailedReason;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -22,6 +24,8 @@ use crate::bearer_auth_provider::BearerAuthProvider;
 
 const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
     "Bedrock API key auth is only supported by the Amazon Bedrock model provider";
+const OPENAI_AUTH_REQUIRED_MESSAGE: &str =
+    "OpenAI authentication is required. Sign in with ChatGPT or configure an API key.";
 
 #[derive(Clone, Debug)]
 pub struct ProviderAuthScope {
@@ -149,10 +153,16 @@ pub(crate) fn resolve_provider_auth(
         return Ok(Arc::new(auth));
     }
 
-    Ok(match auth {
-        Some(auth) => auth_provider_from_auth(auth),
-        None => unauthenticated_auth_provider(),
-    })
+    match auth {
+        Some(auth) => Ok(auth_provider_from_auth(auth)),
+        None if provider.requires_openai_auth => {
+            Err(CodexErr::RefreshTokenFailed(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                OPENAI_AUTH_REQUIRED_MESSAGE,
+            )))
+        }
+        None => Ok(unauthenticated_auth_provider()),
+    }
 }
 
 pub(crate) async fn resolve_provider_auth_for_scope(
@@ -402,6 +412,28 @@ mod tests {
             }
             Err(err) => panic!("unexpected auth error: {err:?}"),
             Ok(_) => panic!("Bedrock API key auth should be rejected"),
+        }
+    }
+
+    #[test]
+    fn openai_provider_requires_auth() {
+        let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+
+        match resolve_provider_auth(/*auth*/ None, &provider) {
+            Err(CodexErr::RefreshTokenFailed(err)) => {
+                assert_eq!(
+                    err,
+                    RefreshTokenFailedError::new(
+                        RefreshTokenFailedReason::Other,
+                        OPENAI_AUTH_REQUIRED_MESSAGE,
+                    )
+                );
+            }
+            Err(err) => panic!("unexpected auth error: {err:?}"),
+            Ok(auth) => panic!(
+                "OpenAI auth should be rejected before sending headers: {:?}",
+                auth.to_auth_headers()
+            ),
         }
     }
 
