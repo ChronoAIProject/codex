@@ -145,12 +145,11 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
         .map(|root| normalize_windows_override_path(root.root.as_path()))
         .collect::<std::result::Result<_, _>>()?;
 
-    if legacy_root_paths != split_root_paths {
-        return Err(
-            "windows unelevated restricted-token sandbox cannot enforce split writable root sets directly; refusing to run unsandboxed"
-                .to_string(),
-        );
-    }
+    let write_roots_override = if legacy_root_paths == split_root_paths {
+        None
+    } else {
+        Some(split_root_paths.iter().cloned().collect())
+    };
 
     for writable_root in &split_writable_roots {
         for read_only_subpath in &writable_root.read_only_subpaths {
@@ -196,13 +195,23 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
     }
 
     if additional_deny_read_paths.is_empty() && additional_deny_write_paths.is_empty() {
+        if let Some(write_roots_override) = write_roots_override {
+            return Ok(Some(WindowsSandboxFilesystemOverrides {
+                read_roots_override: None,
+                read_roots_include_platform_defaults: false,
+                write_roots_override: Some(write_roots_override),
+                additional_deny_read_paths,
+                additional_deny_write_paths: Vec::new(),
+            }));
+        }
+
         return Ok(None);
     }
 
     Ok(Some(WindowsSandboxFilesystemOverrides {
         read_roots_override: None,
         read_roots_include_platform_defaults: false,
-        write_roots_override: None,
+        write_roots_override,
         additional_deny_read_paths,
         additional_deny_write_paths: additional_deny_write_paths
             .into_iter()

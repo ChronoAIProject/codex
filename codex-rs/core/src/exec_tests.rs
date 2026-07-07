@@ -572,23 +572,25 @@ fn windows_restricted_token_rejects_split_only_filesystem_policies() {
 }
 
 #[test]
-fn windows_restricted_token_rejects_root_write_read_only_carveouts() {
+fn windows_restricted_token_supports_split_writable_roots_with_override() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
-    let docs = temp_dir.path().join("docs");
-    std::fs::create_dir_all(&docs).expect("create docs");
+    let cwd = dunce::canonicalize(temp_dir.path())
+        .expect("canonicalize temp dir")
+        .abs();
+    let temp_root = cwd.join("tmp");
+    std::fs::create_dir_all(temp_root.as_path()).expect("create temp root");
     let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
         codex_protocol::permissions::FileSystemSandboxEntry {
             path: codex_protocol::permissions::FileSystemPath::Special {
                 value: codex_protocol::permissions::FileSystemSpecialPath::Root,
             },
-            access: codex_protocol::permissions::FileSystemAccessMode::Write,
+            access: codex_protocol::permissions::FileSystemAccessMode::Read,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
             path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
+                path: temp_root.clone(),
             },
-            access: codex_protocol::permissions::FileSystemAccessMode::Read,
+            access: codex_protocol::permissions::FileSystemAccessMode::Write,
         },
     ]);
     let permission_profile = PermissionProfile::from_runtime_permissions(
@@ -597,16 +599,19 @@ fn windows_restricted_token_rejects_root_write_read_only_carveouts() {
     );
 
     assert_eq!(
-        unsupported_windows_restricted_token_sandbox_reason(
+        resolve_windows_restricted_token_filesystem_overrides(
             SandboxType::WindowsRestrictedToken,
             &permission_profile,
-            &temp_dir.path().abs(),
+            &cwd,
             WindowsSandboxLevel::RestrictedToken,
         ),
-        Some(
-            "windows unelevated restricted-token sandbox cannot enforce split writable root sets directly; refusing to run unsandboxed"
-                .to_string()
-        )
+        Ok(Some(WindowsSandboxFilesystemOverrides {
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: Some(vec![temp_root.into_path_buf()]),
+            additional_deny_read_paths: vec![],
+            additional_deny_write_paths: vec![],
+        }))
     );
 }
 
