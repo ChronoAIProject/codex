@@ -5,9 +5,12 @@ use crate::config::RolloutConfig;
 use chrono::TimeZone;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -590,6 +593,131 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         "flush should retry after reopening and write buffered items"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn recorder_redacts_large_inline_images_in_persisted_compacted_history() -> std::io::Result<()>
+{
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            thread_id,
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    let non_compacted_image = large_data_image("non-compacted");
+    let compacted_image = large_data_image("compacted");
+    let small_compacted_image = "data:image/png;base64,small".to_string();
+    let remote_compacted_image = format!(
+        "https://example.com/{}",
+        "remote-image".repeat(MAX_COMPACTED_INLINE_IMAGE_BYTES)
+    );
+
+    let non_compacted_item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: non_compacted_image.clone(),
+            detail: Some(ImageDetail::High),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let compacted_item = RolloutItem::Compacted(CompactedItem {
+        message: "summary".to_string(),
+        replacement_history: Some(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputImage {
+                    image_url: compacted_image.clone(),
+                    detail: Some(ImageDetail::High),
+                },
+                ContentItem::InputImage {
+                    image_url: small_compacted_image.clone(),
+                    detail: Some(ImageDetail::Low),
+                },
+                ContentItem::InputImage {
+                    image_url: remote_compacted_image.clone(),
+                    detail: Some(ImageDetail::High),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }]),
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+    });
+
+    recorder
+        .record_canonical_items(&[
+            RolloutItem::ResponseItem(non_compacted_item),
+            compacted_item,
+        ])
+        .await?;
+    recorder.flush().await?;
+    recorder.shutdown().await?;
+
+    let raw_rollout = std::fs::read_to_string(&rollout_path)?;
+    assert!(raw_rollout.contains(non_compacted_image.as_str()));
+    assert!(!raw_rollout.contains(compacted_image.as_str()));
+    assert!(raw_rollout.contains(small_compacted_image.as_str()));
+    assert!(raw_rollout.contains(remote_compacted_image.as_str()));
+    assert!(raw_rollout.contains(REDACTED_IMAGE_PLACEHOLDER));
+
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    let RolloutItem::Compacted(compacted) = &items[2] else {
+        panic!("expected compacted rollout item");
+    };
+    assert_eq!(
+        compacted.replacement_history,
+        Some(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputImage {
+                    image_url: REDACTED_IMAGE_PLACEHOLDER.to_string(),
+                    detail: Some(ImageDetail::High),
+                },
+                ContentItem::InputImage {
+                    image_url: small_compacted_image,
+                    detail: Some(ImageDetail::Low),
+                },
+                ContentItem::InputImage {
+                    image_url: remote_compacted_image,
+                    detail: Some(ImageDetail::High),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },])
+    );
+
+    Ok(())
+}
+
+fn large_data_image(label: &str) -> String {
+    format!(
+        "data:image/png;base64,{label}{}",
+        "A".repeat(MAX_COMPACTED_INLINE_IMAGE_BYTES)
+    )
 }
 
 #[tokio::test]

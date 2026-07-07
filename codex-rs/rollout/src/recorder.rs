@@ -1,5 +1,6 @@
 //! Persist Codex session rollouts (.jsonl) so sessions can be replayed or inspected later.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
@@ -15,6 +16,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -51,6 +54,7 @@ use crate::state_db;
 use crate::state_db::StateDbHandle;
 use codex_git_utils::collect_git_info;
 use codex_git_utils::get_git_repo_root;
+use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::GitInfo as ProtocolGitInfo;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -1817,9 +1821,10 @@ impl JsonlWriter {
             .format(timestamp_format)
             .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
 
+        let item = sanitized_rollout_item_for_persistence(rollout_item);
         let line = RolloutLineRef {
             timestamp,
-            item: rollout_item,
+            item: item.as_ref(),
         };
         self.write_line(&line).await
     }
@@ -1830,6 +1835,58 @@ impl JsonlWriter {
         self.file.flush().await?;
         Ok(())
     }
+}
+
+const MAX_COMPACTED_INLINE_IMAGE_BYTES: usize = 16 * 1024;
+const REDACTED_IMAGE_PLACEHOLDER: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+fn sanitized_rollout_item_for_persistence(item: &RolloutItem) -> Cow<'_, RolloutItem> {
+    match item {
+        RolloutItem::Compacted(compacted) => sanitized_compacted_item(compacted)
+            .map(RolloutItem::Compacted)
+            .map(Cow::Owned)
+            .unwrap_or(Cow::Borrowed(item)),
+        _ => Cow::Borrowed(item),
+    }
+}
+
+fn sanitized_compacted_item(compacted: &CompactedItem) -> Option<CompactedItem> {
+    let replacement_history = compacted.replacement_history.as_ref()?;
+    let mut sanitized_replacement_history = replacement_history.clone();
+    let mut changed = false;
+    for item in &mut sanitized_replacement_history {
+        changed |= redact_large_inline_images(item);
+    }
+
+    changed.then(|| CompactedItem {
+        replacement_history: Some(sanitized_replacement_history),
+        ..compacted.clone()
+    })
+}
+
+fn redact_large_inline_images(item: &mut ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => {
+            let mut changed = false;
+            for item in content {
+                if let ContentItem::InputImage { image_url, .. } = item {
+                    changed |= redact_large_data_image(image_url);
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn redact_large_data_image(image_url: &mut String) -> bool {
+    if !image_url.starts_with("data:image/") || image_url.len() <= MAX_COMPACTED_INLINE_IMAGE_BYTES
+    {
+        return false;
+    }
+    image_url.clear();
+    image_url.push_str(REDACTED_IMAGE_PLACEHOLDER);
+    true
 }
 
 impl From<codex_state::ThreadsPage> for ThreadsPage {
