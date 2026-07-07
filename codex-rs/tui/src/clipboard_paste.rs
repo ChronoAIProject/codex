@@ -286,6 +286,34 @@ pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(not(target_os = "android"))]
+pub(crate) fn clipboard_file_list() -> Vec<PathBuf> {
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        return Vec::new();
+    };
+
+    clipboard.get().file_list().unwrap_or_default()
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn clipboard_file_list() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+pub(crate) fn resolve_clipboard_image_filename(
+    pasted_path: &Path,
+    clipboard_files: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    let pasted_filename = pasted_path.file_name()?;
+    if Path::new(pasted_filename) != pasted_path || pasted_path.extension().is_none() {
+        return None;
+    }
+
+    clipboard_files.into_iter().find(|candidate| {
+        candidate.file_name() == Some(pasted_filename) && image::image_dimensions(candidate).is_ok()
+    })
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn is_probably_wsl() -> bool {
     // Primary: Check /proc/version for "microsoft" or "WSL" (most reliable for standard WSL).

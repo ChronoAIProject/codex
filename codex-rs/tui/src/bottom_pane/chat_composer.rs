@@ -235,8 +235,10 @@ use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
 use crate::bottom_pane::textarea::TextArea;
+use crate::clipboard_paste::clipboard_file_list;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
+use crate::clipboard_paste::resolve_clipboard_image_filename;
 use crate::history_cell;
 use crate::skills_helpers::skill_display_name;
 use crate::tui::FrameRequester;
@@ -890,26 +892,42 @@ impl ChatComposer {
     }
 
     pub fn handle_paste_image_path(&mut self, pasted: String) -> bool {
+        self.handle_paste_image_path_with_clipboard_files(pasted, clipboard_file_list)
+    }
+
+    fn handle_paste_image_path_with_clipboard_files(
+        &mut self,
+        pasted: String,
+        clipboard_files: impl FnOnce() -> Vec<PathBuf>,
+    ) -> bool {
         let Some(path_buf) = normalize_pasted_path(&pasted) else {
             return false;
         };
 
         // normalize_pasted_path already handles Windows → WSL path conversion,
         // so we can directly try to read the image dimensions.
-        match image::image_dimensions(&path_buf) {
-            Ok((width, height)) => {
-                tracing::info!("OK: {pasted}");
-                tracing::debug!("image dimensions={}x{}", width, height);
-                let format = pasted_image_format(&path_buf);
-                tracing::debug!("attached image format={}", format.label());
-                self.attach_image(path_buf);
-                true
-            }
-            Err(err) => {
-                tracing::trace!("ERR: {err}");
-                false
-            }
+        if self.attach_pasted_image_path(path_buf.clone(), &pasted) {
+            return true;
         }
+
+        if let Some(path_buf) = resolve_clipboard_image_filename(&path_buf, clipboard_files()) {
+            return self.attach_pasted_image_path(path_buf, &pasted);
+        }
+
+        false
+    }
+
+    fn attach_pasted_image_path(&mut self, path_buf: PathBuf, pasted: &str) -> bool {
+        let Ok((width, height)) = image::image_dimensions(&path_buf) else {
+            return false;
+        };
+
+        tracing::info!("OK: {pasted}");
+        tracing::debug!("image dimensions={}x{}", width, height);
+        let format = pasted_image_format(&path_buf);
+        tracing::debug!("attached image format={}", format.label());
+        self.attach_image(path_buf);
+        true
     }
 
     /// Enable or disable paste-burst handling.
@@ -10362,6 +10380,37 @@ mod tests {
 
         let imgs = composer.take_recent_submission_images();
         assert_eq!(imgs, vec![tmp_path]);
+    }
+
+    #[test]
+    fn pasting_clipboard_image_filename_attaches_matching_clipboard_file() {
+        let tmp = tempdir().expect("create TempDir");
+        let tmp_path: PathBuf = tmp.path().join("codex_tui_test_clipboard_image.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(3, 2, |_x, _y| Rgba([1, 2, 3, 255]));
+        img.save(&tmp_path).expect("failed to write temp png");
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let filename = tmp_path
+            .file_name()
+            .expect("image path has filename")
+            .to_string_lossy()
+            .to_string();
+
+        let handled = composer
+            .handle_paste_image_path_with_clipboard_files(filename, || vec![tmp_path.clone()]);
+
+        assert!(handled);
+        assert!(composer.draft.textarea.text().starts_with("[Image #1]"));
+        assert_eq!(composer.take_recent_submission_images(), vec![tmp_path],);
     }
 
     #[test]
