@@ -141,11 +141,10 @@ impl codex_extension_api::ToolLifecycleContributor for ToolLifecycleRecorder {
 }
 
 #[test]
-fn handler_looks_up_namespaced_aliases_explicitly() {
-    let namespace = "mcp__codex_apps__gmail";
+fn handler_looks_up_legacy_flattened_mcp_tool_names() {
     let tool_name = "gmail_get_recent_emails";
     let plain_name = codex_tools::ToolName::plain(tool_name);
-    let namespaced_name = codex_tools::ToolName::namespaced(namespace, tool_name);
+    let namespaced_name = codex_tools::ToolName::namespaced("mcp__codex_apps__gmail", tool_name);
     let plain_handler = Arc::new(TestHandler {
         tool_name: plain_name.clone(),
     }) as Arc<dyn CoreToolRuntime>;
@@ -159,14 +158,17 @@ fn handler_looks_up_namespaced_aliases_explicitly() {
 
     let plain = registry.tool(&plain_name);
     let namespaced = registry.tool(&namespaced_name);
-    let missing_namespaced = registry.tool(&codex_tools::ToolName::namespaced(
-        "mcp__codex_apps__calendar",
-        tool_name,
+    let legacy_flattened_mcp = registry.tool(&codex_tools::ToolName::plain(
+        "mcp__codex_apps__gmail__gmail_get_recent_emails",
+    ));
+    let non_mcp_flattened = registry.tool(&codex_tools::ToolName::plain(
+        "custom__gmail__gmail_get_recent_emails",
     ));
 
     assert_eq!(plain.is_some(), true);
     assert_eq!(namespaced.is_some(), true);
-    assert_eq!(missing_namespaced.is_none(), true);
+    assert_eq!(legacy_flattened_mcp.is_some(), true);
+    assert_eq!(non_mcp_flattened.is_none(), true);
     assert!(
         plain
             .as_ref()
@@ -174,6 +176,11 @@ fn handler_looks_up_namespaced_aliases_explicitly() {
     );
     assert!(
         namespaced
+            .as_ref()
+            .is_some_and(|handler| Arc::ptr_eq(handler, &namespaced_handler))
+    );
+    assert!(
+        legacy_flattened_mcp
             .as_ref()
             .is_some_and(|handler| Arc::ptr_eq(handler, &namespaced_handler))
     );

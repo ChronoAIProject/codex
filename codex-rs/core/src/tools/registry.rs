@@ -357,7 +357,10 @@ impl ToolRegistry {
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools.get(name).map(Arc::clone)
+        self.tools
+            .get(name)
+            .or_else(|| legacy_flattened_mcp_tool_name(name).and_then(|name| self.tools.get(&name)))
+            .map(Arc::clone)
     }
 
     #[cfg(test)]
@@ -668,6 +671,16 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+fn legacy_flattened_mcp_tool_name(name: &ToolName) -> Option<ToolName> {
+    if name.namespace.is_some() || !name.name.starts_with("mcp__") {
+        return None;
+    }
+
+    let (namespace, tool_name) = name.name.rsplit_once("__")?;
+    (!namespace.is_empty() && !tool_name.is_empty())
+        .then(|| ToolName::namespaced(namespace.to_string(), tool_name.to_string()))
 }
 
 async fn notify_tool_finish_if_unclaimed(
