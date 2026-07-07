@@ -180,6 +180,32 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
 }
 
 #[tokio::test]
+async fn build_tool_call_splits_legacy_mcp_function_name() -> anyhow::Result<()> {
+    let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "mcp__cowart_mcp__render_cowart_canvas_widget".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-legacy-mcp".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("function_call should produce a tool call");
+
+    assert_eq!(
+        call,
+        ToolCall {
+            tool_name: ToolName::namespaced("mcp__cowart_mcp", "render_cowart_canvas_widget"),
+            call_id: "call-legacy-mcp".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()> {
     let tool_name = "exec".to_string();
 

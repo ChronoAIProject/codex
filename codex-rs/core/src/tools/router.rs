@@ -119,7 +119,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = function_tool_name(namespace, name);
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,
@@ -242,6 +242,22 @@ impl ToolRouter {
             .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
             .await
     }
+}
+
+fn function_tool_name(namespace: Option<String>, name: String) -> ToolName {
+    match namespace {
+        Some(namespace) => ToolName::namespaced(namespace, name),
+        None => legacy_mcp_tool_name(&name).unwrap_or_else(|| ToolName::plain(name)),
+    }
+}
+
+fn legacy_mcp_tool_name(name: &str) -> Option<ToolName> {
+    let rest = name.strip_prefix("mcp__")?;
+    let delimiter = rest.rfind("__")?;
+    let delimiter = "mcp__".len() + delimiter;
+    let namespace = name[..delimiter].to_string();
+    let tool_name = name[delimiter + "__".len()..].to_string();
+    (!tool_name.is_empty()).then(|| ToolName::namespaced(namespace, tool_name))
 }
 
 #[instrument(level = "trace", skip_all)]
