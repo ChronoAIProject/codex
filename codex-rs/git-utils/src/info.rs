@@ -68,6 +68,7 @@ pub async fn get_git_repo_root_with_fs(
 /// Timeout for git commands to prevent freezing on large repositories
 const GIT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_secs(5);
 const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+const MAX_UNTRACKED_FILES_IN_DIFF: usize = 100;
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct GitInfo {
@@ -774,21 +775,25 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
         if !untracked.is_empty() {
             // Use platform-appropriate null device and guard paths with `--`.
             let null_device: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
-            let futures_iter = untracked.into_iter().map(|file| async move {
-                let file_owned = file;
-                let args_vec: Vec<&str> = vec![
-                    "diff",
-                    "--no-textconv",
-                    "--no-ext-diff",
-                    "--binary",
-                    "--no-index",
-                    // -- ensures that filenames that start with - are not treated as options.
-                    "--",
-                    null_device,
-                    &file_owned,
-                ];
-                run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
-            });
+            let futures_iter =
+                untracked
+                    .into_iter()
+                    .take(MAX_UNTRACKED_FILES_IN_DIFF)
+                    .map(|file| async move {
+                        let file_owned = file;
+                        let args_vec: Vec<&str> = vec![
+                            "diff",
+                            "--no-textconv",
+                            "--no-ext-diff",
+                            "--binary",
+                            "--no-index",
+                            // -- ensures that filenames that start with - are not treated as options.
+                            "--",
+                            null_device,
+                            &file_owned,
+                        ];
+                        run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
+                    });
             let results = join_all(futures_iter).await;
             for extra in results.into_iter().flatten() {
                 if extra.status.code().is_some_and(|c| c == 0 || c == 1)
@@ -943,6 +948,75 @@ mod tests {
         for remote in ["", "file:///tmp/repo", "github.com/openai", "/tmp/repo"] {
             assert_eq!(canonicalize_git_remote_url(remote), None);
         }
+    }
+
+    #[tokio::test]
+    async fn diff_against_sha_limits_untracked_file_diffs() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo = temp_dir.path();
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo)
+            .status()
+            .expect("initialize test repository");
+        assert_eq!(init_status.code(), Some(0), "initialize test repository");
+
+        let name_status = std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo)
+            .status()
+            .expect("set user name");
+        assert_eq!(name_status.code(), Some(0), "set user name");
+
+        let email_status = std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo)
+            .status()
+            .expect("set user email");
+        assert_eq!(email_status.code(), Some(0), "set user email");
+
+        std::fs::write(repo.join("tracked.txt"), "tracked\n").expect("write tracked file");
+        let add_status = std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(repo)
+            .status()
+            .expect("add tracked file");
+        assert_eq!(add_status.code(), Some(0), "add tracked file");
+
+        let commit_status = std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo)
+            .status()
+            .expect("commit tracked file");
+        assert_eq!(commit_status.code(), Some(0), "commit tracked file");
+
+        let sha_output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("read HEAD");
+        assert_eq!(sha_output.status.code(), Some(0), "read HEAD");
+        let sha = String::from_utf8(sha_output.stdout).expect("HEAD sha is UTF-8");
+
+        for i in 0..=MAX_UNTRACKED_FILES_IN_DIFF {
+            std::fs::write(
+                repo.join(format!("untracked-{i:03}.txt")),
+                format!("new file {i}\n"),
+            )
+            .expect("write untracked file");
+        }
+
+        let diff = diff_against_sha(repo, &GitSha::new(sha.trim()))
+            .await
+            .expect("diff against HEAD");
+
+        assert_eq!(
+            diff.matches("diff --git").count(),
+            MAX_UNTRACKED_FILES_IN_DIFF
+        );
+        assert!(diff.contains("untracked-000.txt"));
+        assert!(!diff.contains("untracked-100.txt"));
     }
 
     #[cfg(unix)]
