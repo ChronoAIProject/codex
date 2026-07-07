@@ -217,6 +217,10 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the working directory for subsequent turns.
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
+    /// Replace the thread's runtime workspace roots. Paths must be absolute.
+    #[experimental("thread/settings/update.runtimeWorkspaceRoots")]
+    #[ts(optional = nullable)]
+    pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     /// Override the approval policy for subsequent turns.
     #[experimental(nested)]
     #[ts(optional = nullable)]

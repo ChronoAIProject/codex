@@ -23,6 +23,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::test_support::all_model_presets;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -142,6 +143,62 @@ async fn thread_settings_update_cwd_retargets_default_environment() -> Result<()
             workspace.path().to_string_lossy()
         )),
         "default environment should use the updated cwd: {environment_context}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_replaces_runtime_workspace_roots() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let body = responses::sse(vec![
+        responses::ev_response_created("resp-1"),
+        responses::ev_assistant_message("msg-1", "done"),
+        responses::ev_completed("resp-1"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, body).await;
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let extra_root = workspace.path().join("extra-root");
+    std::fs::create_dir_all(&extra_root)?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            runtime_workspace_roots: Some(vec![
+                AbsolutePathBuf::from_absolute_path(&extra_root)?,
+                AbsolutePathBuf::from_absolute_path(extra_root.join("."))?,
+            ]),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let environment_context = response_mock
+        .single_request()
+        .message_input_texts("user")
+        .into_iter()
+        .find(|text| text.starts_with("<environment_context>"))
+        .context("environment context should be model visible")?;
+    assert!(
+        environment_context.contains(&format!(
+            "<workspace_roots><root>{}</root></workspace_roots>",
+            extra_root.to_string_lossy()
+        )),
+        "future turn should use the updated workspace roots: {environment_context}"
     );
 
     Ok(())
