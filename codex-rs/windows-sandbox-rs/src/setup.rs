@@ -726,6 +726,21 @@ fn verify_setup_completed(codex_home: &Path) -> Result<()> {
     }
 }
 
+fn elevated_setup_launch_failure(exe: &Path, last_error: u32) -> SetupFailure {
+    let code = if last_error == ERROR_CANCELLED {
+        SetupErrorCode::OrchestratorHelperLaunchCanceled
+    } else {
+        SetupErrorCode::OrchestratorHelperLaunchFailed
+    };
+    SetupFailure::new(
+        code,
+        format!(
+            "ShellExecuteExW failed to launch setup helper: {last_error}; helper={}; if Windows reports that a module could not be found, repair or reinstall Codex",
+            exe.display()
+        ),
+    )
+}
+
 fn run_setup_exe(
     payload: &ElevationPayload,
     needs_elevation: bool,
@@ -806,15 +821,9 @@ fn run_setup_exe(
     let ok = unsafe { ShellExecuteExW(&mut sei) };
     if ok == 0 || sei.hProcess == 0 {
         let last_error = unsafe { GetLastError() };
-        let code = if last_error == ERROR_CANCELLED {
-            SetupErrorCode::OrchestratorHelperLaunchCanceled
-        } else {
-            SetupErrorCode::OrchestratorHelperLaunchFailed
-        };
-        return Err(failure(
-            code,
-            format!("ShellExecuteExW failed to launch setup helper: {last_error}"),
-        ));
+        return Err(anyhow::Error::new(elevated_setup_launch_failure(
+            &exe, last_error,
+        )));
     }
     unsafe {
         WaitForSingleObject(sei.hProcess, INFINITE);
@@ -1294,6 +1303,21 @@ mod tests {
                 "setup helper exited with status Some(1)",
             ),
             failure
+        );
+    }
+
+    #[test]
+    fn elevated_setup_launch_failure_reports_helper_path_and_remediation() {
+        let helper = PathBuf::from(r"C:\Program Files\Codex\codex-windows-sandbox-setup.exe");
+
+        let failure = super::elevated_setup_launch_failure(&helper, super::ERROR_CANCELLED);
+
+        assert_eq!(
+            failure,
+            super::SetupFailure::new(
+                SetupErrorCode::OrchestratorHelperLaunchCanceled,
+                r"ShellExecuteExW failed to launch setup helper: 1223; helper=C:\Program Files\Codex\codex-windows-sandbox-setup.exe; if Windows reports that a module could not be found, repair or reinstall Codex",
+            )
         );
     }
 
