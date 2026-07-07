@@ -4073,6 +4073,7 @@ async fn make_test_app() -> App {
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
         transcript_reflow: TranscriptReflowState::default(),
+        last_inline_viewport_height: None,
         initial_history_replay_buffer: None,
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),
@@ -4138,6 +4139,7 @@ async fn make_test_app_with_channels() -> (
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
+            last_inline_viewport_height: None,
             initial_history_replay_buffer: None,
             enhanced_keys_supported: false,
             keymap: crate::keymap::RuntimeKeymap::defaults(),
@@ -4600,6 +4602,21 @@ async fn height_shrink_schedules_resize_reflow() {
         ratatui::layout::Size::new(/*width*/ 118, /*height*/ 35),
         &frame_requester,
     ));
+    assert!(app.transcript_reflow.has_pending_reflow());
+}
+
+#[tokio::test]
+async fn inline_viewport_height_change_after_history_schedules_resize_reflow() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    let frame_requester = crate::tui::FrameRequester::test_dummy();
+
+    app.note_inline_viewport_height(/*desired_height*/ 4, &frame_requester);
+
+    assert!(!app.transcript_reflow.has_pending_reflow());
+
+    app.has_emitted_history_lines = true;
+    app.note_inline_viewport_height(/*desired_height*/ 7, &frame_requester);
+
     assert!(app.transcript_reflow.has_pending_reflow());
 }
 

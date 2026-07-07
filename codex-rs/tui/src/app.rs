@@ -525,6 +525,7 @@ pub(crate) struct App {
     pub(crate) deferred_history_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
+    last_inline_viewport_height: Option<u16>,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
 
     pub(crate) enhanced_keys_supported: bool,
@@ -1036,6 +1037,7 @@ See the Codex keymap documentation for supported actions and examples."
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
+            last_inline_viewport_height: None,
             initial_history_replay_buffer: None,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
@@ -1348,6 +1350,7 @@ See the Codex keymap documentation for supported actions and examples."
 
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
         let desired_height = self.chat_widget.desired_height(tui.terminal.size()?.width);
+        self.note_inline_viewport_height(desired_height, &tui.frame_requester());
         let mut rendered_area = Rect::default();
         tui.draw_with_resize_reflow(desired_height, |frame| {
             let area = frame.area();
@@ -1359,6 +1362,23 @@ See the Codex keymap documentation for supported actions and examples."
             }
         })?;
         Ok(rendered_area)
+    }
+
+    fn note_inline_viewport_height(
+        &mut self,
+        desired_height: u16,
+        frame_requester: &tui::FrameRequester,
+    ) {
+        let previous_height = self.last_inline_viewport_height.replace(desired_height);
+        let height_changed =
+            previous_height.is_some_and(|previous_height| previous_height != desired_height);
+        if height_changed && self.has_emitted_history_lines && self.overlay.is_none() {
+            if self.should_mark_reflow_as_stream_time() {
+                self.transcript_reflow.mark_resize_requested_during_stream();
+            }
+            self.transcript_reflow.schedule_immediate();
+            frame_requester.schedule_frame();
+        }
     }
 }
 
