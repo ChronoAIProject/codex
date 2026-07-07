@@ -3,6 +3,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use pretty_assertions::assert_eq;
 use std::num::NonZeroU64;
+#[cfg(unix)]
+use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
@@ -130,6 +132,56 @@ supports_websockets = true
 
     let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
     assert_eq!(provider.websocket_connect_timeout_ms, Some(15_000));
+}
+
+#[cfg(unix)]
+#[test]
+fn api_key_falls_back_to_shell_startup_env() {
+    let bash = std::path::Path::new("/bin/bash");
+    if !bash.exists() {
+        return;
+    }
+
+    let home = tempdir().expect("create home");
+    std::fs::write(
+        home.path().join(".bashrc"),
+        "export CODEX_TEST_PROVIDER_API_KEY=shell-api-key\n",
+    )
+    .expect("write bashrc");
+
+    let output = Command::new(std::env::current_exe().expect("current test executable"))
+        .arg("api_key_child_reads_shell_startup_env")
+        .env("CODEX_TEST_PROVIDER_API_KEY_CHILD", "1")
+        .env("HOME", home.path())
+        .env("SHELL", bash)
+        .env_remove("CODEX_TEST_PROVIDER_API_KEY")
+        .output()
+        .expect("run child test");
+
+    assert!(
+        output.status.success(),
+        "child test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn api_key_child_reads_shell_startup_env() {
+    if std::env::var_os("CODEX_TEST_PROVIDER_API_KEY_CHILD").is_none() {
+        return;
+    }
+
+    let provider = ModelProviderInfo {
+        env_key: Some("CODEX_TEST_PROVIDER_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+
+    assert_eq!(
+        provider.api_key().expect("api key should resolve"),
+        Some("shell-api-key".to_string())
+    );
 }
 
 #[test]

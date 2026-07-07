@@ -277,14 +277,15 @@ impl ModelProviderInfo {
     }
 
     /// If `env_key` is Some, returns the API key for this provider if present
-    /// (and non-empty) in the environment. If `env_key` is required but
-    /// cannot be found, returns an error.
+    /// (and non-empty) in the process environment or user shell environment. If
+    /// `env_key` is required but cannot be found, returns an error.
     pub fn api_key(&self) -> CodexResult<Option<String>> {
         match &self.env_key {
             Some(env_key) => {
                 let api_key = std::env::var(env_key)
                     .ok()
-                    .filter(|v| !v.trim().is_empty())
+                    .and_then(non_empty_env_value)
+                    .or_else(|| api_key_from_shell_env(env_key))
                     .ok_or_else(|| {
                         CodexErr::EnvVar(EnvVarError {
                             var: env_key.clone(),
@@ -417,6 +418,86 @@ impl ModelProviderInfo {
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()
     }
+}
+
+fn non_empty_env_value(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(unix)]
+fn api_key_from_shell_env(env_key: &str) -> Option<String> {
+    if !is_valid_env_var_name(env_key) {
+        return None;
+    }
+
+    let shell = std::env::var_os("SHELL").filter(|value| !value.is_empty())?;
+    let shell_name = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let script = match shell_name {
+        "bash" => {
+            r#"if [ -z "$BASH_ENV" ] && [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>/dev/null; fi; printenv "$1""#
+        }
+        "zsh" => {
+            r#"if [ -n "$ZDOTDIR" ]; then rc="$ZDOTDIR/.zshrc"; else rc="$HOME/.zshrc"; fi; if [ -r "$rc" ]; then . "$rc" >/dev/null 2>/dev/null; fi; printenv "$1""#
+        }
+        _ => {
+            r#"if [ -n "$ENV" ] && [ -r "$ENV" ]; then . "$ENV" >/dev/null 2>/dev/null; fi; printenv "$1""#
+        }
+    };
+
+    let mut child = std::process::Command::new(shell)
+        .arg("-c")
+        .arg(script)
+        .arg("codex-env")
+        .arg(env_key)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            if !status.success() {
+                return None;
+            }
+            break;
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(2) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let output = child.wait_with_output().ok()?;
+    let mut value = String::from_utf8(output.stdout).ok()?;
+    if value.ends_with('\n') {
+        value.pop();
+        if value.ends_with('\r') {
+            value.pop();
+        }
+    }
+    non_empty_env_value(value)
+}
+
+#[cfg(not(unix))]
+fn api_key_from_shell_env(_env_key: &str) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))
+        && chars.all(|ch| matches!(ch, '_' | 'A'..='Z' | 'a'..='z' | '0'..='9'))
 }
 
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
