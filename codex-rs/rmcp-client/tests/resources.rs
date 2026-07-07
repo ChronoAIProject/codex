@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use rmcp::model::ProtocolVersion;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ResourceContents;
 use serde_json::json;
+use serial_test::serial;
 
 const RESOURCE_URI: &str = "memo://codex/example-note";
 
@@ -40,6 +42,38 @@ fn init_params() -> InitializeRequestParams {
         Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp resource test"),
     )
     .with_protocol_version(ProtocolVersion::V_2025_06_18)
+}
+
+struct EnvVarGuard {
+    key: String,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value.as_ref());
+        }
+        Self {
+            key: key.to_string(),
+            original,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.original {
+            unsafe {
+                std::env::set_var(&self.key, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -134,5 +168,58 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
         }
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(local_stdio_env)]
+async fn local_stdio_server_inherits_parent_environment() -> anyhow::Result<()> {
+    let var_name = "CODEX_RMCP_PARENT_ONLY_ENV";
+    let var_value = "available-to-child";
+    let _guard = EnvVarGuard::set(var_name, var_value);
+
+    let client = RmcpClient::new_stdio_client(
+        stdio_server_bin()?.into(),
+        Vec::<OsString>::new(),
+        /*env*/ None,
+        &[],
+        /*cwd*/ None,
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await?;
+
+    client
+        .initialize(
+            init_params(),
+            Some(Duration::from_secs(5)),
+            Box::new(|_, _| {
+                async {
+                    Ok(ElicitationResponse {
+                        action: ElicitationAction::Accept,
+                        content: Some(json!({})),
+                        meta: None,
+                    })
+                }
+                .boxed()
+            }),
+        )
+        .await?;
+
+    let result = client
+        .call_tool(
+            "echo".to_string(),
+            Some(json!({ "message": "hello", "env_var": var_name })),
+            /*meta*/ None,
+            Some(Duration::from_secs(5)),
+        )
+        .await?;
+
+    assert_eq!(
+        result.structured_content,
+        Some(json!({
+            "echo": "ECHOING: hello",
+            "env": var_value,
+        }))
+    );
     Ok(())
 }

@@ -259,7 +259,6 @@ impl LocalStdioServerLauncher {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .current_dir(cwd)
-            .env_clear()
             .envs(envs)
             .args(args);
         #[cfg(unix)]
