@@ -100,6 +100,7 @@ mod tests {
 
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
+    use super::windows_input_mode_after_raw_mode;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
@@ -128,6 +129,24 @@ mod tests {
             NotificationCondition::Unfocused,
             /*terminal_focused*/ false
         ));
+    }
+
+    #[test]
+    fn windows_raw_mode_keeps_processed_input_for_ime_toggles() {
+        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+        const ENABLE_LINE_INPUT: u32 = 0x0002;
+        const ENABLE_ECHO_INPUT: u32 = 0x0004;
+        const ENABLE_WINDOW_INPUT: u32 = 0x0008;
+
+        let original_mode =
+            ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_WINDOW_INPUT;
+        let crossterm_raw_mode =
+            original_mode & !(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+
+        assert_eq!(
+            windows_input_mode_after_raw_mode(crossterm_raw_mode),
+            ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT
+        );
     }
 
     #[test]
@@ -178,6 +197,8 @@ pub fn set_modes() -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
     enable_raw_mode()?;
+    #[cfg(windows)]
+    keep_windows_processed_input()?;
     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
     // chat_composer.rs is using a keyboard event listener to enter for any modified keys
     // to create a new line that require this.
@@ -188,6 +209,43 @@ pub fn set_modes() -> Result<()> {
 
     let _ = execute!(stdout(), EnableFocusChange);
     Ok(())
+}
+
+#[cfg(windows)]
+fn keep_windows_processed_input() -> Result<()> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetConsoleMode;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Console::SetConsoleMode;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        return Ok(());
+    }
+
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        return Ok(());
+    }
+
+    let requested_mode = windows_input_mode_after_raw_mode(mode);
+    if mode == requested_mode {
+        return Ok(());
+    }
+
+    if unsafe { SetConsoleMode(handle, requested_mode) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn windows_input_mode_after_raw_mode(mode: u32) -> u32 {
+    const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+
+    mode | ENABLE_PROCESSED_INPUT
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
