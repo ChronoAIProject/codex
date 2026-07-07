@@ -71,6 +71,14 @@ pub struct Cli {
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
 
+    /// Create or reuse an isolated git worktree for the session.
+    #[arg(long = "worktree", value_name = "NAME", num_args = 0..=1)]
+    pub worktree: Option<Option<String>>,
+
+    /// Attach the worktree session to tmux.
+    #[arg(long = "tmux", default_value_t = false, requires = "worktree")]
+    pub tmux: bool,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }
@@ -137,3 +145,7 @@ fn mark_tui_args(cmd: clap::Command) -> clap::Command {
         arg.conflicts_with("approval_policy")
     })
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;
