@@ -102,6 +102,7 @@ pub(crate) struct BacktrackSelection {
 pub(crate) struct PendingBacktrackRollback {
     pub(crate) selection: BacktrackSelection,
     pub(crate) thread_id: Option<ThreadId>,
+    pub(crate) submitted: bool,
 }
 
 impl App {
@@ -211,12 +212,6 @@ impl App {
             return;
         }
 
-        let num_turns = user_total.saturating_sub(selection.nth_user_message);
-        let num_turns = u32::try_from(num_turns).unwrap_or(u32::MAX);
-        if num_turns == 0 {
-            return;
-        }
-
         let prefill = selection.prefill.clone();
         let text_elements = selection.text_elements.clone();
         let local_image_paths = selection.local_image_paths.clone();
@@ -225,9 +220,8 @@ impl App {
         self.backtrack.pending_rollback = Some(PendingBacktrackRollback {
             selection,
             thread_id: self.chat_widget.thread_id(),
+            submitted: false,
         });
-        self.chat_widget
-            .submit_op(AppCommand::thread_rollback(num_turns));
         self.chat_widget.set_remote_image_urls(remote_image_urls);
         if !prefill.is_empty()
             || !text_elements.is_empty()
@@ -240,6 +234,17 @@ impl App {
     }
 
     pub(crate) fn apply_cancelled_turn_edit(&mut self, prompt: UserMessage) {
+        if self
+            .backtrack
+            .pending_rollback
+            .as_ref()
+            .is_some_and(|pending| !pending.submitted)
+        {
+            self.backtrack.pending_rollback = None;
+            self.chat_widget.restore_user_message_to_composer(prompt);
+            return;
+        }
+
         let user_total = user_count(&self.transcript_cells);
         let selection = BacktrackSelection {
             nth_user_message: user_total.saturating_sub(1),
@@ -261,13 +266,27 @@ impl App {
             self.backtrack.pending_rollback = Some(PendingBacktrackRollback {
                 selection,
                 thread_id: self.chat_widget.thread_id(),
+                submitted: true,
             });
             self.chat_widget
                 .submit_op(AppCommand::thread_rollback(/*num_turns*/ 1));
             self.chat_widget.restore_user_message_to_composer(prompt);
             return;
         }
-        self.apply_backtrack_rollback(selection);
+
+        if self.backtrack.pending_rollback.is_some() {
+            self.chat_widget
+                .add_error_message("Backtrack rollback already in progress.".to_string());
+            self.chat_widget.restore_user_message_to_composer(prompt);
+            return;
+        }
+        self.backtrack.pending_rollback = Some(PendingBacktrackRollback {
+            selection,
+            thread_id: self.chat_widget.thread_id(),
+            submitted: true,
+        });
+        self.chat_widget
+            .submit_op(AppCommand::thread_rollback(/*num_turns*/ 1));
         self.chat_widget.restore_user_message_to_composer(prompt);
     }
 
@@ -520,7 +539,12 @@ impl App {
     }
 
     pub(crate) fn handle_backtrack_rollback_succeeded(&mut self, num_turns: u32) {
-        if self.backtrack.pending_rollback.is_some() {
+        if self
+            .backtrack
+            .pending_rollback
+            .as_ref()
+            .is_some_and(|pending| pending.submitted)
+        {
             self.finish_pending_backtrack();
         } else {
             self.app_event_tx
@@ -530,6 +554,22 @@ impl App {
 
     pub(crate) fn handle_backtrack_rollback_failed(&mut self) {
         self.backtrack.pending_rollback = None;
+    }
+
+    pub(crate) fn pending_backtrack_rollback_turns(&mut self) -> Option<u32> {
+        let pending = self.backtrack.pending_rollback.as_mut()?;
+        if pending.submitted || pending.thread_id != self.chat_widget.thread_id() {
+            return None;
+        }
+
+        let user_total = user_count(&self.transcript_cells);
+        let num_turns = user_total.saturating_sub(pending.selection.nth_user_message);
+        if num_turns == 0 {
+            return None;
+        }
+
+        pending.submitted = true;
+        Some(u32::try_from(num_turns).unwrap_or(u32::MAX))
     }
 
     /// Apply rollback semantics for a confirmed rollback where this TUI does

@@ -573,6 +573,18 @@ impl App {
                 collaboration_mode,
                 personality,
             } => {
+                if let Some(num_turns) = self.pending_backtrack_rollback_turns() {
+                    let response = match app_server.thread_rollback(thread_id, num_turns).await {
+                        Ok(response) => response,
+                        Err(err) => {
+                            self.handle_backtrack_rollback_failed();
+                            return Err(err);
+                        }
+                    };
+                    self.handle_thread_rollback_response(thread_id, num_turns, &response)
+                        .await;
+                }
+
                 let mut should_start_turn = true;
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     let mut steer_turn_id = turn_id;

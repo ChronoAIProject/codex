@@ -5120,14 +5120,9 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
         vec!["https://example.com/backtrack.png".to_string()]
     );
 
-    let mut rollback_turns = None;
     while let Ok(op) = op_rx.try_recv() {
-        if let Op::ThreadRollback { num_turns } = op {
-            rollback_turns = Some(num_turns);
-        }
+        assert!(!matches!(op, Op::ThreadRollback { .. }));
     }
-
-    assert_eq!(rollback_turns, Some(1));
 }
 
 #[tokio::test]
@@ -5155,13 +5150,52 @@ async fn backtrack_remote_image_only_selection_clears_existing_composer_draft() 
     assert_eq!(app.chat_widget.composer_text_with_pending(), "");
     assert_eq!(app.chat_widget.remote_image_urls(), vec![remote_image_url]);
 
-    let mut rollback_turns = None;
-    while let Ok(op) = op_rx.try_recv() {
-        if let Op::ThreadRollback { num_turns } = op {
-            rollback_turns = Some(num_turns);
-        }
-    }
-    assert_eq!(rollback_turns, Some(1));
+    assert_matches!(
+        op_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+}
+
+#[tokio::test]
+async fn cancelled_backtrack_edit_does_not_submit_another_rollback() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+
+    app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        message: "original".to_string(),
+        text_elements: Vec::new(),
+        local_image_paths: Vec::new(),
+        remote_image_urls: Vec::new(),
+    }) as Arc<dyn HistoryCell>];
+
+    app.apply_backtrack_rollback(BacktrackSelection {
+        nth_user_message: 0,
+        prefill: "original".to_string(),
+        text_elements: Vec::new(),
+        local_image_paths: Vec::new(),
+        remote_image_urls: Vec::new(),
+    });
+
+    assert_matches!(
+        op_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+
+    let prompt = crate::chatwidget::UserMessage {
+        text: "original".to_string(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        text_elements: Vec::new(),
+        mention_bindings: Vec::new(),
+    };
+
+    app.apply_cancelled_turn_edit(prompt);
+
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "original");
+    assert!(app.backtrack.pending_rollback.is_none());
+    assert_matches!(
+        op_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
 }
 
 #[tokio::test]
@@ -5267,17 +5301,15 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    let mut saw_rollback = false;
     let mut submitted_items: Option<Vec<UserInput>> = None;
     while let Ok(op) = op_rx.try_recv() {
         match op {
-            Op::ThreadRollback { .. } => saw_rollback = true,
             Op::UserTurn { items, .. } => submitted_items = Some(items),
             _ => {}
         }
     }
 
-    assert!(saw_rollback);
+    assert!(app.backtrack.pending_rollback.is_some());
     let items = submitted_items.expect("expected user turn after backtrack resubmit");
     assert!(items.iter().any(|item| {
         matches!(
