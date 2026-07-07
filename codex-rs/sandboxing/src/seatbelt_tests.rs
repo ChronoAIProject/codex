@@ -31,12 +31,16 @@ use codex_protocol::permissions::PROTECTED_METADATA_PATH_NAMES;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
+use std::ffi::CString;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
+
+const CACHELINESIZE_HELPER_ENV: &str = "CODEX_SEATBELT_CACHELINESIZE_HELPER";
 
 fn assert_seatbelt_denied(stderr: &[u8], path: &Path) {
     let stderr = String::from_utf8_lossy(stderr);
@@ -107,6 +111,85 @@ fn base_policy_allows_node_cpu_sysctls() {
         MACOS_SEATBELT_BASE_POLICY.contains("(sysctl-name \"hw.model\")"),
         "base policy must allow hardware model lookup for os.cpus()"
     );
+}
+
+#[test]
+fn base_policy_allows_cachelinesize_sysctl() {
+    if read_cachelinesize_sysctl().is_err() {
+        eprintln!("hw.cachelinesize is unavailable outside seatbelt, skipping test.");
+        return;
+    }
+
+    let current_exe = std::env::current_exe().expect("current test executable");
+    let args = create_seatbelt_command_args_for_legacy_policy(
+        vec![
+            current_exe.to_string_lossy().to_string(),
+            "--exact".to_string(),
+            "seatbelt::tests::cachelinesize_sysctl_helper".to_string(),
+            "--nocapture".to_string(),
+        ],
+        &SandboxPolicy::new_read_only_policy(),
+        Path::new("/"),
+        /*enforce_managed_network*/ false,
+        /*network*/ None,
+    )
+    .unwrap();
+
+    let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
+        .args(&args)
+        .env(CACHELINESIZE_HELPER_ENV, "1")
+        .output()
+        .expect("execute cachelinesize helper under seatbelt");
+
+    assert!(
+        output.status.success(),
+        "cachelinesize helper under seatbelt exited with {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cachelinesize_sysctl_helper() {
+    if std::env::var(CACHELINESIZE_HELPER_ENV).as_deref() != Ok("1") {
+        return;
+    }
+
+    read_cachelinesize_sysctl().expect("read hw.cachelinesize under seatbelt");
+}
+
+fn read_cachelinesize_sysctl() -> io::Result<Vec<u8>> {
+    let name = CString::new("hw.cachelinesize").expect("static sysctl name should not contain NUL");
+    let mut len = 0;
+    let result = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut value = vec![0_u8; len];
+    let result = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    value.truncate(len);
+    Ok(value)
 }
 
 #[test]

@@ -26,6 +26,7 @@
   (sysctl-name "hw.busfrequency_compat")
   (sysctl-name "hw.byteorder")
   (sysctl-name "hw.cacheconfig")
+  (sysctl-name "hw.cachelinesize")
   (sysctl-name "hw.cachelinesize_compat")
   (sysctl-name "hw.cpufamily")
   (sysctl-name "hw.cpufrequency_compat")
