@@ -147,6 +147,13 @@ impl SystemSkillsError {
 mod tests {
     use super::SYSTEM_SKILLS_DIR;
     use super::collect_fingerprint_items;
+    use super::install_system_skills;
+    use super::system_cache_root_dir;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::SystemTime;
 
     #[test]
     fn fingerprint_traverses_nested_entries() {
@@ -165,5 +172,62 @@ mod tests {
                 .binary_search_by(|probe| probe.as_str().cmp("skill-creator/scripts/init_skill.py"))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn bundled_skill_validator_runs_without_site_packages() {
+        if Command::new("python3").arg("--version").status().is_err() {
+            eprintln!("python3 not found in PATH, skipping test.");
+            return;
+        }
+
+        let tempdir = unique_temp_dir();
+        fs::create_dir_all(&tempdir).expect("create temp dir");
+
+        let codex_home =
+            AbsolutePathBuf::try_from(tempdir.join("codex-home")).expect("absolute codex home");
+        install_system_skills(&codex_home).expect("install system skills");
+
+        let skill_dir = tempdir.join("valid-skill");
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: valid-skill
+description: Validate without PyYAML being installed.
+metadata:
+  short-description: Validate skill
+---
+
+# Valid Skill
+"#,
+        )
+        .expect("write skill file");
+
+        let validator =
+            system_cache_root_dir(&codex_home).join("skill-creator/scripts/quick_validate.py");
+        let output = Command::new("python3")
+            .arg("-S")
+            .arg(validator.as_path())
+            .arg(&skill_dir)
+            .output()
+            .expect("run validator");
+
+        assert!(
+            output.status.success(),
+            "validator failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        fs::remove_dir_all(tempdir).expect("remove temp dir");
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("codex-skills-test-{}-{nanos}", std::process::id()))
     }
 }

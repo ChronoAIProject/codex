@@ -7,9 +7,42 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 MAX_SKILL_NAME_LENGTH = 64
+
+
+class FrontmatterError(Exception):
+    pass
+
+
+def parse_frontmatter(frontmatter_text):
+    frontmatter = {}
+
+    for line_number, line in enumerate(frontmatter_text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[0].isspace():
+            continue
+
+        key, separator, value = line.partition(":")
+        if not separator or not key.strip():
+            raise FrontmatterError(f"line {line_number}: expected 'key: value'")
+        if key != key.strip():
+            raise FrontmatterError(f"line {line_number}: invalid key spacing")
+
+        value = value.strip()
+        if value == "":
+            frontmatter[key] = None
+        elif value[0] in {'"', "'"}:
+            if len(value) < 2 or value[-1] != value[0]:
+                raise FrontmatterError(f"line {line_number}: unterminated quoted value")
+            frontmatter[key] = value[1:-1]
+        elif value in {"true", "false"}:
+            frontmatter[key] = value == "true"
+        else:
+            frontmatter[key] = value
+
+    return frontmatter
 
 
 def validate_skill(skill_path):
@@ -31,10 +64,10 @@ def validate_skill(skill_path):
     frontmatter_text = match.group(1)
 
     try:
-        frontmatter = yaml.safe_load(frontmatter_text)
+        frontmatter = parse_frontmatter(frontmatter_text)
         if not isinstance(frontmatter, dict):
             return False, "Frontmatter must be a YAML dictionary"
-    except yaml.YAMLError as e:
+    except FrontmatterError as e:
         return False, f"Invalid YAML in frontmatter: {e}"
 
     allowed_properties = {"name", "description", "license", "allowed-tools", "metadata"}
