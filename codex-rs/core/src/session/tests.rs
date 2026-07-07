@@ -9933,6 +9933,37 @@ async fn try_start_turn_if_idle_rejects_active_review_turn_without_injecting() {
 }
 
 #[tokio::test]
+async fn inject_no_new_turn_records_history_during_active_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    let item = user_message("approval policy updated");
+    sess.inject_no_new_turn(vec![item.clone()], Some(tc.as_ref()))
+        .await;
+
+    let mut expected_item = item;
+    expected_item.set_turn_id_if_missing(&tc.sub_id);
+    assert_eq!(
+        sess.clone_history().await.raw_items(),
+        std::slice::from_ref(&expected_item)
+    );
+    assert_eq!(
+        Vec::<TurnInput>::new(),
+        sess.input_queue.get_pending_input(&sess.active_turn).await
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn steer_input_requires_active_turn() {
     let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
     let input = vec![UserInput::Text {

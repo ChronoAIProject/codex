@@ -145,9 +145,6 @@ impl Session {
         items: Vec<ResponseItem>,
         current_turn_context: Option<&TurnContext>,
     ) {
-        let Err(items) = self.inject_if_running(items).await else {
-            return;
-        };
         let default_turn_context;
         let turn_context = match current_turn_context {
             Some(turn_context) => turn_context,
