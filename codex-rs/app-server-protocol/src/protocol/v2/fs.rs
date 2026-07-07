@@ -1,6 +1,7 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -165,7 +166,26 @@ pub struct FsWatchParams {
     /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
     pub watch_id: String,
     /// Absolute file or directory path to watch.
+    #[serde(deserialize_with = "deserialize_watch_path")]
     pub path: AbsolutePathBuf,
+}
+
+fn deserialize_watch_path<'de, D>(deserializer: D) -> Result<AbsolutePathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = String::deserialize(deserializer)?;
+    #[cfg(windows)]
+    let path = strip_legacy_windows_url_path_prefix(&path).unwrap_or(&path);
+    AbsolutePathBuf::try_from(path).map_err(serde::de::Error::custom)
+}
+
+#[cfg(windows)]
+fn strip_legacy_windows_url_path_prefix(path: &str) -> Option<&str> {
+    let stripped = path.strip_prefix('/')?;
+    let bytes = stripped.as_bytes();
+    matches!(bytes, [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
+        .then_some(stripped)
 }
 
 /// Successful response for `fs/watch`.

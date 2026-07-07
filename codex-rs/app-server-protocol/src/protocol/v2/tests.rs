@@ -1003,6 +1003,25 @@ fn fs_copy_params_round_trip_with_recursive_directory_copy() {
     assert_eq!(decoded, params);
 }
 
+#[cfg(windows)]
+#[test]
+fn fs_watch_params_accept_legacy_windows_url_path() {
+    let params = serde_json::from_value::<FsWatchParams>(json!({
+        "watchId": "watch-1",
+        "path": "/C:/Users/codex/Workspace With Space/file.md",
+    }))
+    .expect("deserialize fs/watch params");
+
+    assert_eq!(
+        params,
+        FsWatchParams {
+            watch_id: "watch-1".to_string(),
+            path: AbsolutePathBuf::try_from(r"C:\Users\codex\Workspace With Space\file.md")
+                .expect("absolute Windows path"),
+        }
+    );
+}
+
 #[test]
 fn thread_shell_command_params_round_trip() {
     let params = ThreadShellCommandParams {
