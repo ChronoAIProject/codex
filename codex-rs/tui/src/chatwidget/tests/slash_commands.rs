@@ -2622,7 +2622,7 @@ async fn slash_rollout_handles_missing_path() {
 }
 
 #[tokio::test]
-async fn fast_slash_command_updates_and_persists_local_service_tier() {
+async fn fast_slash_command_updates_local_service_tier_without_persisting_default() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     set_fast_mode_test_catalog(&mut chat);
     chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
@@ -2642,14 +2642,10 @@ async fn fast_slash_command_updates_and_persists_local_service_tier() {
         "expected fast-mode override app event; events: {events:?}"
     );
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::PersistServiceTierSelection {
-                service_tier: Some(service_tier),
-            }
-            if service_tier == ServiceTier::Fast.request_value()
-        )),
-        "expected fast-mode persistence app event; events: {events:?}"
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::PersistServiceTierSelection { .. })),
+        "did not expect fast-mode toggle to persist a default service tier; events: {events:?}"
     );
 
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
@@ -2675,14 +2671,10 @@ async fn fast_keybinding_toggle_uses_same_events_as_fast_slash_command() {
         "expected fast-mode override app event; events: {events:?}"
     );
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::PersistServiceTierSelection {
-                service_tier: Some(service_tier),
-            }
-            if service_tier == ServiceTier::Fast.request_value()
-        )),
-        "expected fast-mode persistence app event; events: {events:?}"
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::PersistServiceTierSelection { .. })),
+        "did not expect fast-mode keybinding toggle to persist a default service tier; events: {events:?}"
     );
 
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
@@ -2835,13 +2827,10 @@ async fn user_turn_sends_standard_override_after_fast_is_turned_off() {
         "expected fast-mode off default service tier app event; events: {events:?}"
     );
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::PersistServiceTierSelection {
-                service_tier: Some(service_tier)
-            } if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
-        )),
-        "expected default service tier persistence app event; events: {events:?}"
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::PersistServiceTierSelection { .. })),
+        "did not expect turning fast mode off to persist a default service tier; events: {events:?}"
     );
 
     chat.bottom_pane

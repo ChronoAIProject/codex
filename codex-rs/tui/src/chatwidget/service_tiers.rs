@@ -120,8 +120,6 @@ impl ChatWidget {
                 /*collaboration_mode*/ None,
                 /*personality*/ None,
             )));
-        self.app_event_tx
-            .send(AppEvent::PersistServiceTierSelection { service_tier });
     }
 
     fn model_supports_service_tier(&self, model: &str, service_tier: &str) -> bool {
