@@ -68,12 +68,16 @@ use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
 use codex_config::LoaderOverrides;
+use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
+use codex_core::McpManager;
 use codex_core::build_models_manager;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
 use codex_core::config::resolve_profile_v2_config_path;
+use codex_core_plugins::PluginsManager;
 use codex_features::FEATURES;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
@@ -137,6 +141,10 @@ enum Subcommand {
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
+
+    /// Diagnose Computer Use desktop automation support.
+    #[clap(name = "computer-use")]
+    ComputerUse(ComputerUseCommand),
 
     /// Manage Codex plugins.
     Plugin(PluginCli),
@@ -216,6 +224,18 @@ struct CompletionCommand {
     /// Shell to generate completions for
     #[clap(value_enum, default_value_t = Shell::Bash)]
     shell: Shell,
+}
+
+#[derive(Debug, Parser)]
+struct ComputerUseCommand {
+    #[command(subcommand)]
+    subcommand: ComputerUseSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum ComputerUseSubcommand {
+    /// Check whether the Computer Use MCP server is available to the CLI.
+    Doctor,
 }
 
 #[derive(Debug, Parser)]
@@ -1060,6 +1080,16 @@ async fn cli_main(
             let loader_overrides =
                 loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
             mcp_cli.run(loader_overrides).await?;
+        }
+        Some(Subcommand::ComputerUse(ComputerUseCommand {
+            subcommand: ComputerUseSubcommand::Doctor,
+        })) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "computer-use doctor",
+            )?;
+            run_computer_use_doctor(root_config_overrides.clone()).await?;
         }
         Some(Subcommand::Plugin(plugin_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -2012,6 +2042,45 @@ async fn run_debug_models_command(
     Ok(())
 }
 
+async fn run_computer_use_doctor(root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = ConfigBuilder::default()
+        .cli_overrides(cli_overrides)
+        .build()
+        .await?;
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.configured_servers(&config).await;
+
+    println!(
+        "{}",
+        computer_use_doctor_status(mcp_servers.get("computer-use"))
+    );
+    Ok(())
+}
+
+fn computer_use_doctor_status(server: Option<&McpServerConfig>) -> String {
+    let Some(server) = server else {
+        return "Computer Use MCP server is not configured. Run `codex mcp list` to inspect available MCP servers.".to_string();
+    };
+
+    if !server.enabled {
+        return "Computer Use MCP server is configured but disabled. Enable the `computer-use` MCP server before starting CLI Computer Use tasks.".to_string();
+    }
+
+    match &server.transport {
+        McpServerTransportConfig::Stdio { command, .. } => {
+            format!("Computer Use MCP server is configured: {command}")
+        }
+        McpServerTransportConfig::StreamableHttp { url, .. } => {
+            format!("Computer Use MCP server is configured: {url}")
+        }
+    }
+}
+
 async fn run_debug_clear_memories_command(
     root_config_overrides: &CliConfigOverrides,
 ) -> anyhow::Result<()> {
@@ -2120,6 +2189,7 @@ fn unsupported_subcommand_name_for_strict_config(
         }
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
+        Some(Subcommand::ComputerUse(_)) => Some("computer-use"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(_)) => Some("app"),
@@ -2830,6 +2900,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn computer_use_doctor_parses_as_top_level_subcommand() {
+        let cli = MultitoolCli::try_parse_from(["codex", "computer-use", "doctor"])
+            .expect("parse should succeed");
+
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::ComputerUse(ComputerUseCommand {
+                subcommand: ComputerUseSubcommand::Doctor,
+            }))
+        );
+    }
+
     fn help_from_args(args: &[&str]) -> String {
         let err = MultitoolCli::try_parse_from(args).expect_err("help should short-circuit");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
@@ -2853,6 +2936,70 @@ mod tests {
             let help = help_from_args(&["codex", "plugin", "marketplace", subcommand, "--help"]);
             assert!(help.contains(usage), "{help}");
         }
+    }
+
+    #[test]
+    fn computer_use_help_exposes_doctor_command() {
+        let help = help_from_args(&["codex", "--help"]);
+        assert!(help.contains("computer-use"), "{help}");
+        assert!(
+            help.contains("Diagnose Computer Use desktop automation support"),
+            "{help}"
+        );
+
+        let help = help_from_args(&["codex", "computer-use", "--help"]);
+        assert!(
+            help.contains("Usage: codex computer-use [OPTIONS] <COMMAND>"),
+            "{help}"
+        );
+        assert!(help.contains("doctor"), "{help}");
+    }
+
+    fn stdio_mcp_server(enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            auth: Default::default(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "SkyComputerUseClient".to_string(),
+                args: vec!["mcp".to_string()],
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: Default::default(),
+        }
+    }
+
+    #[test]
+    fn computer_use_doctor_status_reports_configured_server() {
+        let server = stdio_mcp_server(/*enabled*/ true);
+
+        assert_eq!(
+            computer_use_doctor_status(Some(&server)),
+            "Computer Use MCP server is configured: SkyComputerUseClient"
+        );
+    }
+
+    #[test]
+    fn computer_use_doctor_status_reports_disabled_server() {
+        let server = stdio_mcp_server(/*enabled*/ false);
+
+        assert_eq!(
+            computer_use_doctor_status(Some(&server)),
+            "Computer Use MCP server is configured but disabled. Enable the `computer-use` MCP server before starting CLI Computer Use tasks."
+        );
     }
 
     #[test]
