@@ -968,6 +968,7 @@ jobs:
 
             chmod 0755 "$path"
             codesign --verify --strict --verbose=2 "$path"
+            spctl --assess --type execute --verbose=4 "$path"
 
             actual_entitlements="$(mktemp)"
             normalized_actual="$(mktemp)"
