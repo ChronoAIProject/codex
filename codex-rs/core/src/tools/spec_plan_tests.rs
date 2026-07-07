@@ -845,6 +845,59 @@ async fn deferred_extension_tools_are_discoverable_with_tool_search() {
 }
 
 #[tokio::test]
+async fn tool_search_prioritizes_dynamic_browser_tools_over_standalone_browser_mcp_tools() {
+    let (_session, mut turn) = make_session_and_context().await;
+    turn.model_info.supports_search_tool = true;
+    let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let deferred_mcp_tools = vec![
+        mcp_tool("playwright", "mcp__playwright", "browser_tabs"),
+        mcp_tool("chrome-devtools", "mcp__chrome_devtools", "list_pages"),
+    ];
+    let dynamic_tools = vec![dynamic_tool(
+        Some("browser"),
+        "tabs_list",
+        /*defer_loading*/ true,
+    )];
+    let tool_search_handler_cache = ToolSearchHandlerCache::default();
+    let context = super::CoreToolPlanContext {
+        step_context: step_context.as_ref(),
+        mcp_tools: None,
+        deferred_mcp_tools: Some(&deferred_mcp_tools),
+        tool_suggest_candidates: None,
+        extension_tool_executors: &[],
+        dynamic_tools: &dynamic_tools,
+        tool_search_handler_cache: &tool_search_handler_cache,
+        default_agent_type_description: "",
+        wait_agent_timeouts: Default::default(),
+    };
+    let mut planned_tools = super::PlannedTools::default();
+    super::add_mcp_runtime_tools(&context, &mut planned_tools);
+    super::add_dynamic_tools(&context, &mut planned_tools);
+
+    let search_infos = super::ordered_tool_search_infos(planned_tools.runtimes());
+
+    assert_eq!(
+        search_infos
+            .iter()
+            .map(|search_info| match &search_info.entry.output {
+                codex_tools::LoadableToolSpec::Function(tool) => ToolName::plain(&tool.name),
+                codex_tools::LoadableToolSpec::Namespace(namespace) => {
+                    let ResponsesApiNamespaceTool::Function(tool) = &namespace.tools[0];
+                    ToolName::namespaced(&namespace.name, &tool.name)
+                }
+            })
+            .map(|tool_name| tool_name.to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            ToolName::namespaced("browser", "tabs_list").to_string(),
+            ToolName::namespaced("mcp__playwright", "browser_tabs").to_string(),
+            ToolName::namespaced("mcp__chrome_devtools", "list_pages").to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     let cache = ToolSearchHandlerCache::default();
 

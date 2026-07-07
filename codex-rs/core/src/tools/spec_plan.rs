@@ -970,18 +970,30 @@ fn append_tool_search_executor(
         return;
     }
 
-    let search_infos = planned_tools
-        .runtimes()
-        .iter()
-        .filter(|executor| executor.exposure() == ToolExposure::Deferred)
-        .filter_map(|executor| executor.search_info())
-        .collect::<Vec<_>>();
+    let search_infos = ordered_tool_search_infos(planned_tools.runtimes());
     if search_infos.is_empty() {
         return;
     }
 
     let handler: PlannedRuntime = context.tool_search_handler_cache.get_or_build(search_infos);
     planned_tools.add_arc(handler);
+}
+
+fn ordered_tool_search_infos(runtimes: &[PlannedRuntime]) -> Vec<ToolSearchInfo> {
+    let (mut dynamic_tools, other_tools): (Vec<_>, Vec<_>) = runtimes
+        .iter()
+        .filter(|executor| executor.exposure() == ToolExposure::Deferred)
+        .filter_map(|executor| executor.search_info())
+        .partition(|search_info| is_dynamic_tool_search_info(search_info));
+    dynamic_tools.extend(other_tools);
+    dynamic_tools
+}
+
+fn is_dynamic_tool_search_info(search_info: &ToolSearchInfo) -> bool {
+    search_info
+        .source_info
+        .as_ref()
+        .is_some_and(|source| source.name == "Dynamic tools")
 }
 
 fn prepend_code_mode_executors(
