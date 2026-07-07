@@ -303,7 +303,12 @@ pub(super) async fn ensure_listener_task_running(
                     let event = match event {
                         Ok(event) => event,
                         Err(err) => {
-                            tracing::warn!("thread.next_event() failed with: {err}");
+                            handle_thread_event_stream_error(
+                                conversation_id,
+                                &thread_watch_manager,
+                                &err,
+                            )
+                            .await;
                             break;
                         }
                     };
@@ -394,6 +399,17 @@ pub(super) async fn ensure_listener_task_running(
         }
     });
     Ok(())
+}
+
+async fn handle_thread_event_stream_error(
+    conversation_id: ThreadId,
+    thread_watch_manager: &ThreadWatchManager,
+    err: &impl std::fmt::Display,
+) {
+    tracing::warn!("thread.next_event() failed with: {err}");
+    thread_watch_manager
+        .note_system_error(&conversation_id.to_string())
+        .await;
 }
 
 pub(super) async fn wait_for_thread_shutdown(thread: &Arc<CodexThread>) -> ThreadShutdownResult {
@@ -799,4 +815,36 @@ pub(super) fn set_thread_status_and_interrupt_stale_turns(
         }
     }
     thread.status = status;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::io;
+
+    #[tokio::test]
+    async fn event_stream_error_marks_thread_system_error() {
+        let thread_watch_manager = ThreadWatchManager::new();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread id");
+        let thread_id_string = thread_id.to_string();
+        thread_watch_manager
+            .note_turn_started(&thread_id_string)
+            .await;
+
+        handle_thread_event_stream_error(
+            thread_id,
+            &thread_watch_manager,
+            &io::Error::other("event stream closed"),
+        )
+        .await;
+
+        assert_eq!(
+            thread_watch_manager
+                .loaded_status_for_thread(&thread_id_string)
+                .await,
+            ThreadStatus::SystemError,
+        );
+    }
 }
