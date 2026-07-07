@@ -139,6 +139,11 @@ macro_rules! serialization_scope_expr {
             .clone()
             .map(|thread_id| ClientRequestSerializationScope::Thread { thread_id })
     };
+    ($actual_params:ident, thread_path($params:ident . $field:ident)) => {
+        Some(ClientRequestSerializationScope::ThreadPath {
+            path: $actual_params.$field.clone(),
+        })
+    };
     ($actual_params:ident, thread_or_path($params:ident . $thread_field:ident, $params2:ident . $path_field:ident)) => {
         if !$actual_params.$thread_field.is_empty() {
             Some(ClientRequestSerializationScope::Thread {
@@ -1154,7 +1159,7 @@ client_request_definitions! {
     },
     GitDiffToRemote {
         params: v1::GitDiffToRemoteParams,
-        serialization: None,
+        serialization: thread_path(params.cwd),
         response: v1::GitDiffToRemoteResponse,
     },
     /// DEPRECATED in favor of GetAccount
@@ -2033,6 +2038,19 @@ mod tests {
         assert_eq!(
             environment_add.serialization_scope(),
             Some(ClientRequestSerializationScope::Global("environment"))
+        );
+
+        let git_diff_to_remote = ClientRequest::GitDiffToRemote {
+            request_id: request_id(),
+            params: v1::GitDiffToRemoteParams {
+                cwd: PathBuf::from("/tmp/repo"),
+            },
+        };
+        assert_eq!(
+            git_diff_to_remote.serialization_scope(),
+            Some(ClientRequestSerializationScope::ThreadPath {
+                path: PathBuf::from("/tmp/repo")
+            })
         );
     }
 
