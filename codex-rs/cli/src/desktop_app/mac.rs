@@ -1,13 +1,10 @@
 use anyhow::Context as _;
-use std::ffi::CString;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::Builder;
 use tokio::process::Command;
 
-const CODEX_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
-const CODEX_DMG_URL_X64: &str =
-    "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg";
+const CODEX_DMG_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
 
 pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
@@ -22,14 +19,7 @@ pub async fn run_mac_app_open_or_install(
         return Ok(());
     }
     eprintln!("Codex Desktop not found; downloading installer...");
-    let download_url = download_url_override.unwrap_or_else(|| {
-        let default_url = if is_apple_silicon_mac() {
-            CODEX_DMG_URL_ARM64
-        } else {
-            CODEX_DMG_URL_X64
-        };
-        default_url.to_string()
-    });
+    let download_url = download_url_override.unwrap_or_else(default_codex_dmg_url);
     let installed_app = download_and_install_codex_to_user_applications(&download_url)
         .await
         .context("failed to download/install Codex Desktop")?;
@@ -41,26 +31,8 @@ pub async fn run_mac_app_open_or_install(
     Ok(())
 }
 
-fn is_apple_silicon_mac() -> bool {
-    fn macos_sysctl_flag(name: &str) -> Option<bool> {
-        let name = CString::new(name).ok()?;
-        let mut value: libc::c_int = 0;
-        let mut size = std::mem::size_of_val(&value);
-        let result = unsafe {
-            libc::sysctlbyname(
-                name.as_ptr(),
-                (&mut value as *mut libc::c_int).cast::<libc::c_void>(),
-                &mut size,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        (result == 0).then_some(value != 0)
-    }
-
-    std::env::consts::ARCH == "aarch64"
-        || macos_sysctl_flag("sysctl.proc_translated").unwrap_or(false)
-        || macos_sysctl_flag("hw.optional.arm64").unwrap_or(false)
+fn default_codex_dmg_url() -> String {
+    CODEX_DMG_URL.to_string()
 }
 
 fn find_existing_codex_app_path() -> Option<PathBuf> {
@@ -303,6 +275,7 @@ fn parse_hdiutil_attach_mount_point(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::codex_new_thread_url;
+    use super::default_codex_dmg_url;
     use super::parse_hdiutil_attach_mount_point;
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -343,6 +316,14 @@ mod tests {
                 "/new".to_string(),
                 vec![("path".to_string(), "/tmp/codex workspace/#1".to_string())],
             )
+        );
+    }
+
+    #[test]
+    fn default_codex_dmg_url_uses_canonical_macos_installer() {
+        assert_eq!(
+            default_codex_dmg_url(),
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
         );
     }
 }
