@@ -9,7 +9,6 @@ use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_native_ancestor_with_markers;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
-use futures::future::join_all;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -739,6 +738,10 @@ async fn find_closest_sha(cwd: &Path, branches: &[String], remotes: &[String]) -
 
 async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
     let git = Path::new("git");
+    diff_against_sha_from(git, cwd, sha).await
+}
+
+async fn diff_against_sha_from(git: &Path, cwd: &Path, sha: &GitSha) -> Option<String> {
     let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
     let output = run_git_command_with_timeout_from(
         git,
@@ -774,8 +777,7 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
         if !untracked.is_empty() {
             // Use platform-appropriate null device and guard paths with `--`.
             let null_device: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
-            let futures_iter = untracked.into_iter().map(|file| async move {
-                let file_owned = file;
+            for file in untracked {
                 let args_vec: Vec<&str> = vec![
                     "diff",
                     "--no-textconv",
@@ -785,12 +787,13 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
                     // -- ensures that filenames that start with - are not treated as options.
                     "--",
                     null_device,
-                    &file_owned,
+                    &file,
                 ];
-                run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
-            });
-            let results = join_all(futures_iter).await;
-            for extra in results.into_iter().flatten() {
+                let Some(extra) =
+                    run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
+                else {
+                    continue;
+                };
                 if extra.status.code().is_some_and(|c| c == 0 || c == 1)
                     && let Ok(s) = String::from_utf8(extra.stdout)
                 {
@@ -1084,6 +1087,124 @@ mod tests {
                 "version --build-options".to_string(),
                 format!("-c {disabled_hooks} -c core.fsmonitor=true status --porcelain"),
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn untracked_file_diffs_run_sequentially() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let git = temp_dir.path().join("git");
+        let state = temp_dir.path().join("git.state");
+        std::fs::write(
+            &git,
+            r#"#!/bin/sh
+set -eu
+
+state="$0.state"
+mkdir -p "$state"
+
+has_arg() {
+  needle="$1"
+  shift
+  for arg in "$@"; do
+    if [ "$arg" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+command=""
+file=""
+after_separator=0
+for arg in "$@"; do
+  case "$arg" in
+    config|diff|ls-files)
+      if [ -z "$command" ]; then
+        command="$arg"
+      fi
+      ;;
+  esac
+  if [ "$arg" = "--" ]; then
+    after_separator=1
+    continue
+  fi
+  if [ "$after_separator" -eq 1 ]; then
+    after_separator=2
+    continue
+  fi
+  if [ "$after_separator" -eq 2 ]; then
+    file="$arg"
+  fi
+done
+
+case "$command" in
+  config)
+    exit 1
+    ;;
+  ls-files)
+    printf 'one.txt\ntwo.txt\nthree.txt\nfour.txt\n'
+    exit 0
+    ;;
+  diff)
+    if has_arg "--no-index" "$@"; then
+      lock="$state/lock"
+      while ! mkdir "$lock" 2>/dev/null; do
+        sleep 0.01
+      done
+      active="$(cat "$state/active" 2>/dev/null || printf '0')"
+      active=$((active + 1))
+      printf '%s' "$active" > "$state/active"
+      max="$(cat "$state/max" 2>/dev/null || printf '0')"
+      if [ "$active" -gt "$max" ]; then
+        printf '%s' "$active" > "$state/max"
+      fi
+      rmdir "$lock"
+
+      sleep 0.2
+
+      while ! mkdir "$lock" 2>/dev/null; do
+        sleep 0.01
+      done
+      active="$(cat "$state/active")"
+      active=$((active - 1))
+      printf '%s' "$active" > "$state/active"
+      rmdir "$lock"
+
+      printf 'untracked:%s\n' "$file"
+      exit 1
+    fi
+
+    printf 'tracked\n'
+    exit 1
+    ;;
+esac
+
+exit 2
+"#,
+        )
+        .expect("write fake Git");
+        let mut permissions = std::fs::metadata(&git)
+            .expect("read fake Git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&git, permissions).expect("mark fake Git executable");
+
+        let diff = diff_against_sha_from(&git, temp_dir.path(), &GitSha::new("HEAD"))
+            .await
+            .expect("collect diff");
+
+        assert_eq!(
+            (
+                diff,
+                std::fs::read_to_string(state.join("max")).expect("read max concurrency"),
+            ),
+            (
+                "tracked\nuntracked:one.txt\nuntracked:two.txt\nuntracked:three.txt\nuntracked:four.txt\n"
+                    .to_string(),
+                "1".to_string(),
+            )
         );
     }
 }
