@@ -484,6 +484,7 @@ pub(crate) async fn start_app_server_for_picker(
     target: &AppServerTarget,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    remote_cwd_override: Option<PathBuf>,
 ) -> color_eyre::Result<AppServerSession> {
     let app_server = start_app_server(
         target,
@@ -499,10 +500,10 @@ pub(crate) async fn start_app_server_for_picker(
         environment_manager,
     )
     .await?;
-    Ok(AppServerSession::new(
-        app_server,
-        target.thread_params_mode(),
-    ))
+    Ok(
+        AppServerSession::new(app_server, target.thread_params_mode())
+            .with_remote_cwd_override(remote_cwd_override),
+    )
 }
 
 #[cfg(test)]
@@ -515,6 +516,7 @@ pub(crate) async fn start_embedded_app_server_for_picker(
         &AppServerTarget::Embedded,
         state_db,
         Arc::new(EnvironmentManager::default_for_tests()),
+        /*remote_cwd_override*/ None,
     )
     .await
 }
@@ -2516,6 +2518,29 @@ mod tests {
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("repo/on/server")))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn picker_app_server_preserves_remote_cwd_override() -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_config(&temp_dir).await?;
+        let state_db =
+            init_state_db_for_app_server_target(&config, &AppServerTarget::Embedded).await?;
+        let remote_cwd_override = PathBuf::from("/server/workspace");
+
+        let app_server = start_app_server_for_picker(
+            &config,
+            &AppServerTarget::Embedded,
+            state_db,
+            Arc::new(EnvironmentManager::default_for_tests()),
+            Some(remote_cwd_override.clone()),
+        )
+        .await?;
+        let actual_remote_cwd_override = app_server.remote_cwd_override().map(Path::to_path_buf);
+        app_server.shutdown().await?;
+
+        assert_eq!(actual_remote_cwd_override, Some(remote_cwd_override));
         Ok(())
     }
 

@@ -68,6 +68,7 @@ impl App {
                     &self.app_server_target,
                     self.state_db.clone(),
                     self.environment_manager.clone(),
+                    app_server.remote_cwd_override().map(Path::to_path_buf),
                 )
                 .await
                 {
