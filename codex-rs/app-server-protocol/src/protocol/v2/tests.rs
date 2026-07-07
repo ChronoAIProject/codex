@@ -1969,6 +1969,50 @@ fn mcp_server_elicitation_request_from_core_form_request() {
 }
 
 #[test]
+fn mcp_server_elicitation_request_accepts_fastmcp_form_schema_metadata() {
+    let request = McpServerElicitationRequest::try_from(CoreElicitationRequest::Form {
+        meta: None,
+        message: "Pick allow or deny for the pending binary.".to_string(),
+        requested_schema: json!({
+            "type": "object",
+            "title": "Choice",
+            "description": "Pick allow or deny for the pending binary.",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "title": "Value",
+                }
+            },
+            "required": ["value"],
+        }),
+    })
+    .expect("FastMCP form request should convert");
+
+    let expected_schema: McpElicitationSchema = serde_json::from_value(json!({
+        "type": "object",
+        "title": "Choice",
+        "description": "Pick allow or deny for the pending binary.",
+        "properties": {
+            "value": {
+                "type": "string",
+                "title": "Value",
+            }
+        },
+        "required": ["value"],
+    }))
+    .expect("expected schema should deserialize");
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequest::Form {
+            meta: None,
+            message: "Pick allow or deny for the pending binary.".to_string(),
+            requested_schema: expected_schema,
+        }
+    );
+}
+
+#[test]
 fn mcp_server_elicitation_request_from_core_openai_form_request() {
     let requested_schema = json!({
         "type": "object",

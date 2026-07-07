@@ -9,6 +9,7 @@ use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
@@ -315,7 +316,7 @@ pub struct McpServerElicitationRequestParams {
 ///
 /// This matches the `requestedSchema` shape from the MCP 2025-11-25
 /// `ElicitRequestFormParams` schema.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct McpElicitationSchema {
@@ -329,6 +330,32 @@ pub struct McpElicitationSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub required: Option<Vec<String>>,
+}
+
+impl<'de> Deserialize<'de> for McpElicitationSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireSchema {
+            #[serde(rename = "$schema")]
+            schema_uri: Option<String>,
+            #[serde(rename = "type")]
+            type_: McpElicitationObjectType,
+            properties: BTreeMap<String, McpElicitationPrimitiveSchema>,
+            required: Option<Vec<String>>,
+        }
+
+        let wire_schema = WireSchema::deserialize(deserializer)?;
+        Ok(Self {
+            schema_uri: wire_schema.schema_uri,
+            type_: wire_schema.type_,
+            properties: wire_schema.properties,
+            required: wire_schema.required,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
