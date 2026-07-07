@@ -497,27 +497,60 @@ pub(crate) struct CompactedUserMessage {
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
-    items
-        .iter()
-        .filter_map(|item| match crate::event_mapping::parse_turn_item(item) {
-            Some(TurnItem::UserMessage(user)) => {
-                if is_summary_message(&user.message()) {
-                    None
-                } else {
-                    Some(CompactedUserMessage {
-                        message: user.message(),
-                        internal_chat_message_metadata_passthrough: match item {
-                            ResponseItem::Message {
-                                internal_chat_message_metadata_passthrough,
-                                ..
-                            } => internal_chat_message_metadata_passthrough.clone(),
-                            _ => None,
-                        },
-                    })
+    let mut seen_user_message_turn_ids = std::collections::HashSet::new();
+    let mut same_turn_interruption_candidates: std::collections::HashMap<&str, Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut handled_same_turn_interruptions: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for (i, item) in items.iter().enumerate() {
+        match crate::event_mapping::parse_turn_item(item) {
+            Some(TurnItem::UserMessage(_)) => {
+                if let Some(turn_id) = item.turn_id()
+                    && !seen_user_message_turn_ids.insert(turn_id)
+                {
+                    same_turn_interruption_candidates
+                        .entry(turn_id)
+                        .or_default()
+                        .push(i);
                 }
             }
-            _ => None,
-        })
+            Some(TurnItem::AgentMessage(_)) => {
+                if let Some(turn_id) = item.turn_id()
+                    && let Some(candidates) = same_turn_interruption_candidates.get(turn_id)
+                {
+                    handled_same_turn_interruptions.extend(candidates);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    items
+        .iter()
+        .enumerate()
+        .filter_map(
+            |(i, item)| match crate::event_mapping::parse_turn_item(item) {
+                Some(TurnItem::UserMessage(user)) => {
+                    if is_summary_message(&user.message())
+                        || handled_same_turn_interruptions.contains(&i)
+                    {
+                        None
+                    } else {
+                        Some(CompactedUserMessage {
+                            message: user.message(),
+                            internal_chat_message_metadata_passthrough: match item {
+                                ResponseItem::Message {
+                                    internal_chat_message_metadata_passthrough,
+                                    ..
+                                } => internal_chat_message_metadata_passthrough.clone(),
+                                _ => None,
+                            },
+                        })
+                    }
+                }
+                _ => None,
+            },
+        )
         .collect()
 }
 

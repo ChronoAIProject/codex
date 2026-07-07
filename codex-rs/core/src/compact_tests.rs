@@ -43,10 +43,39 @@ fn user_message(text: &str) -> ResponseItem {
     }
 }
 
+fn user_message_with_turn_id(text: &str, turn_id: &str) -> ResponseItem {
+    let mut item = user_message(text);
+    item.set_turn_id_if_missing(turn_id);
+    item
+}
+
+fn assistant_message_with_turn_id(text: &str, turn_id: &str) -> ResponseItem {
+    let mut item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    item.set_turn_id_if_missing(turn_id);
+    item
+}
+
 fn compacted_user_message(text: &str) -> CompactedUserMessage {
     CompactedUserMessage {
         message: text.to_string(),
         internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn compacted_user_message_with_turn_id(text: &str, turn_id: &str) -> CompactedUserMessage {
+    CompactedUserMessage {
+        message: text.to_string(),
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            turn_id: Some(turn_id.to_string()),
+        }),
     }
 }
 
@@ -170,6 +199,26 @@ fn collect_user_messages_filters_legacy_warnings() {
     let collected = collect_user_messages(&items);
 
     assert_eq!(vec![compacted_user_message("real user message")], collected);
+}
+
+#[test]
+fn collect_user_messages_filters_handled_same_turn_interruptions() {
+    let items = vec![
+        user_message_with_turn_id("active goal continuation", "turn-1"),
+        user_message_with_turn_id("completed steered prompt", "turn-1"),
+        assistant_message_with_turn_id("handled steer", "turn-1"),
+        user_message_with_turn_id("current pending prompt", "turn-2"),
+    ];
+
+    let collected = collect_user_messages(&items);
+
+    assert_eq!(
+        vec![
+            compacted_user_message_with_turn_id("active goal continuation", "turn-1"),
+            compacted_user_message_with_turn_id("current pending prompt", "turn-2")
+        ],
+        collected
+    );
 }
 
 #[test]
