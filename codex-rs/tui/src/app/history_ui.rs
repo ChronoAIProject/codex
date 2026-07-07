@@ -222,7 +222,7 @@ fn open_desktop_thread_url(url: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn windows_desktop_app_launch_script(url: &str) -> String {
     let url = powershell_single_quoted_string(url);
     format!(
@@ -230,30 +230,18 @@ fn windows_desktop_app_launch_script(url: &str) -> String {
 $ErrorActionPreference = 'Stop'
 $url = {url}
 
-$installLocation = (Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue).InstallLocation
-if ([string]::IsNullOrWhiteSpace($installLocation)) {{
+$appId = Get-StartApps -Name 'Codex' | Select-Object -First 1 -ExpandProperty AppID
+if ([string]::IsNullOrWhiteSpace($appId)) {{
     Write-Error 'Codex Desktop package is not installed'
     exit 1
 }}
 
-$appDir = Join-Path $installLocation 'app'
-$exe = Join-Path $appDir 'Codex.exe'
-$app = Join-Path $appDir 'resources\app.asar'
-if (-not (Test-Path $exe)) {{
-    Write-Error "Codex Desktop executable not found at $exe"
-    exit 1
-}}
-if (-not (Test-Path $app)) {{
-    Write-Error "Codex Desktop app bundle not found at $app"
-    exit 1
-}}
-
-Start-Process -FilePath $exe -WorkingDirectory $appDir -ArgumentList @('resources\app.asar', $url)
+Start-Process -FilePath $url
 "#
     )
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn powershell_single_quoted_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
