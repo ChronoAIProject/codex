@@ -117,13 +117,39 @@ fn prepend_path_entry(env: &mut HashMap<String, String>, path_entry: &str) -> Op
     }
 }
 
+/// Appends `path_entry` to `PATH`, removing duplicate and empty existing
+/// entries.
+///
+/// Returns the updated `PATH` value when `env` was changed. Returns `None` when
+/// `path_entry` is empty, leaving `env` untouched so an empty entry does not add
+/// the current working directory to command lookup.
+#[cfg(unix)]
+fn append_path_entry(env: &mut HashMap<String, String>, path_entry: &str) -> Option<String> {
+    if path_entry.is_empty() {
+        None
+    } else {
+        let updated_path = match env.get("PATH") {
+            Some(path) if !path.is_empty() => path
+                .split(':')
+                .filter(|entry| !entry.is_empty() && *entry != path_entry)
+                .chain(std::iter::once(path_entry))
+                .collect::<Vec<_>>()
+                .join(":"),
+            _ => path_entry.to_string(),
+        };
+        env.insert("PATH".to_string(), updated_path.clone());
+        Some(updated_path)
+    }
+}
+
 /// PATH entries owned by Codex runtime setup.
 ///
 /// These are applied to the live exec environment immediately and replayed after
 /// restoring a shell snapshot, unless the user explicitly overrides `PATH`.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct RuntimePathPrepends {
-    entries: Vec<String>,
+    prepend_entries: Vec<String>,
+    append_entries: Vec<String>,
 }
 
 impl RuntimePathPrepends {
@@ -131,8 +157,19 @@ impl RuntimePathPrepends {
     pub(crate) fn prepend(&mut self, env: &mut HashMap<String, String>, path_entry: &Path) {
         let path_entry = path_entry.to_string_lossy().to_string();
         if prepend_path_entry(env, &path_entry).is_some() {
-            self.entries.retain(|entry| entry != &path_entry);
-            self.entries.push(path_entry);
+            self.prepend_entries.retain(|entry| entry != &path_entry);
+            self.append_entries.retain(|entry| entry != &path_entry);
+            self.prepend_entries.push(path_entry);
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn append(&mut self, env: &mut HashMap<String, String>, path_entry: &Path) {
+        let path_entry = path_entry.to_string_lossy().to_string();
+        if append_path_entry(env, &path_entry).is_some() {
+            self.prepend_entries.retain(|entry| entry != &path_entry);
+            self.append_entries.retain(|entry| entry != &path_entry);
+            self.append_entries.push(path_entry);
         }
     }
 
@@ -144,7 +181,7 @@ impl RuntimePathPrepends {
             return String::new();
         }
 
-        self.entries
+        self.prepend_entries
             .iter()
             .filter(|entry| !entry.is_empty())
             .map(|entry| {
@@ -153,6 +190,17 @@ impl RuntimePathPrepends {
                     "if [ -n \"${{PATH:-}}\" ]; then export PATH='{entry}':\"$PATH\"; else export PATH='{entry}'; fi"
                 )
             })
+            .chain(
+                self.append_entries
+                    .iter()
+                    .filter(|entry| !entry.is_empty())
+                    .map(|entry| {
+                        let entry = shell_single_quote(entry);
+                        format!(
+                            "if [ -n \"${{PATH:-}}\" ]; then export PATH=\"$PATH\":'{entry}'; else export PATH='{entry}'; fi"
+                        )
+                    }),
+            )
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -171,7 +219,7 @@ pub(crate) fn apply_package_path_prepend(
         return;
     };
 
-    runtime_path_prepends.prepend(env, path_dir.as_path());
+    runtime_path_prepends.append(env, path_dir.as_path());
 }
 
 #[cfg(unix)]

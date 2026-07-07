@@ -186,7 +186,7 @@ fn runtime_path_prepends_records_runtime_path_prepend() {
         "runtime PATH prepend should update the live exec environment"
     );
     assert_eq!(
-        runtime_path_prepends.entries,
+        runtime_path_prepends.prepend_entries,
         vec!["/package/codex-path"],
         "runtime PATH prepend should be recorded for snapshot replay"
     );
@@ -194,24 +194,44 @@ fn runtime_path_prepends_records_runtime_path_prepend() {
 
 #[cfg(unix)]
 #[test]
-fn runtime_path_prepends_drops_empty_path_entries() {
+fn runtime_path_prepends_records_runtime_path_append() {
+    let mut env = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+
+    runtime_path_prepends.append(&mut env, PathBuf::from("/package/codex-path").as_path());
+
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/usr/bin:/bin:/package/codex-path"),
+        "runtime PATH append should not shadow user PATH entries"
+    );
+    assert_eq!(
+        runtime_path_prepends.append_entries,
+        vec!["/package/codex-path"],
+        "runtime PATH append should be recorded for snapshot replay"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_path_prepends_drops_empty_path_entries_when_appending() {
     let mut env = HashMap::from([(
         "PATH".to_string(),
         ":/usr/bin:/package/codex-path::/bin:".to_string(),
     )]);
     let mut runtime_path_prepends = RuntimePathPrepends::default();
 
-    runtime_path_prepends.prepend(&mut env, PathBuf::from("/package/codex-path").as_path());
+    runtime_path_prepends.append(&mut env, PathBuf::from("/package/codex-path").as_path());
 
     assert_eq!(
         env.get("PATH").map(String::as_str),
-        Some("/package/codex-path:/usr/bin:/bin"),
+        Some("/usr/bin:/bin:/package/codex-path"),
         "empty PATH entries should be dropped instead of preserving current-directory lookup"
     );
     assert_eq!(
-        runtime_path_prepends.entries,
+        runtime_path_prepends.append_entries,
         vec!["/package/codex-path"],
-        "deduped runtime PATH prepend should still be recorded once"
+        "deduped runtime PATH append should still be recorded once"
     );
 }
 
@@ -270,7 +290,8 @@ fn apply_zsh_fork_path_prepend_uses_shell_parent() {
     assert_eq!(
         runtime_path_prepends,
         RuntimePathPrepends {
-            entries: vec!["/package/codex-resources/zsh/bin".to_string()]
+            prepend_entries: vec!["/package/codex-resources/zsh/bin".to_string()],
+            append_entries: Vec::new(),
         }
     );
 }
@@ -298,7 +319,8 @@ fn apply_zsh_fork_path_prepend_moves_existing_shell_parent_to_front() {
     assert_eq!(
         runtime_path_prepends,
         RuntimePathPrepends {
-            entries: vec!["/package/codex-resources/zsh/bin".to_string()]
+            prepend_entries: vec!["/package/codex-resources/zsh/bin".to_string()],
+            append_entries: Vec::new(),
         }
     );
 }
@@ -943,36 +965,36 @@ fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
 
 #[cfg(unix)]
 #[test]
-fn maybe_wrap_shell_lc_with_snapshot_preserves_package_path_prepend() -> anyhow::Result<()> {
+fn maybe_wrap_shell_lc_with_snapshot_preserves_package_path_append() -> anyhow::Result<()> {
     let (stdout, package_path_dir) =
-        run_snapshot_path_probe_with_runtime_path_prepend(HashMap::new())?;
+        run_snapshot_path_probe_with_runtime_path_append(HashMap::new())?;
 
     assert_eq!(
         stdout,
-        format!("{}:/snapshot/bin", package_path_dir.display()),
-        "package path prepend should replay ahead of snapshot PATH"
+        format!("/snapshot/bin:{}", package_path_dir.display()),
+        "package path append should replay after snapshot PATH"
     );
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn maybe_wrap_shell_lc_with_snapshot_applies_runtime_path_prepend_after_explicit_path_override()
+fn maybe_wrap_shell_lc_with_snapshot_applies_runtime_path_append_after_explicit_path_override()
 -> anyhow::Result<()> {
-    let (stdout, package_path_dir) = run_snapshot_path_probe_with_runtime_path_prepend(
+    let (stdout, package_path_dir) = run_snapshot_path_probe_with_runtime_path_append(
         HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]),
     )?;
 
     assert_eq!(
         stdout,
-        format!("{}:/worktree/bin", package_path_dir.display()),
-        "explicit PATH override should suppress snapshot PATH while preserving runtime prepend"
+        format!("/worktree/bin:{}", package_path_dir.display()),
+        "explicit PATH override should suppress snapshot PATH while preserving runtime append"
     );
     Ok(())
 }
 
 #[cfg(unix)]
-fn run_snapshot_path_probe_with_runtime_path_prepend(
+fn run_snapshot_path_probe_with_runtime_path_append(
     explicit_env_overrides: HashMap<String, String>,
 ) -> anyhow::Result<(String, PathBuf)> {
     let dir = tempdir()?;
@@ -991,7 +1013,7 @@ fn run_snapshot_path_probe_with_runtime_path_prepend(
     let package_path_dir = dir.path().join("codex-path");
     let mut env = HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]);
     let mut runtime_path_prepends = RuntimePathPrepends::default();
-    runtime_path_prepends.prepend(&mut env, package_path_dir.as_path());
+    runtime_path_prepends.append(&mut env, package_path_dir.as_path());
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
