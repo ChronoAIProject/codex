@@ -1419,6 +1419,7 @@ enum GuardianTestCatalog {
 }
 
 async fn guardian_request_model_for_auto_review(
+    config_review_model: Option<String>,
     auto_review_model_override: Option<String>,
     catalog: GuardianTestCatalog,
 ) -> anyhow::Result<(
@@ -1443,6 +1444,13 @@ async fn guardian_request_model_for_auto_review(
     .await;
 
     let (mut session, mut turn) = guardian_test_session_and_turn(&server).await;
+    if config_review_model.is_some() {
+        let mut config = (*turn.config).clone();
+        config.review_model = config_review_model.clone();
+        Arc::get_mut(&mut turn)
+            .expect("turn should be unique")
+            .config = Arc::new(config);
+    }
     match catalog {
         GuardianTestCatalog::Bundled => {}
         GuardianTestCatalog::ParentOnly => {
@@ -1513,6 +1521,7 @@ async fn guardian_review_uses_model_catalog_override_when_preferred_review_model
     let override_model = "guardian-review-model-override".to_string();
     let (request_model, parent_model, preferred_model, analytics_result) =
         guardian_request_model_for_auto_review(
+            /*config_review_model*/ None,
             Some(override_model.clone()),
             GuardianTestCatalog::Bundled,
         )
@@ -1546,12 +1555,54 @@ async fn guardian_review_uses_model_catalog_override_when_preferred_review_model
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_review_uses_config_review_model_for_auto_review() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let config_review_model = "deepseek-v4-pro".to_string();
+    let catalog_override_model = "guardian-review-model-override".to_string();
+    let (request_model, parent_model, preferred_model, analytics_result) =
+        guardian_request_model_for_auto_review(
+            Some(config_review_model.clone()),
+            Some(catalog_override_model),
+            GuardianTestCatalog::Bundled,
+        )
+        .await?;
+
+    assert_eq!(request_model, config_review_model);
+    assert_ne!(request_model, parent_model);
+    assert_ne!(request_model, preferred_model);
+    assert_eq!(
+        analytics_result.guardian_catalog_contains_auto_review,
+        Some(true)
+    );
+    assert_eq!(
+        analytics_result.guardian_default_review_model_id.as_deref(),
+        Some(preferred_model.as_str())
+    );
+    assert_eq!(
+        analytics_result.guardian_review_model_overridden,
+        Some(true)
+    );
+    assert_eq!(
+        analytics_result.guardian_review_model_override.as_deref(),
+        Some(config_review_model.as_str())
+    );
+    assert_eq!(
+        analytics_result.guardian_model_provider_id.as_deref(),
+        Some(OPENAI_PROVIDER_ID)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_review_uses_preferred_review_model_without_model_catalog_override()
 -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let (request_model, parent_model, preferred_model, analytics_result) =
         guardian_request_model_for_auto_review(
+            /*config_review_model*/ None,
             /*auto_review_model_override*/ None,
             GuardianTestCatalog::Bundled,
         )
@@ -1590,6 +1641,7 @@ async fn guardian_review_records_missing_auto_review_model_in_analytics_metadata
 
     let (request_model, parent_model, preferred_model, analytics_result) =
         guardian_request_model_for_auto_review(
+            /*config_review_model*/ None,
             /*auto_review_model_override*/ None,
             GuardianTestCatalog::ParentOnly,
         )

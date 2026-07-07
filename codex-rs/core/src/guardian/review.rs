@@ -697,7 +697,11 @@ pub(super) async fn guardian_review_session_config(
             fallback
         }
     };
-    let model_override = turn.model_info.auto_review_model_override.as_deref();
+    let model_override = turn
+        .config
+        .review_model
+        .as_deref()
+        .or(turn.model_info.auto_review_model_override.as_deref());
     let review_model_id = model_override.unwrap_or(default_review_model_id);
     let review_model = available_models
         .iter()
