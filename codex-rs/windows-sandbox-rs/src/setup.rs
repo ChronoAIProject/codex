@@ -206,7 +206,7 @@ fn run_setup_refresh_inner(
         proxy_ports: offline_proxy_settings.proxy_ports,
         allow_local_binding: offline_proxy_settings.allow_local_binding,
         otel: None,
-        real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
+        real_user: real_user_from_env(),
         mode: SetupMode::Full,
         refresh_only: true,
     };
@@ -378,6 +378,23 @@ fn canonical_existing(paths: &[PathBuf]) -> Vec<PathBuf> {
             Some(dunce::canonicalize(p).unwrap_or_else(|_| p.clone()))
         })
         .collect()
+}
+
+fn real_user_from_env() -> String {
+    real_user_from_env_vars(|key| std::env::var(key).ok())
+}
+
+fn real_user_from_env_vars(get_env: impl Fn(&str) -> Option<String>) -> String {
+    let Some(username) = get_env("USERNAME").filter(|username| !username.is_empty()) else {
+        return "Administrators".to_string();
+    };
+    if username.contains('\\') || username.contains('@') {
+        return username;
+    }
+    match get_env("USERDOMAIN").filter(|domain| !domain.is_empty()) {
+        Some(domain) => format!("{domain}\\{username}"),
+        None => username,
+    }
 }
 
 fn profile_read_roots(user_profile: &Path) -> Vec<PathBuf> {
@@ -889,7 +906,7 @@ fn run_elevated_setup_inner(
         deny_write_paths,
         proxy_ports: offline_proxy_settings.proxy_ports,
         allow_local_binding: offline_proxy_settings.allow_local_binding,
-        real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
+        real_user: real_user_from_env(),
         otel: codex_otel::global_statsig_metrics_settings(),
         mode: SetupMode::Full,
         refresh_only: false,
@@ -1237,6 +1254,30 @@ mod tests {
             super::offline_proxy_settings_for_request(&request, Some(&explicit)),
             explicit
         );
+    }
+
+    #[test]
+    fn real_user_from_env_vars_qualifies_unqualified_domain_user() {
+        let env = HashMap::from([
+            ("USERNAME", "User.Name".to_string()),
+            ("USERDOMAIN", "DOMAIN".to_string()),
+        ]);
+
+        let real_user = super::real_user_from_env_vars(|key| env.get(key).cloned());
+
+        assert_eq!(real_user, "DOMAIN\\User.Name");
+    }
+
+    #[test]
+    fn real_user_from_env_vars_preserves_qualified_user() {
+        let env = HashMap::from([
+            ("USERNAME", "DOMAIN\\User.Name".to_string()),
+            ("USERDOMAIN", "OTHER".to_string()),
+        ]);
+
+        let real_user = super::real_user_from_env_vars(|key| env.get(key).cloned());
+
+        assert_eq!(real_user, "DOMAIN\\User.Name");
     }
 
     #[test]
