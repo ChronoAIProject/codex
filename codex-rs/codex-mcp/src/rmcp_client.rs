@@ -66,6 +66,7 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
 use tokio::time::Instant as TokioInstant;
@@ -568,11 +569,8 @@ pub(crate) async fn list_tools_for_client_uncached(
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
-    let resp = client
-        .list_tools_with_connector_ids(/*params*/ None, timeout)
-        .await?;
-    let tools = resp
-        .tools
+    let tools = list_all_tools_with_connector_ids(client, timeout)
+        .await?
         .into_iter()
         .map(|tool| {
             tool_info_from_listed_tool(
@@ -584,6 +582,54 @@ pub(crate) async fn list_tools_for_client_uncached(
         })
         .collect();
     Ok(tools)
+}
+
+async fn list_all_tools_with_connector_ids(
+    client: &RmcpClient,
+    timeout: Option<Duration>,
+) -> Result<Vec<ToolWithConnectorId>> {
+    let mut tools = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let params = cursor
+            .as_ref()
+            .map(|next| PaginatedRequestParams::default().with_cursor(Some(next.clone())));
+        let response = client
+            .list_tools_with_connector_ids(params, timeout)
+            .await?;
+        match extend_tools_with_page(
+            &mut tools,
+            cursor.as_deref(),
+            response.tools,
+            response.next_cursor,
+        )? {
+            Some(next) => cursor = Some(next),
+            None => return Ok(tools),
+        }
+    }
+}
+
+fn extend_tools_with_page(
+    tools: &mut Vec<ToolWithConnectorId>,
+    current_cursor: Option<&str>,
+    page_tools: Vec<ToolWithConnectorId>,
+    next_cursor: Option<String>,
+) -> Result<Option<String>> {
+    tools.extend(page_tools);
+    next_tool_cursor(current_cursor, next_cursor)
+}
+
+fn next_tool_cursor(
+    current_cursor: Option<&str>,
+    next_cursor: Option<String>,
+) -> Result<Option<String>> {
+    match next_cursor {
+        Some(next) if current_cursor == Some(next.as_str()) => {
+            Err(anyhow!("tools/list returned duplicate cursor"))
+        }
+        next => Ok(next),
+    }
 }
 
 /// Presents declared Codex Apps file parameters to the model as local-path inputs and adds plugin
@@ -1125,5 +1171,53 @@ mod tests {
             serde_json::to_value(tool_info).expect("serialize actual tool info"),
             serde_json::to_value(expected).expect("serialize expected tool info")
         );
+    }
+
+    fn listed_tool(name: &'static str) -> ToolWithConnectorId {
+        ToolWithConnectorId {
+            tool: RmcpTool::new(name, "test tool", Arc::new(JsonObject::default())),
+            connector_id: Some("connector_biorender".to_string()),
+            connector_name: Some("BioRender".to_string()),
+            connector_description: Some("Scientific illustrations".to_string()),
+        }
+    }
+
+    #[test]
+    fn tools_list_pagination_collects_later_pages() {
+        let mut tools = Vec::new();
+        let cursor = extend_tools_with_page(
+            &mut tools,
+            /*current_cursor*/ None,
+            vec![listed_tool("search-icons")],
+            Some("page-2".to_string()),
+        )
+        .expect("first page should be accepted");
+        assert_eq!(
+            extend_tools_with_page(
+                &mut tools,
+                cursor.as_deref(),
+                vec![listed_tool("search-templates")],
+                /*next_cursor*/ None,
+            )
+            .expect("final page should be accepted"),
+            None
+        );
+        let names = tools
+            .into_iter()
+            .map(|tool| tool.tool.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["search-icons".to_string(), "search-templates".to_string()]
+        );
+    }
+
+    #[test]
+    fn tools_list_pagination_rejects_duplicate_cursor() {
+        let error =
+            next_tool_cursor(Some("page-2"), Some("page-2".to_string())).expect_err("duplicate");
+
+        assert_eq!(error.to_string(), "tools/list returned duplicate cursor");
     }
 }
