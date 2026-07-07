@@ -2291,6 +2291,7 @@ impl ThreadRequestProcessor {
                     thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
                 if include_turns && let Some(history) = history {
                     thread.turns = build_api_turns_from_rollout_items(&history.items);
+                    redact_large_thread_read_payloads(&mut thread.turns);
                 }
                 Ok(Some(thread))
             }
@@ -2360,6 +2361,7 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| thread_read_history_load_error(thread_id, err))?;
             thread.turns = build_api_turns_from_rollout_items(&history.items);
+            redact_large_thread_read_payloads(&mut thread.turns);
         }
 
         Ok(())

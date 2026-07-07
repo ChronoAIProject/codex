@@ -1,3 +1,4 @@
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
@@ -9,6 +10,7 @@ use serde_json::Value as JsonValue;
 const REDACTED_PAYLOAD: &str = "[redacted]";
 const CHATGPT_REMOTE_CLIENT_NAMES: &[&str] =
     &["codex_chatgpt_android_remote", "codex_chatgpt_ios_remote"];
+const LARGE_THREAD_READ_PAYLOAD_BYTES: usize = 1_000_000;
 
 pub(super) fn should_redact_thread_resume_payloads(client_name: Option<&str>) -> bool {
     client_name.is_some_and(|client_name| CHATGPT_REMOTE_CLIENT_NAMES.contains(&client_name))
@@ -36,6 +38,119 @@ pub(super) fn redact_thread_resume_payloads(turns: &mut [Turn]) {
             _ => true,
         });
     }
+}
+
+pub(super) fn redact_large_thread_read_payloads(turns: &mut [Turn]) {
+    for turn in turns {
+        for item in &mut turn.items {
+            match item {
+                ThreadItem::CommandExecution {
+                    aggregated_output, ..
+                } => redact_large_string_option(aggregated_output),
+                ThreadItem::McpToolCall {
+                    arguments,
+                    result,
+                    error,
+                    ..
+                } => {
+                    if json_value_exceeds_limit(arguments, LARGE_THREAD_READ_PAYLOAD_BYTES) {
+                        *arguments = redacted_payload_value();
+                    }
+                    if result
+                        .as_ref()
+                        .is_some_and(|result| mcp_result_exceeds_limit(result))
+                    {
+                        *result = Some(Box::new(redacted_mcp_tool_call_result()));
+                    }
+                    if let Some(error) = error
+                        && error.message.len() > LARGE_THREAD_READ_PAYLOAD_BYTES
+                    {
+                        error.message = REDACTED_PAYLOAD.to_string();
+                    }
+                }
+                ThreadItem::DynamicToolCall {
+                    arguments,
+                    content_items,
+                    ..
+                } => {
+                    if json_value_exceeds_limit(arguments, LARGE_THREAD_READ_PAYLOAD_BYTES) {
+                        *arguments = redacted_payload_value();
+                    }
+                    if let Some(content_items) = content_items {
+                        for content_item in content_items {
+                            match content_item {
+                                DynamicToolCallOutputContentItem::InputText { text }
+                                | DynamicToolCallOutputContentItem::InputImage {
+                                    image_url: text,
+                                } => redact_large_string(text),
+                            }
+                        }
+                    }
+                }
+                ThreadItem::ImageGeneration { result, .. } => redact_large_string(result),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn redact_large_string_option(value: &mut Option<String>) {
+    if let Some(value) = value {
+        redact_large_string(value);
+    }
+}
+
+fn redact_large_string(value: &mut String) {
+    if value.len() > LARGE_THREAD_READ_PAYLOAD_BYTES {
+        *value = REDACTED_PAYLOAD.to_string();
+    }
+}
+
+fn redacted_payload_value() -> JsonValue {
+    JsonValue::String(REDACTED_PAYLOAD.to_string())
+}
+
+fn mcp_result_exceeds_limit(result: &McpToolCallResult) -> bool {
+    json_values_exceed_limit(&result.content, LARGE_THREAD_READ_PAYLOAD_BYTES)
+        || result
+            .structured_content
+            .as_ref()
+            .is_some_and(|value| json_value_exceeds_limit(value, LARGE_THREAD_READ_PAYLOAD_BYTES))
+        || result
+            .meta
+            .as_ref()
+            .is_some_and(|value| json_value_exceeds_limit(value, LARGE_THREAD_READ_PAYLOAD_BYTES))
+}
+
+fn json_values_exceed_limit(values: &[JsonValue], limit: usize) -> bool {
+    let mut remaining = limit;
+    values
+        .iter()
+        .any(|value| !json_value_fits(value, &mut remaining))
+}
+
+fn json_value_exceeds_limit(value: &JsonValue, limit: usize) -> bool {
+    let mut remaining = limit;
+    !json_value_fits(value, &mut remaining)
+}
+
+fn json_value_fits(value: &JsonValue, remaining: &mut usize) -> bool {
+    match value {
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => true,
+        JsonValue::String(value) => consume_budget(value.len(), remaining),
+        JsonValue::Array(values) => values.iter().all(|value| json_value_fits(value, remaining)),
+        JsonValue::Object(values) => values.iter().all(|(key, value)| {
+            consume_budget(key.len(), remaining) && json_value_fits(value, remaining)
+        }),
+    }
+}
+
+fn consume_budget(len: usize, remaining: &mut usize) -> bool {
+    if len > *remaining {
+        return false;
+    }
+    *remaining -= len;
+    true
 }
 
 fn redacted_mcp_tool_call_result() -> McpToolCallResult {

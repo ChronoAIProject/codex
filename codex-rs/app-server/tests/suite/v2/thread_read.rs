@@ -51,6 +51,7 @@ use codex_feedback::CodexFeedback;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource as ProtocolSessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -193,6 +194,60 @@ async fn thread_read_can_include_turns() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_include_turns_redacts_large_image_generation_payloads() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Vec::new(),
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    append_image_generation_end(
+        rollout_path(codex_home.path(), filename_ts, &conversation_id).as_path(),
+        "2025-01-05T12:01:00Z",
+        "x".repeat(1_000_001),
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: true,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
+
+    let image_item = thread
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .find_map(|item| {
+            if let ThreadItem::ImageGeneration { result, .. } = item {
+                Some(result.as_str())
+            } else {
+                None
+            }
+        });
+    assert_eq!(image_item, Some("[redacted]"));
 
     Ok(())
 }
@@ -1385,6 +1440,26 @@ fn append_agent_message(path: &Path, timestamp: &str, text: &str) -> anyhow::Res
                 message: text.to_string(),
                 phase: None,
                 memory_citation: None,
+            }))?,
+        })
+    )?;
+    Ok(())
+}
+
+fn append_image_generation_end(path: &Path, timestamp: &str, result: String) -> anyhow::Result<()> {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": serde_json::to_value(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+                call_id: "ig-1".to_string(),
+                status: "completed".to_string(),
+                revised_prompt: Some("revised prompt".to_string()),
+                result,
+                saved_path: None,
             }))?,
         })
     )?;
