@@ -284,10 +284,10 @@ impl App {
 
     /// Record terminal size changes and schedule any resize-sensitive transcript work.
     ///
-    /// Width changes need a rebuild because transcript wrapping changes. Height changes can expose,
-    /// hide, or shift rows around the inline viewport, so they also rebuild from source-backed
-    /// cells. The first observed width initializes resize tracking without scheduling a rebuild,
-    /// because there is no previously emitted width to repair yet.
+    /// Width changes need a rebuild because transcript wrapping changes. Height-only changes keep
+    /// existing scrollback intact; rebuilding there would destructively clear and replay history
+    /// even though wrapping is unchanged. The first observed width initializes resize tracking
+    /// without scheduling a rebuild, because there is no previously emitted width to repair yet.
     pub(super) fn handle_draw_size_change(
         &mut self,
         size: ratatui::layout::Size,
@@ -296,8 +296,7 @@ impl App {
     ) -> bool {
         let width = self.transcript_reflow.note_width(size.width);
         let reflow_needed = self.transcript_reflow.reflow_needed_for_width(size.width);
-        let height_changed = size.height != last_known_screen_size.height;
-        let should_rebuild_transcript = reflow_needed || height_changed;
+        let should_rebuild_transcript = reflow_needed;
         if width.changed || width.initialized {
             self.chat_widget.on_terminal_resize(size.width);
         }
