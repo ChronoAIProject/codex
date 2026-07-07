@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
+const codexPackageRoot = realpathSync(path.join(__dirname, ".."));
 
 const PLATFORM_PACKAGE_BY_TARGET = {
   "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
@@ -98,7 +99,9 @@ function findCodexExecutable() {
   const updateCommand =
     packageManager === "bun"
       ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      : packageManager === "vp"
+        ? "vp install -g @openai/codex@latest"
+        : "npm install -g @openai/codex@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );
@@ -117,6 +120,17 @@ const binaryPath = findCodexExecutable();
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {
+  const vpHome = process.env.VP_HOME;
+  if (vpHome) {
+    const vpPackagesRoot = path.join(vpHome, "packages");
+    const resolvedVpPackagesRoot = existsSync(vpPackagesRoot)
+      ? realpathSync(vpPackagesRoot)
+      : path.resolve(vpPackagesRoot);
+    if (isPathInside(resolvedVpPackagesRoot, codexPackageRoot)) {
+      return "vp";
+    }
+  }
+
   const userAgent = process.env.npm_config_user_agent || "";
   if (/\bbun\//.test(userAgent)) {
     return "bun";
@@ -137,15 +151,31 @@ function detectPackageManager() {
   return userAgent ? "npm" : null;
 }
 
+function isPathInside(parent, child) {
+  const relative = path.relative(parent, child);
+  return (
+    relative === "" ||
+    (relative !== "" &&
+      !relative.startsWith("..") &&
+      !path.isAbsolute(relative))
+  );
+}
+
+const packageManager = detectPackageManager();
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  packageManager === "bun"
     ? "CODEX_MANAGED_BY_BUN"
-    : "CODEX_MANAGED_BY_NPM";
+    : packageManager === "vp"
+      ? "CODEX_MANAGED_BY_VP"
+      : "CODEX_MANAGED_BY_NPM";
 const env = {
   ...process.env,
-  [packageManagerEnvVar]: "1",
-  CODEX_MANAGED_PACKAGE_ROOT: realpathSync(path.join(__dirname, "..")),
+  CODEX_MANAGED_PACKAGE_ROOT: codexPackageRoot,
 };
+delete env.CODEX_MANAGED_BY_NPM;
+delete env.CODEX_MANAGED_BY_BUN;
+delete env.CODEX_MANAGED_BY_VP;
+env[packageManagerEnvVar] = "1";
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
