@@ -2061,7 +2061,7 @@ impl PluginsManager {
             .into_keys()
             .collect::<Vec<_>>();
             configured_plugin_keys.sort_unstable();
-            match refresh_non_curated_plugin_cache_force_reinstall_detailed(
+            match refresh_non_curated_plugin_cache_detailed(
                 self.codex_home.as_path(),
                 &outcome.upgraded_roots,
                 &configured_plugin_keys,

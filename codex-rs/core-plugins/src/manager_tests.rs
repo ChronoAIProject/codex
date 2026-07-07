@@ -5683,6 +5683,88 @@ enabled = true
     );
 }
 
+#[tokio::test]
+async fn marketplace_auto_upgrade_preserves_unchanged_plugin_cache_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let remote_repo = tmp.path().join("remote-marketplace");
+    fs::create_dir_all(remote_repo.join(".agents/plugins")).unwrap();
+    write_plugin_with_version(
+        &remote_repo,
+        "sample-plugin",
+        "sample-plugin",
+        Some("1.2.3"),
+    );
+    write_file(
+        &remote_repo.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "debug",
+  "plugins": [
+    {
+      "name": "sample-plugin",
+      "source": {
+        "source": "local",
+        "path": "./sample-plugin"
+      }
+    }
+  ]
+}"#,
+    );
+    init_git_repo(&remote_repo);
+    let source = url::Url::from_directory_path(&remote_repo)
+        .unwrap()
+        .to_string();
+    write_plugin_with_version(
+        &tmp.path().join("plugins/cache/debug"),
+        "sample-plugin/1.2.3",
+        "sample-plugin",
+        Some("1.2.3"),
+    );
+    fs::write(
+        tmp.path()
+            .join("plugins/cache/debug/sample-plugin/1.2.3/skills/SKILL.md"),
+        "active session skill",
+    )
+    .unwrap();
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        &format!(
+            r#"[features]
+plugins = true
+
+[marketplaces.debug]
+source_type = "git"
+source = "{source}"
+
+[plugins."sample-plugin@debug"]
+enabled = true
+"#
+        ),
+    );
+    fs::write(
+        remote_repo.join("sample-plugin/skills/SKILL.md"),
+        "upgraded skill",
+    )
+    .unwrap();
+    run_git(&remote_repo, &["add", "."]);
+    run_git(&remote_repo, &["commit", "-m", "update marketplace"]);
+    let config = load_plugins_config_input(tmp.path(), tmp.path()).await;
+
+    let outcome = PluginsManager::new(tmp.path().to_path_buf())
+        .upgrade_configured_marketplaces_for_config(&config, /*marketplace_name*/ None)
+        .expect("marketplace auto-upgrade should succeed");
+
+    assert_eq!(outcome.errors, Vec::new());
+    assert_eq!(outcome.upgraded_roots.len(), 1);
+    assert_eq!(
+        fs::read_to_string(
+            tmp.path()
+                .join("plugins/cache/debug/sample-plugin/1.2.3/skills/SKILL.md")
+        )
+        .unwrap(),
+        "active session skill"
+    );
+}
+
 #[test]
 fn refresh_non_curated_plugin_cache_ignores_invalid_unconfigured_plugin_versions() {
     let tmp = tempfile::tempdir().unwrap();
