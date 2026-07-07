@@ -178,8 +178,12 @@ impl ToolOrchestrator {
                         &otel,
                     )
                     .await?;
-                    Self::reject_if_not_approved(tool_ctx, guardian_review_id.as_deref(), decision)
-                        .await?;
+                    Self::reject_if_not_approved(
+                        Some(tool_ctx.session.as_ref()),
+                        guardian_review_id.as_deref(),
+                        decision,
+                    )
+                    .await?;
                     already_approved = true;
                 } else {
                     otel.tool_decision(
@@ -214,8 +218,12 @@ impl ToolOrchestrator {
                 )
                 .await?;
 
-                Self::reject_if_not_approved(tool_ctx, guardian_review_id.as_deref(), decision)
-                    .await?;
+                Self::reject_if_not_approved(
+                    Some(tool_ctx.session.as_ref()),
+                    guardian_review_id.as_deref(),
+                    decision,
+                )
+                .await?;
                 already_approved = true;
             }
         }
@@ -412,8 +420,12 @@ impl ToolOrchestrator {
                     )
                     .await?;
 
-                    Self::reject_if_not_approved(tool_ctx, guardian_review_id.as_deref(), decision)
-                        .await?;
+                    Self::reject_if_not_approved(
+                        Some(tool_ctx.session.as_ref()),
+                        guardian_review_id.as_deref(),
+                        decision,
+                    )
+                    .await?;
                 }
 
                 let retry_sandbox_requested = !unsandboxed_allowed
@@ -575,19 +587,24 @@ impl ToolOrchestrator {
     }
 
     async fn reject_if_not_approved(
-        tool_ctx: &ToolCtx,
+        session: Option<&crate::session::session::Session>,
         guardian_review_id: Option<&str>,
         decision: ReviewDecision,
     ) -> Result<(), ToolError> {
         match decision {
-            ReviewDecision::Denied | ReviewDecision::Abort => {
-                let reason = if let Some(review_id) = guardian_review_id {
-                    guardian_rejection_message(tool_ctx.session.as_ref(), review_id).await
+            ReviewDecision::Denied => {
+                let reason = if let (Some(session), Some(review_id)) = (session, guardian_review_id)
+                {
+                    guardian_rejection_message(session, review_id).await
                 } else {
                     "rejected by user".to_string()
                 };
                 Err(ToolError::Rejected(reason))
             }
+            ReviewDecision::Abort => Err(ToolError::Rejected(
+                "approval request was cancelled before the user approved or rejected it"
+                    .to_string(),
+            )),
             ReviewDecision::TimedOut => Err(ToolError::Rejected(guardian_timeout_message())),
             ReviewDecision::Approved
             | ReviewDecision::ApprovedExecpolicyAmendment { .. }
@@ -618,3 +635,7 @@ fn build_denial_reason_from_output(_output: &ExecToolCallOutput) -> String {
     // output so we can evolve heuristics later without touching call sites.
     "command failed; retry without sandbox?".to_string()
 }
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod tests;
