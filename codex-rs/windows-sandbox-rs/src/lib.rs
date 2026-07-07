@@ -62,13 +62,14 @@ mod desktop;
 mod dpapi;
 #[cfg(target_os = "windows")]
 mod env;
-#[cfg(target_os = "windows")]
+#[cfg_attr(all(test, not(target_os = "windows")), allow(dead_code))]
+#[cfg(any(target_os = "windows", test))]
 mod helper_materialization;
 #[cfg(target_os = "windows")]
 mod hide_users;
 #[cfg(target_os = "windows")]
 mod identity;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 mod logging;
 #[cfg(target_os = "windows")]
 mod path_normalization;
@@ -106,6 +107,20 @@ mod sandbox_utils;
 
 #[cfg(target_os = "windows")]
 mod setup;
+
+#[cfg(all(not(target_os = "windows"), test))]
+mod setup {
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    pub fn sandbox_bin_dir(codex_home: &Path) -> PathBuf {
+        codex_home.join(".sandbox-bin")
+    }
+
+    pub fn sandbox_dir(codex_home: &Path) -> PathBuf {
+        codex_home.join(".sandbox")
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod setup_error;
@@ -266,9 +281,9 @@ pub use setup::run_elevated_setup;
 pub use setup::run_setup_refresh;
 #[cfg(target_os = "windows")]
 pub use setup::run_setup_refresh_with_extra_read_roots;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub use setup::sandbox_bin_dir;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub use setup::sandbox_dir;
 #[cfg(target_os = "windows")]
 pub use setup::sandbox_secrets_dir;

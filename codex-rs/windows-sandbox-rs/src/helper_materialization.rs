@@ -17,6 +17,7 @@ use crate::sandbox_bin_dir;
 
 const DEV_BUILD_VERSION_SENTINEL: &str = "0.0.0";
 pub(crate) const BIN_DIRNAME: &str = "bin";
+pub(crate) const APP_RESOURCES_DIRNAME: &str = "resources";
 pub(crate) const RESOURCES_DIRNAME: &str = "codex-resources";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -185,13 +186,21 @@ fn sibling_source_path(kind: HelperExecutable) -> Result<PathBuf> {
     let exe = std::env::current_exe().context("resolve current executable for helper lookup")?;
     bundled_executable_path_for_exe(&exe, kind.file_name()).ok_or_else(|| {
         anyhow!(
-            "helper not found next to current executable or under {RESOURCES_DIRNAME}: {}",
+            "helper not found next to current executable or bundled resources: {}",
             exe.display()
         )
     })
 }
 
 pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Option<PathBuf> {
+    bundled_executable_path_for_literal_exe(exe, file_name).or_else(|| {
+        dunce::canonicalize(exe)
+            .ok()
+            .and_then(|exe| bundled_executable_path_for_literal_exe(&exe, file_name))
+    })
+}
+
+fn bundled_executable_path_for_literal_exe(exe: &Path, file_name: &str) -> Option<PathBuf> {
     let dir = exe.parent()?;
     let direct_candidate = dir.join(file_name);
     if direct_candidate.is_file() {
@@ -204,6 +213,13 @@ pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Op
         let package_resource_candidate = package_dir.join(RESOURCES_DIRNAME).join(file_name);
         if package_resource_candidate.is_file() {
             return Some(package_resource_candidate);
+        }
+    }
+
+    if dir.file_name() == Some(OsStr::new("app")) {
+        let app_resource_candidate = dir.join(APP_RESOURCES_DIRNAME).join(file_name);
+        if app_resource_candidate.is_file() {
+            return Some(app_resource_candidate);
         }
     }
 
@@ -360,6 +376,7 @@ fn destination_is_fresh(source: &Path, destination: &Path) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use super::APP_RESOURCES_DIRNAME;
     use super::BIN_DIRNAME;
     use super::CopyOutcome;
     use super::DEV_BUILD_VERSION_SENTINEL;
@@ -431,11 +448,12 @@ mod tests {
     #[test]
     fn helper_bin_dir_is_under_sandbox_bin() {
         let codex_home = Path::new(r"C:\Users\example\.codex");
+        #[cfg(not(windows))]
+        let expected = PathBuf::from(r"C:\Users\example\.codex/.sandbox-bin");
+        #[cfg(windows)]
+        let expected = PathBuf::from(r"C:\Users\example\.codex\.sandbox-bin");
 
-        assert_eq!(
-            PathBuf::from(r"C:\Users\example\.codex\.sandbox-bin"),
-            helper_bin_dir(codex_home)
-        );
+        assert_eq!(expected, helper_bin_dir(codex_home));
     }
 
     #[test]
@@ -497,7 +515,73 @@ mod tests {
             bundled_executable_path_for_exe(&exe, /*file_name*/ "codex-command-runner.exe")
                 .expect("helper path");
 
+        assert_eq!(
+            dunce::canonicalize(&resolved).expect("resolved helper path"),
+            dunce::canonicalize(&helper).expect("helper path")
+        );
+    }
+
+    #[test]
+    fn helper_source_lookup_checks_app_resources_dir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let app_dir = tmp.path().join("app");
+        let resources_dir = app_dir.join(APP_RESOURCES_DIRNAME);
+        fs::create_dir_all(&resources_dir).expect("create resources dir");
+        let exe = app_dir.join("codex.exe");
+        let helper = resources_dir.join("codex-command-runner.exe");
+        fs::write(&exe, b"codex").expect("write exe");
+        fs::write(&helper, b"runner").expect("write helper");
+
+        let resolved =
+            bundled_executable_path_for_exe(&exe, /*file_name*/ "codex-command-runner.exe")
+                .expect("helper path");
+
         assert_eq!(resolved, helper);
+    }
+
+    #[test]
+    fn helper_source_lookup_checks_canonical_exe_package_resource_dir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let visible_package_dir = tmp.path().join("visible");
+        let visible_bin_dir = visible_package_dir.join(BIN_DIRNAME);
+        let release_dir = tmp.path().join("release");
+        let release_bin_dir = release_dir.join(BIN_DIRNAME);
+        let resources_dir = release_dir.join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&visible_bin_dir).expect("create visible bin dir");
+        fs::create_dir_all(&release_bin_dir).expect("create release bin dir");
+        fs::create_dir_all(&resources_dir).expect("create resources dir");
+        let release_exe = release_bin_dir.join("codex.exe");
+        let visible_exe = visible_bin_dir.join("codex.exe");
+        let helper = resources_dir.join("codex-command-runner.exe");
+        fs::write(&release_exe, b"codex").expect("write release exe");
+        fs::write(&helper, b"runner").expect("write helper");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&release_exe, &visible_exe).expect("symlink visible exe");
+        }
+        #[cfg(windows)]
+        {
+            if let Err(err) = std::os::windows::fs::symlink_file(&release_exe, &visible_exe) {
+                eprintln!("skipping canonical helper lookup test: symlink failed: {err}");
+                return;
+            }
+        }
+
+        let resolved = bundled_executable_path_for_exe(
+            &visible_exe,
+            /*file_name*/ "codex-command-runner.exe",
+        )
+        .expect("helper path");
+
+        assert_eq!(
+            Some(Path::new(RESOURCES_DIRNAME)),
+            resolved.parent().and_then(Path::file_name).map(Path::new)
+        );
+        assert_eq!(
+            b"runner".as_slice(),
+            fs::read(&resolved).expect("read resolved helper")
+        );
     }
 
     #[test]
