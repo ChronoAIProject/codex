@@ -126,16 +126,17 @@ pub(super) fn enable_keyboard_enhancement() {
     let _ = execute!(
         stdout(),
         DisableModifyOtherKeys,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
+        PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
     );
 
     if tmux_should_enable_modify_other_keys() {
         let _ = execute!(stdout(), EnableModifyOtherKeys);
     }
+}
+
+fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
 }
 
 fn running_in_tmux_session() -> bool {
@@ -283,11 +284,13 @@ mod tests {
     use super::EnableModifyOtherKeys;
     use super::ResetKeyboardEnhancementFlags;
     use super::keyboard_enhancement_disabled_for;
+    use super::keyboard_enhancement_flags;
     use super::parse_bool_env;
     use super::tmux_session_detected;
     use super::tmux_should_enable_modify_other_keys_for;
     use super::vscode_terminal_detected;
     use crossterm::Command;
+    use crossterm::event::KeyboardEnhancementFlags;
     use pretty_assertions::assert_eq;
 
     fn ansi_for(command: impl Command) -> String {
@@ -356,6 +359,15 @@ mod tests {
         assert!(!vscode_terminal_detected(
             /*linux_term_program*/ None, /*windows_term_program*/ None
         ));
+    }
+
+    #[test]
+    fn keyboard_enhancement_flags_do_not_request_release_events() {
+        let flags = keyboard_enhancement_flags();
+
+        assert!(flags.contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
+        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS));
+        assert!(!flags.contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
     }
 
     #[test]
