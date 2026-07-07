@@ -30,7 +30,23 @@ use crate::local_file_system::current_sandbox_cwd;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_request;
 
-const FS_HELPER_ENV_ALLOWLIST: &[&str] = &["PATH", "TMPDIR", "TMP", "TEMP"];
+const FS_HELPER_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "WS_PROXY",
+    "WSS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "ws_proxy",
+    "wss_proxy",
+    "CODEX_NETWORK_ALLOW_LOCAL_BINDING",
+];
 #[cfg(debug_assertions)]
 const FS_HELPER_BAZEL_BWRAP_ENV_ALLOWLIST: &[&str] = &[
     "CARGO_BIN_EXE_bwrap",
@@ -466,16 +482,20 @@ mod tests {
     }
 
     #[test]
-    fn helper_env_preserves_path_for_system_bwrap_discovery_without_leaking_secrets() {
+    fn helper_env_preserves_runtime_and_proxy_vars_without_leaking_secrets() {
         let env = helper_env_from_vars(
             [
                 ("PATH", "/usr/bin:/bin"),
                 ("TMPDIR", "/tmp/codex"),
                 ("TMP", "/tmp"),
                 ("TEMP", "/tmp"),
+                ("HTTP_PROXY", "http://127.0.0.1:7890"),
+                ("HTTPS_PROXY", "http://127.0.0.1:7890"),
+                ("ALL_PROXY", "socks5://localhost:7891"),
+                ("CODEX_NETWORK_ALLOW_LOCAL_BINDING", "1"),
                 ("HOME", "/home/user"),
                 ("OPENAI_API_KEY", "secret"),
-                ("HTTPS_PROXY", "http://proxy.example"),
+                ("NO_PROXY", "localhost,127.0.0.1"),
             ]
             .map(|(key, value)| (OsString::from(key), OsString::from(value))),
         );
@@ -487,6 +507,22 @@ mod tests {
                 ("TMPDIR".to_string(), "/tmp/codex".to_string()),
                 ("TMP".to_string(), "/tmp".to_string()),
                 ("TEMP".to_string(), "/tmp".to_string()),
+                (
+                    "HTTP_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                (
+                    "HTTPS_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                (
+                    "ALL_PROXY".to_string(),
+                    "socks5://localhost:7891".to_string()
+                ),
+                (
+                    "CODEX_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
+                    "1".to_string()
+                ),
             ])
         );
     }
