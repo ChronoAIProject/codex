@@ -19,6 +19,8 @@ use crate::engine::output_parser;
 use crate::schema::PreToolUseCommandInput;
 use crate::schema::SubagentCommandInputFields;
 
+const NATIVE_HOOK_RELAY_UNAVAILABLE: &str = "Native hook relay unavailable.";
+
 #[derive(Debug, Clone)]
 pub struct PreToolUseRequest {
     pub session_id: ThreadId,
@@ -253,13 +255,21 @@ fn parse_completed(
             }
             Some(2) => {
                 if let Some(reason) = common::trimmed_non_empty(&run_result.stderr) {
-                    status = HookRunStatus::Blocked;
-                    should_block = true;
-                    block_reason = Some(reason.clone());
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Feedback,
-                        text: reason,
-                    });
+                    if reason == NATIVE_HOOK_RELAY_UNAVAILABLE {
+                        status = HookRunStatus::Failed;
+                        entries.push(HookOutputEntry {
+                            kind: HookOutputEntryKind::Error,
+                            text: reason,
+                        });
+                    } else {
+                        status = HookRunStatus::Blocked;
+                        should_block = true;
+                        block_reason = Some(reason.clone());
+                        entries.push(HookOutputEntry {
+                            kind: HookOutputEntryKind::Feedback,
+                            text: reason,
+                        });
+                    }
                 } else {
                     status = HookRunStatus::Failed;
                     entries.push(HookOutputEntry {
@@ -323,6 +333,7 @@ mod tests {
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
 
+    use super::NATIVE_HOOK_RELAY_UNAVAILABLE;
     use super::PreToolUseHandlerData;
     use super::command_input_json;
     use super::latest_updated_input;
@@ -694,6 +705,33 @@ mod tests {
             vec![HookOutputEntry {
                 kind: HookOutputEntryKind::Feedback,
                 text: "blocked by policy".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn native_hook_relay_unavailable_fails_open() {
+        let parsed = parse_completed(
+            &handler(),
+            run_result(Some(2), "", NATIVE_HOOK_RELAY_UNAVAILABLE),
+            Some("turn-1".to_string()),
+        );
+
+        assert_eq!(
+            parsed.data,
+            PreToolUseHandlerData {
+                should_block: false,
+                block_reason: None,
+                additional_contexts_for_model: Vec::new(),
+                updated_input: None,
+            }
+        );
+        assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
+        assert_eq!(
+            parsed.completed.run.entries,
+            vec![HookOutputEntry {
+                kind: HookOutputEntryKind::Error,
+                text: NATIVE_HOOK_RELAY_UNAVAILABLE.to_string(),
             }]
         );
     }
