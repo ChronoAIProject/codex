@@ -147,13 +147,15 @@ async fn omits_openai_curated_but_keeps_configured_marketplaces_for_remote_codex
             r#"{{
   "name": "{bundled_marketplace_name}",
   "plugins": [
-    {{"name": "chrome", "source": {{"source": "local", "path": "./plugins/chrome"}}}}
+    {{"name": "chrome", "source": {{"source": "local", "path": "./plugins/chrome"}}}},
+    {{"name": "computer-use", "source": {{"source": "local", "path": "./plugins/computer-use"}}}}
   ]
 }}
 "#
         ),
     );
     write_curated_plugin(&bundled_marketplace_root, "chrome");
+    write_curated_plugin(&bundled_marketplace_root, "computer-use");
     write_file(
         &codex_home.path().join(CONFIG_TOML_FILE),
         &format!(
@@ -183,7 +185,10 @@ source = "/tmp/{bundled_marketplace_name}"
             .into_iter()
             .map(|plugin| plugin.id)
             .collect::<Vec<_>>(),
-        vec!["chrome@openai-bundled".to_string()]
+        vec![
+            "chrome@openai-bundled".to_string(),
+            "computer-use@openai-bundled".to_string(),
+        ]
     );
 }
 
