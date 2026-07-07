@@ -514,7 +514,7 @@ impl AsyncManagedClient {
         } else {
             match self.client().await {
                 Ok(client) => Some(client.listed_tools()),
-                Err(_) => self.cached_tools(),
+                Err(_) => None,
             }
         }?;
         Some(if self.is_codex_apps_mcp_server {

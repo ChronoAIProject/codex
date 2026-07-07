@@ -1062,7 +1062,7 @@ async fn list_all_tools_does_not_block_when_shared_codex_apps_cache_is_empty() {
 }
 
 #[tokio::test]
-async fn list_all_tools_uses_shared_codex_apps_cache_when_client_startup_fails() {
+async fn list_all_tools_does_not_advertise_cached_codex_apps_tools_after_startup_fails() {
     let codex_home = tempdir().expect("tempdir");
     let cache_context = create_codex_apps_tools_cache_context(
         codex_home.path().to_path_buf(),
@@ -1106,15 +1106,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_when_client_startup_fails()
     );
 
     let tools = manager.list_all_tools().await;
-    let tool = tools
-        .iter()
-        .find(|tool| {
-            tool.canonical_tool_name()
-                == ToolName::namespaced("mcp__codex_apps", "calendar_create_event")
-        })
-        .expect("tool from shared cache");
-    assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
-    assert_eq!(tool.callable_name, "calendar_create_event");
+    assert!(tools.is_empty());
     assert_eq!(
         manager
             .list_available_server_infos()
@@ -1175,7 +1167,7 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
 }
 
 #[tokio::test(start_paused = true)]
-async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools() {
+async fn later_tool_list_retries_after_failed_reconnect_without_advertising_cached_tools() {
     let recovered_client = create_test_managed_client(vec![create_test_tool(
         CODEX_APPS_MCP_SERVER_NAME,
         "drive_search",
@@ -1214,60 +1206,30 @@ async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools()
 
     let first_reconnect_finished = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.callable_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
-    );
+    assert!(tools.is_empty());
     first_reconnect_finished.await;
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     let tools = manager.list_all_tools().await;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.callable_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
-    );
+    assert!(tools.is_empty());
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
     let second_reconnect_finished = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.callable_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
-    );
+    assert!(tools.is_empty());
     second_reconnect_finished.await;
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
 
     tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
     let tools = manager.list_all_tools().await;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.callable_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
-    );
+    assert!(tools.is_empty());
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
 
     tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
     let third_reconnect_finished = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.callable_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
-    );
+    assert!(tools.is_empty());
     third_reconnect_finished.await;
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
 
@@ -1330,14 +1292,14 @@ async fn tool_lists_do_not_block_and_share_codex_apps_startup_reconnect() {
             .iter()
             .map(|tool| tool.callable_name.as_str())
             .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
+        Vec::<&str>::new()
     );
     assert_eq!(
         second_tools
             .iter()
             .map(|tool| tool.callable_name.as_str())
             .collect::<Vec<_>>(),
-        vec!["cached_drive_search"]
+        Vec::<&str>::new()
     );
 
     release_reconnect.notify_one();
