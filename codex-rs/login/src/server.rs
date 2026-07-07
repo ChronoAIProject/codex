@@ -791,6 +791,18 @@ pub(crate) async fn exchange_code_for_tokens(
             error_message = detail.error_message.as_deref().unwrap_or("unknown"),
             "oauth token exchange returned non-success status"
         );
+        let detail = if status == reqwest::StatusCode::FORBIDDEN
+            && detail.error_code.is_none()
+            && detail.error_message.is_none()
+        {
+            TokenEndpointErrorDetail {
+                error_code: detail.error_code,
+                error_message: detail.error_message,
+                display_message: "request was rejected by the auth service. If you are using a proxy, make sure the Codex login process can reach auth.openai.com through that proxy".to_string(),
+            }
+        } else {
+            detail
+        };
         return Err(io::Error::other(format!(
             "token endpoint returned status {status}: {detail}"
         )));
@@ -1252,6 +1264,45 @@ mod tests {
                 error_message: None,
                 display_message: "service unavailable".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_code_for_tokens_adds_proxy_hint_for_bare_forbidden() {
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let pkce = crate::pkce::PkceCodes {
+            code_verifier: "verifier".to_string(),
+            code_challenge: "challenge".to_string(),
+        };
+
+        let result = super::exchange_code_for_tokens(
+            &server.uri(),
+            "client-id",
+            "http://localhost:1455/auth/callback",
+            &pkce,
+            "code",
+            /*auth_route_config*/ None,
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("bare 403 should fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "token endpoint returned status 403 Forbidden: request was rejected by the auth service. If you are using a proxy, make sure the Codex login process can reach auth.openai.com through that proxy"
         );
     }
 
