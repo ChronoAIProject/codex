@@ -1,5 +1,6 @@
 use super::*;
 use crate::ModelsManagerConfig;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -71,4 +72,16 @@ fn model_context_window_uses_model_value_without_override() {
     let updated = with_config_overrides(model.clone(), &config);
 
     assert_eq!(updated, model);
+}
+
+#[test]
+fn gpt_oss_fallback_model_info_enables_apply_patch() {
+    for slug in ["gpt-oss-120b", "openai/gpt-oss-20b", "high-gpt-oss-120b"] {
+        let model = model_info_from_slug(slug);
+
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Freeform)
+        );
+    }
 }
