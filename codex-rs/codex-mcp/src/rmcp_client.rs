@@ -110,28 +110,6 @@ pub(crate) struct ManagedClient {
 
 impl ManagedClient {
     fn listed_tools(&self) -> Vec<ToolInfo> {
-        let total_start = Instant::now();
-        if let Some(tools) = self
-            .codex_apps_tools_cache_context
-            .as_ref()
-            .and_then(CodexAppsToolsCacheContext::current_tools)
-        {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "hit")],
-            );
-            return filter_tools(tools, &self.tool_filter);
-        }
-
-        if self.codex_apps_tools_cache_context.is_some() {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "miss")],
-            );
-        }
-
         self.tools.clone()
     }
 }

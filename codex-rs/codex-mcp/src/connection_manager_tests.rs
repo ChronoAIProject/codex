@@ -788,6 +788,56 @@ async fn list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending() {
 }
 
 #[tokio::test]
+async fn list_all_tools_uses_live_codex_apps_tools_after_client_is_ready() {
+    let codex_home = tempdir().expect("tempdir");
+    let cache_context = create_codex_apps_tools_cache_context(
+        codex_home.path().to_path_buf(),
+        Some("account-one"),
+        Some("user-one"),
+    );
+    cache_context.store_current_tools_for_test(vec![create_test_tool(
+        CODEX_APPS_MCP_SERVER_NAME,
+        "stale_cached_tool",
+    )]);
+
+    let mut live_client =
+        create_test_managed_client(vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "js")]).await;
+    live_client.codex_apps_tools_cache_context = Some(cache_context.clone());
+    let ready_client =
+        futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(live_client))
+            .boxed()
+            .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionManager::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    manager.clients.insert(
+        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        AsyncManagedClient {
+            client: ready_client,
+            is_codex_apps_mcp_server: true,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: Some(cache_context),
+            tool_filter: ToolFilter::default(),
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            startup_reconnect: None,
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let tools = manager.list_all_tools().await;
+
+    assert_eq!(
+        model_tool_names(&tools),
+        HashSet::from([ToolName::namespaced("mcp__codex_apps", "js")])
+    );
+}
+
+#[tokio::test]
 async fn list_available_server_infos_uses_cache_while_client_is_pending() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
