@@ -312,11 +312,17 @@ impl ModelProvider for ConfiguredModelProvider {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
-        match config_model_catalog {
-            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+        if self.info.requires_openai_auth
+            && let Some(model_catalog) = config_model_catalog
+        {
+            return Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
-            )),
+            ));
+        }
+
+        match config_model_catalog {
+            Some(model_catalog) => Arc::new(StaticModelsManager::new_unfiltered(model_catalog)),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
                     self.info.clone(),
@@ -751,6 +757,34 @@ mod tests {
                 .models
                 .iter()
                 .any(|model| model.slug == "provider-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_provider_catalog_ignores_openai_auth_filter_for_custom_provider() {
+        let mut custom_model = remote_model("custom-provider-model");
+        custom_model.supported_in_api = false;
+        let provider = create_model_provider(
+            provider_for("http://localhost:11434/v1".to_string()),
+            Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                "openai-api-key",
+            ))),
+        );
+        let manager = provider.models_manager(
+            test_codex_home(),
+            Some(ModelsResponse {
+                models: vec![custom_model],
+            }),
+        );
+
+        let models = manager.list_models(RefreshStrategy::Online).await;
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["custom-provider-model"]
         );
     }
 }

@@ -113,15 +113,22 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     /// Return the auth manager used for picker filtering.
     fn auth_manager(&self) -> Option<&AuthManager>;
 
+    /// Returns whether picker models should be filtered by first-party auth metadata.
+    fn filters_models_by_auth(&self) -> bool {
+        true
+    }
+
     /// Build picker-ready presets from the active catalog snapshot.
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
         remote_models.sort_by_key(|model| model.priority);
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
-        let uses_codex_backend = self
-            .auth_manager()
-            .is_some_and(AuthManager::current_auth_uses_codex_backend);
-        presets = ModelPreset::filter_by_auth(presets, uses_codex_backend);
+        if self.filters_models_by_auth() {
+            let uses_codex_backend = self
+                .auth_manager()
+                .is_some_and(AuthManager::current_auth_uses_codex_backend);
+            presets = ModelPreset::filter_by_auth(presets, uses_codex_backend);
+        }
 
         ModelPreset::mark_default_by_picker_visibility(&mut presets);
 
@@ -211,6 +218,7 @@ pub struct OpenAiModelsManager {
 pub struct StaticModelsManager {
     remote_models: Vec<ModelInfo>,
     auth_manager: Option<Arc<AuthManager>>,
+    filter_models_by_auth: bool,
 }
 
 impl OpenAiModelsManager {
@@ -239,6 +247,17 @@ impl StaticModelsManager {
         Self {
             remote_models: model_catalog.models,
             auth_manager,
+            filter_models_by_auth: true,
+        }
+    }
+
+    /// Construct a static model manager for provider-owned catalogs whose
+    /// visibility should not be interpreted as first-party OpenAI auth metadata.
+    pub fn new_unfiltered(model_catalog: ModelsResponse) -> Self {
+        Self {
+            remote_models: model_catalog.models,
+            auth_manager: None,
+            filter_models_by_auth: false,
         }
     }
 }
@@ -465,6 +484,10 @@ impl ModelsManager for StaticModelsManager {
 
     fn auth_manager(&self) -> Option<&AuthManager> {
         self.auth_manager.as_deref()
+    }
+
+    fn filters_models_by_auth(&self) -> bool {
+        self.filter_models_by_auth
     }
 
     fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
