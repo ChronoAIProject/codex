@@ -2709,8 +2709,7 @@ impl Session {
         }
     }
 
-    /// Records conversation items: append to history, persist to rollout, and
-    /// notify clients observing raw response items.
+    /// Normalizes conversation items before adding them to history.
     pub(crate) fn prepare_conversation_items_for_history<'a>(
         &self,
         turn_context: &TurnContext,
@@ -2771,6 +2770,31 @@ impl Session {
         ))
     }
 
+    async fn record_prepared_items_in_history(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) {
+        let mut state = self.state.lock().await;
+        state.current_time_reminder.note_recorded_items(items);
+        state.record_items(
+            items.iter(),
+            turn_context.model_info.truncation_policy.into(),
+        );
+    }
+
+    /// Records model-only context without persisting it or notifying clients.
+    #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
+    pub(crate) async fn record_model_context_items(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) {
+        let items = self.prepare_conversation_items_for_history(turn_context, items);
+        self.record_prepared_items_in_history(turn_context, items.as_ref())
+            .await;
+    }
+
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
     pub(crate) async fn record_conversation_items(
         &self,
@@ -2779,14 +2803,8 @@ impl Session {
     ) {
         let items = self.prepare_conversation_items_for_history(turn_context, items);
         let items = items.as_ref();
-        {
-            let mut state = self.state.lock().await;
-            state.current_time_reminder.note_recorded_items(items);
-            state.record_items(
-                items.iter(),
-                turn_context.model_info.truncation_policy.into(),
-            );
-        }
+        self.record_prepared_items_in_history(turn_context, items)
+            .await;
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
     }

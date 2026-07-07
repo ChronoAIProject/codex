@@ -602,7 +602,7 @@ pub(crate) async fn record_additional_contexts(
         return;
     }
 
-    sess.record_conversation_items(turn_context, developer_messages.as_slice())
+    sess.record_model_context_items(turn_context, developer_messages.as_slice())
         .await;
 }
 
@@ -788,7 +788,9 @@ mod tests {
     use super::additional_context_messages;
     use super::hook_run_analytics_payload;
     use super::hook_run_metric_tags;
+    use super::record_additional_contexts;
     use crate::session::tests::make_session_and_context;
+    use crate::session::tests::make_session_and_context_with_rx;
     use codex_protocol::protocol::HookCompletedEvent;
     use codex_protocol::protocol::HookRunSummary;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -826,6 +828,36 @@ mod tests {
                 ("developer", "second tide note".to_string()),
             ],
         );
+    }
+
+    #[tokio::test]
+    async fn record_additional_contexts_stays_out_of_transcript_events() {
+        let (session, turn_context, events) = make_session_and_context_with_rx().await;
+        let additional_context = "transcript-hidden context";
+
+        record_additional_contexts(
+            &session,
+            &turn_context,
+            vec![additional_context.to_string()],
+        )
+        .await;
+
+        let history = session.clone_history().await;
+        let [codex_protocol::models::ResponseItem::Message { role, content, .. }] =
+            history.raw_items()
+        else {
+            panic!("expected one model-visible developer message");
+        };
+        assert_eq!(
+            (role.as_str(), content.as_slice()),
+            (
+                "developer",
+                &[ContentItem::InputText {
+                    text: additional_context.to_string(),
+                }][..],
+            )
+        );
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
