@@ -25,6 +25,7 @@ nucleo = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
