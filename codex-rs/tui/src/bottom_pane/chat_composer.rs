@@ -256,6 +256,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+use tempfile::Builder;
 
 use ratatui::style::Color;
 
@@ -902,7 +903,49 @@ impl ChatComposer {
                 tracing::debug!("image dimensions={}x{}", width, height);
                 let format = pasted_image_format(&path_buf);
                 tracing::debug!("attached image format={}", format.label());
-                self.attach_image(path_buf);
+                let path = match Builder::new()
+                    .prefix("codex-pasted-image-")
+                    .suffix(
+                        path_buf
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .map(|extension| format!(".{extension}"))
+                            .as_deref()
+                            .unwrap_or(".img"),
+                    )
+                    .tempfile()
+                {
+                    Ok(tempfile) => match std::fs::copy(&path_buf, tempfile.path()) {
+                        Ok(_) => match tempfile.keep() {
+                            Ok((_file, copied_path)) => copied_path,
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err.error,
+                                    path = %path_buf.display(),
+                                    "failed to persist pasted image copy"
+                                );
+                                path_buf
+                            }
+                        },
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                path = %path_buf.display(),
+                                "failed to copy pasted image"
+                            );
+                            path_buf
+                        }
+                    },
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            path = %path_buf.display(),
+                            "failed to create pasted image copy"
+                        );
+                        path_buf
+                    }
+                };
+                self.attach_image(path);
                 true
             }
             Err(err) => {
@@ -10361,7 +10404,16 @@ mod tests {
         assert!(composer.draft.textarea.text().starts_with("[Image #1] "));
 
         let imgs = composer.take_recent_submission_images();
-        assert_eq!(imgs, vec![tmp_path]);
+        let [attached_path] = imgs.as_slice() else {
+            panic!("expected one attached image");
+        };
+        assert_ne!(attached_path, &tmp_path);
+        assert_eq!(
+            std::fs::read(attached_path).expect("read copied attachment"),
+            std::fs::read(&tmp_path).expect("read source image")
+        );
+        std::fs::remove_file(&tmp_path).expect("remove source image");
+        assert!(attached_path.is_file());
     }
 
     #[test]
