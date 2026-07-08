@@ -1475,6 +1475,7 @@ impl PluginsManager {
         )
         .await
         .map_err(anyhow::Error::from)?;
+        self.clear_cache();
 
         let analytics_events_client = match self.analytics_events_client.read() {
             Ok(client) => client.clone(),

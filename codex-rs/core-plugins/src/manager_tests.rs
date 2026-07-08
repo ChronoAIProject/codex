@@ -2836,6 +2836,85 @@ async fn install_plugin_uses_manifest_version_for_non_curated_plugins() {
 }
 
 #[tokio::test]
+async fn install_plugin_invalidates_loaded_plugin_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    write_plugin_with_version(&repo_root, "sample-plugin", "sample-plugin", Some("1.2.3"));
+    write_file(
+        &repo_root.join("sample-plugin/.codex-plugin/plugin.json"),
+        r#"{
+  "name": "sample-plugin",
+  "version": "1.2.3",
+  "mcpServers": "./.mcp.json"
+}"#,
+    );
+    write_file(
+        &repo_root.join("sample-plugin/.mcp.json"),
+        r#"{"mcpServers":{"calendar":{"type":"http","url":"https://calendar.example/mcp"}}}"#,
+    );
+    write_file(
+        &repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "debug",
+  "plugins": [
+    {
+      "name": "sample-plugin",
+      "source": {
+        "source": "local",
+        "path": "./sample-plugin"
+      }
+    }
+  ]
+}"#,
+    );
+    let manager = PluginsManager::new(tmp.path().to_path_buf());
+    let request = PluginInstallRequest {
+        plugin_name: "sample-plugin".to_string(),
+        marketplace_path: AbsolutePathBuf::try_from(
+            repo_root.join(".agents/plugins/marketplace.json"),
+        )
+        .unwrap(),
+    };
+    manager
+        .install_plugin(&unrestricted_config_layer_stack(), request.clone())
+        .await
+        .unwrap();
+    let config = load_config(tmp.path(), tmp.path()).await;
+    assert_eq!(
+        manager
+            .plugins_for_config(&config)
+            .await
+            .effective_mcp_servers()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["calendar".to_string()]
+    );
+
+    write_file(
+        &repo_root.join("sample-plugin/.mcp.json"),
+        r#"{"mcpServers":{"mail":{"type":"http","url":"https://mail.example/mcp"}}}"#,
+    );
+    manager
+        .install_plugin(&unrestricted_config_layer_stack(), request)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        manager
+            .plugins_for_config(&config)
+            .await
+            .effective_mcp_servers()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["mail".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn install_plugin_writes_marketplace_manifest_fallback_when_missing_plugin_json() {
     let tmp = tempfile::tempdir().unwrap();
     let repo_root = tmp.path().join("repo");
