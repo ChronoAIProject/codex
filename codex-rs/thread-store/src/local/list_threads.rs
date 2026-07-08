@@ -148,7 +148,9 @@ pub(super) async fn list_rollout_threads(
         return Ok(page.into());
     }
 
-    let page = if params.use_state_db_only && params.archived {
+    let use_state_db_only =
+        params.use_state_db_only || state_db_backfill_complete(state_db.as_deref()).await;
+    let page = if use_state_db_only && params.archived {
         RolloutRecorder::list_archived_threads_from_state_db(
             state_db,
             config,
@@ -163,7 +165,7 @@ pub(super) async fn list_rollout_threads(
             params.search_term.as_deref(),
         )
         .await
-    } else if params.use_state_db_only {
+    } else if use_state_db_only {
         RolloutRecorder::list_threads_from_state_db(
             state_db,
             config,
@@ -212,6 +214,16 @@ pub(super) async fn list_rollout_threads(
     page.map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to list threads: {err}"),
     })
+}
+
+async fn state_db_backfill_complete(state_db: Option<&codex_state::StateRuntime>) -> bool {
+    let Some(state_db) = state_db else {
+        return false;
+    };
+    matches!(
+        state_db.get_backfill_state().await,
+        Ok(state) if state.status == codex_state::BackfillStatus::Complete
+    )
 }
 
 #[cfg(test)]
@@ -335,6 +347,71 @@ mod tests {
             page.items[0].first_user_message.as_deref(),
             Some("plain preview")
         );
+    }
+
+    #[tokio::test]
+    async fn list_threads_uses_state_db_after_backfill_completes() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        runtime
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await
+            .expect("backfill should be complete");
+
+        let indexed_uuid = Uuid::from_u128(107);
+        let indexed_thread_id =
+            ThreadId::from_string(&indexed_uuid.to_string()).expect("valid thread id");
+        let indexed_path = write_session_file(home.path(), "2025-01-03T12-00-00", indexed_uuid)
+            .expect("indexed session file");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            indexed_thread_id,
+            indexed_path,
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.model_provider = Some(config.default_model_provider_id.clone());
+        builder.cwd = home.path().to_path_buf();
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.first_user_message = Some("Indexed thread".to_string());
+        metadata.preview = metadata.first_user_message.clone();
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        write_session_file(home.path(), "2025-01-03T13-00-00", Uuid::from_u128(108))
+            .expect("unindexed session file");
+        let store = LocalThreadStore::new(config, Some(runtime));
+
+        let page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: false,
+            })
+            .await
+            .expect("thread listing");
+
+        let ids = page
+            .items
+            .iter()
+            .map(|thread| thread.thread_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![indexed_thread_id]);
     }
 
     #[tokio::test]
