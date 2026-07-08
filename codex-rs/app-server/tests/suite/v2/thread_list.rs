@@ -518,6 +518,50 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_list_source_filter_without_provider_filter_includes_all_providers() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+
+    let custom_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-00-00",
+        "2025-01-02T11:00:00Z",
+        "custom provider",
+        Some("custom_responses_provider"),
+        /*git_info*/ None,
+    )?;
+    let default_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T10-00-00",
+        "2025-01-02T10:00:00Z",
+        "default provider",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*providers*/ None,
+        Some(vec![ThreadSourceKind::Cli]),
+        /*archived*/ None,
+    )
+    .await?;
+
+    assert_eq!(
+        data.iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![custom_id.as_str(), default_id.as_str()]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_list_respects_cwd_filters() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;
