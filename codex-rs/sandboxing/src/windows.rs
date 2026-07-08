@@ -145,7 +145,7 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
         .map(|root| normalize_windows_override_path(root.root.as_path()))
         .collect::<std::result::Result<_, _>>()?;
 
-    if legacy_root_paths != split_root_paths {
+    if split_root_paths.iter().any(|path| path.parent().is_none()) {
         return Err(
             "windows unelevated restricted-token sandbox cannot enforce split writable root sets directly; refusing to run unsandboxed"
                 .to_string(),
@@ -169,25 +169,38 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
         }
     }
 
+    let write_roots_override = if split_root_paths == legacy_root_paths {
+        None
+    } else {
+        Some(split_root_paths.into_iter().collect())
+    };
+
     let mut additional_deny_write_paths = BTreeSet::new();
     for split_root in &split_writable_roots {
         let split_root_path = normalize_windows_override_path(split_root.root.as_path())?;
-        let Some(legacy_root) = legacy_writable_roots.iter().find(|candidate| {
-            normalize_windows_override_path(candidate.root.as_path())
-                .is_ok_and(|candidate_path| candidate_path == split_root_path)
-        }) else {
-            return Err(
-                "windows unelevated restricted-token sandbox cannot enforce split writable root sets directly; refusing to run unsandboxed"
-                    .to_string(),
-            );
-        };
+        let legacy_root = legacy_writable_roots.iter().find(|candidate| {
+            normalize_windows_override_path(candidate.root.as_path()).is_ok_and(|candidate_path| {
+                candidate_path == split_root_path || split_root_path.starts_with(candidate_path)
+            })
+        });
 
         for read_only_subpath in &split_root.read_only_subpaths {
-            if !legacy_root
-                .read_only_subpaths
-                .iter()
-                .any(|candidate| candidate == read_only_subpath)
-            {
+            if !legacy_root.is_some_and(|legacy_root| {
+                let Some(read_only_suffix) = read_only_subpath
+                    .as_path()
+                    .strip_prefix(split_root.root.as_path())
+                    .ok()
+                else {
+                    return false;
+                };
+                legacy_root.read_only_subpaths.iter().any(|candidate| {
+                    candidate
+                        .as_path()
+                        .strip_prefix(legacy_root.root.as_path())
+                        .ok()
+                        == Some(read_only_suffix)
+                })
+            }) {
                 additional_deny_write_paths.insert(normalize_windows_override_path(
                     read_only_subpath.as_path(),
                 )?);
@@ -195,14 +208,17 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
         }
     }
 
-    if additional_deny_read_paths.is_empty() && additional_deny_write_paths.is_empty() {
+    if write_roots_override.is_none()
+        && additional_deny_read_paths.is_empty()
+        && additional_deny_write_paths.is_empty()
+    {
         return Ok(None);
     }
 
     Ok(Some(WindowsSandboxFilesystemOverrides {
         read_roots_override: None,
         read_roots_include_platform_defaults: false,
-        write_roots_override: None,
+        write_roots_override,
         additional_deny_read_paths,
         additional_deny_write_paths: additional_deny_write_paths
             .into_iter()

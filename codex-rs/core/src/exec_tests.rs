@@ -666,6 +666,54 @@ fn windows_restricted_token_supports_full_read_split_write_read_carveouts() {
 }
 
 #[test]
+fn windows_restricted_token_supports_split_writable_roots_with_override() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let cwd_path = temp_dir.path().join("workspace");
+    let temp_root_path = temp_dir.path().join("scratch");
+    std::fs::create_dir_all(&cwd_path).expect("create cwd");
+    std::fs::create_dir_all(&temp_root_path).expect("create temp root");
+    let cwd = dunce::canonicalize(&cwd_path)
+        .expect("canonicalize workspace")
+        .abs();
+    let temp_root = dunce::canonicalize(&temp_root_path)
+        .expect("canonicalize temp root")
+        .abs();
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
+        codex_protocol::permissions::FileSystemSandboxEntry {
+            path: codex_protocol::permissions::FileSystemPath::Special {
+                value: codex_protocol::permissions::FileSystemSpecialPath::Root,
+            },
+            access: codex_protocol::permissions::FileSystemAccessMode::Read,
+        },
+        codex_protocol::permissions::FileSystemSandboxEntry {
+            path: codex_protocol::permissions::FileSystemPath::Path {
+                path: temp_root.clone(),
+            },
+            access: codex_protocol::permissions::FileSystemAccessMode::Write,
+        },
+    ]);
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+    assert_eq!(
+        resolve_windows_restricted_token_filesystem_overrides(
+            SandboxType::WindowsRestrictedToken,
+            &permission_profile,
+            &cwd,
+            WindowsSandboxLevel::RestrictedToken,
+        ),
+        Ok(Some(WindowsSandboxFilesystemOverrides {
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: Some(vec![temp_root.into_path_buf()]),
+            additional_deny_read_paths: vec![],
+            additional_deny_write_paths: vec![],
+        }))
+    );
+}
+
+#[test]
 fn windows_restricted_token_rejects_unreadable_split_carveouts() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
     let cwd = dunce::canonicalize(temp_dir.path())
