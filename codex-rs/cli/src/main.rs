@@ -792,8 +792,36 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!("\n🎉 Update ran successfully! Please restart Codex.");
+    restart_after_update(action)?;
+    println!("\n{}", update_success_message(action));
     Ok(())
+}
+
+fn restart_after_update(action: UpdateAction) -> anyhow::Result<()> {
+    if !restarts_after_update(action) {
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("codex").spawn()?;
+    }
+
+    Ok(())
+}
+
+fn restarts_after_update(action: UpdateAction) -> bool {
+    matches!(action, UpdateAction::StandaloneWindows)
+}
+
+fn update_success_message(action: UpdateAction) -> &'static str {
+    match action {
+        UpdateAction::StandaloneWindows => "🎉 Update ran successfully! Restarting Codex...",
+        UpdateAction::NpmGlobalLatest
+        | UpdateAction::BunGlobalLatest
+        | UpdateAction::BrewUpgrade
+        | UpdateAction::StandaloneUnix => "🎉 Update ran successfully! Please restart Codex.",
+    }
 }
 
 fn run_update_command() -> anyhow::Result<()> {
@@ -3212,6 +3240,15 @@ mod tests {
                 "To continue this session, run codex resume, then select my-thread (123e4567-e89b-12d3-a456-426614174000)".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn only_standalone_windows_restarts_after_update() {
+        assert!(restarts_after_update(UpdateAction::StandaloneWindows));
+        assert!(!restarts_after_update(UpdateAction::StandaloneUnix));
+        assert!(!restarts_after_update(UpdateAction::NpmGlobalLatest));
+        assert!(!restarts_after_update(UpdateAction::BunGlobalLatest));
+        assert!(!restarts_after_update(UpdateAction::BrewUpgrade));
     }
 
     #[test]
