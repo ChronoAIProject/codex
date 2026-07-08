@@ -37,7 +37,7 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[tokio::test]
-async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<()> {
+async fn thread_unsubscribe_unloads_thread_after_idle_timeout() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
@@ -79,7 +79,26 @@ async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<(
     .await??;
     let ThreadLoadedListResponse { data, next_cursor } =
         to_response::<ThreadLoadedListResponse>(list_resp)?;
-    assert_eq!(data, vec![thread_id]);
+    assert_eq!(data, vec![thread_id.clone()]);
+    assert_eq!(next_cursor, None);
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/closed"),
+    )
+    .await??;
+
+    let list_id = mcp
+        .send_thread_loaded_list_request(ThreadLoadedListParams::default())
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let ThreadLoadedListResponse { data, next_cursor } =
+        to_response::<ThreadLoadedListResponse>(list_resp)?;
+    assert_eq!(data, Vec::<String>::new());
     assert_eq!(next_cursor, None);
 
     Ok(())
