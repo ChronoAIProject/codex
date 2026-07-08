@@ -318,7 +318,7 @@ pub fn process_responses_event(
     match event.kind.as_str() {
         "response.output_item.done" => {
             if let Some(item_val) = event.item {
-                if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
+                if let Some(item) = parse_response_item(item_val) {
                     return Ok(Some(ResponseEvent::OutputItemDone(item)));
                 }
                 debug!("failed to parse ResponseItem from output_item.done");
@@ -446,6 +446,46 @@ pub fn process_responses_event(
     }
 
     Ok(None)
+}
+
+fn parse_response_item(item_val: Value) -> Option<ResponseItem> {
+    match serde_json::from_value::<ResponseItem>(item_val.clone()) {
+        Ok(item) => Some(item),
+        Err(_) => parse_custom_tool_call_without_input(&item_val),
+    }
+}
+
+fn parse_custom_tool_call_without_input(item_val: &Value) -> Option<ResponseItem> {
+    let item = item_val.as_object()?;
+    if item.get("type").and_then(Value::as_str)? != "custom_tool_call" {
+        return None;
+    }
+    let call_id = item.get("call_id").and_then(Value::as_str)?.to_string();
+    let name = item.get("name").and_then(Value::as_str)?.to_string();
+    let id = item.get("id").and_then(Value::as_str).map(str::to_string);
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let namespace = item
+        .get("namespace")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let input = item
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    Some(ResponseItem::CustomToolCall {
+        id,
+        status,
+        call_id,
+        name,
+        namespace,
+        input,
+        internal_chat_message_metadata_passthrough: None,
+    })
 }
 
 #[cfg(test)]
@@ -880,6 +920,44 @@ mod tests {
                 call_id: Some(call_id),
                 delta,
             } if item_id == "ctc_1" && call_id == "call_1" && delta == "*** Begin"
+        );
+        assert_matches!(&events[1], ResponseEvent::Completed { .. });
+    }
+
+    #[tokio::test]
+    async fn parses_custom_tool_call_done_without_input() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "custom_tool_call",
+                    "id": "ctc_1",
+                    "call_id": "call_1",
+                    "name": "apply_patch",
+                    "status": "completed",
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall {
+                id: Some(id),
+                status: Some(status),
+                call_id,
+                name,
+                input,
+                ..
+            }) if id == "ctc_1"
+                && status == "completed"
+                && call_id == "call_1"
+                && name == "apply_patch"
+                && input.is_empty()
         );
         assert_matches!(&events[1], ResponseEvent::Completed { .. });
     }
