@@ -736,6 +736,10 @@ impl ModelClient {
         extra_headers
     }
 
+    fn api_provider_supports_internal_chat_metadata(&self, provider: &ApiProvider) -> bool {
+        self.state.provider.info().is_openai() && !provider.is_azure_responses_endpoint()
+    }
+
     fn build_ws_client_metadata(
         &self,
         responses_metadata: &CodexResponsesMetadata,
@@ -820,7 +824,7 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
-        if !self.state.provider.info().is_openai() {
+        if !self.api_provider_supports_internal_chat_metadata(provider) {
             input
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
@@ -1128,6 +1132,7 @@ impl ModelClientSession {
         request: &ResponsesApiRequest,
         last_response: Option<&LastResponse>,
         allow_empty_delta: bool,
+        supports_internal_chat_metadata: bool,
     ) -> Option<Vec<ResponseItem>> {
         // Checks whether the current request is an incremental extension of the previous request.
         // We only reuse an incremental input delta when non-input request fields are unchanged and
@@ -1149,7 +1154,7 @@ impl ModelClientSession {
         };
         let mut response_items =
             last_response.map_or_else(Vec::new, |response| response.items_added.clone());
-        if !self.client.state.provider.info().is_openai() {
+        if !supports_internal_chat_metadata {
             response_items
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
@@ -1179,6 +1184,7 @@ impl ModelClientSession {
         &mut self,
         payload: ResponseCreateWsRequest,
         request: &ResponsesApiRequest,
+        supports_internal_chat_metadata: bool,
     ) -> (ResponsesWsRequest, bool) {
         let Some(last_response) = self.get_last_response() else {
             return (ResponsesWsRequest::ResponseCreate(payload), false);
@@ -1189,6 +1195,7 @@ impl ModelClientSession {
             request,
             Some(&last_response),
             /*allow_empty_delta*/ true,
+            supports_internal_chat_metadata,
         ) else {
             return (ResponsesWsRequest::ResponseCreate(payload), false);
         };
@@ -1532,6 +1539,9 @@ impl ModelClientSession {
             if warmup {
                 ws_payload.generate = Some(false);
             }
+            let supports_internal_chat_metadata = self
+                .client
+                .api_provider_supports_internal_chat_metadata(&client_setup.api_provider);
 
             match self
                 .websocket_connection(WebsocketConnectParams {
@@ -1569,8 +1579,8 @@ impl ModelClientSession {
                 Err(err) => return Err(self.client.state.provider.map_api_error(err)),
             }
 
-            let (mut ws_request, previous_response_id_from_untraced_warmup) =
-                self.prepare_websocket_request(ws_payload, &request);
+            let (mut ws_request, previous_response_id_from_untraced_warmup) = self
+                .prepare_websocket_request(ws_payload, &request, supports_internal_chat_metadata);
             let inference_trace_attempt = if warmup {
                 // Prewarm sends `generate=false`; it is connection setup, not a
                 // model inference attempt that should appear in rollout traces.
