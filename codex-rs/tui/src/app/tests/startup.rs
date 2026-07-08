@@ -3,6 +3,31 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
+use tokio::sync::mpsc;
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReadyEventBranch {
+    App,
+    Tui,
+    ActiveThread,
+    AppServer,
+}
+
+async fn select_ready_event_branch(
+    app_rx: &mut mpsc::UnboundedReceiver<()>,
+    tui_rx: &mut mpsc::UnboundedReceiver<()>,
+    active_thread_rx: &mut mpsc::Receiver<()>,
+    app_server_rx: &mut mpsc::UnboundedReceiver<()>,
+) -> ReadyEventBranch {
+    tokio::select! {
+        biased;
+
+        Some(()) = app_rx.recv() => ReadyEventBranch::App,
+        Some(()) = tui_rx.recv() => ReadyEventBranch::Tui,
+        Some(()) = active_thread_rx.recv() => ReadyEventBranch::ActiveThread,
+        Some(()) = app_server_rx.recv() => ReadyEventBranch::AppServer,
+    }
+}
 
 #[test]
 fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
@@ -132,6 +157,45 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
             /*has_active_thread_receiver*/ true
         ),
         true
+    );
+}
+
+#[tokio::test]
+async fn run_loop_prioritizes_input_over_active_thread_backlog() {
+    let (app_tx, mut app_rx) = mpsc::unbounded_channel();
+    let (tui_tx, mut tui_rx) = mpsc::unbounded_channel();
+    let (active_thread_tx, mut active_thread_rx) =
+        mpsc::channel(/*buffer*/ THREAD_EVENT_CHANNEL_CAPACITY);
+    let (app_server_tx, mut app_server_rx) = mpsc::unbounded_channel();
+
+    app_tx.send(()).expect("app event queued");
+    tui_tx.send(()).expect("tui event queued");
+    app_server_tx.send(()).expect("app-server event queued");
+    for _ in 0..THREAD_EVENT_CHANNEL_CAPACITY {
+        active_thread_tx
+            .try_send(())
+            .expect("active thread backlog queued");
+    }
+
+    assert_eq!(
+        select_ready_event_branch(
+            &mut app_rx,
+            &mut tui_rx,
+            &mut active_thread_rx,
+            &mut app_server_rx,
+        )
+        .await,
+        ReadyEventBranch::App
+    );
+    assert_eq!(
+        select_ready_event_branch(
+            &mut app_rx,
+            &mut tui_rx,
+            &mut active_thread_rx,
+            &mut app_server_rx,
+        )
+        .await,
+        ReadyEventBranch::Tui
     );
 }
 
