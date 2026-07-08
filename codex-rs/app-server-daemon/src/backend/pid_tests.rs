@@ -10,6 +10,7 @@ use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
+use super::read_process_start_time;
 use super::read_stderr_log_tail;
 use super::stderr_log_file_for_pid_file;
 use super::try_lock_file;
@@ -147,6 +148,60 @@ async fn stale_record_cleanup_preserves_replacement_record() {
     );
 }
 
+#[tokio::test]
+async fn read_process_start_time_bypasses_path_lookup() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let fake_ps = temp_dir.path().join("ps");
+    tokio::fs::write(&fake_ps, "#!/bin/sh\nexit 42\n")
+        .await
+        .expect("write fake ps");
+    make_executable(&fake_ps).expect("chmod fake ps");
+
+    let original_path = std::env::var_os("PATH");
+    let mut paths = vec![temp_dir.path().to_path_buf()];
+    if let Some(original_path) = original_path.as_deref() {
+        paths.extend(std::env::split_paths(original_path));
+    }
+    let poisoned_path = std::env::join_paths(paths).expect("join PATH");
+    let mut command = tokio::process::Command::new(std::env::current_exe().expect("current exe"));
+    command
+        .env("PATH", poisoned_path)
+        .env(
+            "CODEX_PID_TEST_READ_START_TIME",
+            std::process::id().to_string(),
+        )
+        .arg("--exact")
+        .arg("backend::pid::tests::read_process_start_time_test_helper")
+        .arg("--nocapture");
+
+    let output = command.output().await.expect("run helper test");
+
+    assert_eq!(
+        output.status.success(),
+        true,
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[tokio::test]
+async fn read_process_start_time_test_helper() {
+    let Some(pid) = std::env::var("CODEX_PID_TEST_READ_START_TIME")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return;
+    };
+
+    assert!(
+        !read_process_start_time(pid)
+            .await
+            .expect("read process start time")
+            .is_empty()
+    );
+}
+
 #[test]
 fn update_loop_uses_hidden_app_server_subcommand() {
     let backend = PidBackend {
@@ -160,6 +215,14 @@ fn update_loop_uses_hidden_app_server_subcommand() {
         backend.command_args(),
         vec!["app-server", "daemon", "pid-update-loop"]
     );
+}
+
+fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)
 }
 
 #[test]

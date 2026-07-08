@@ -689,7 +689,7 @@ async fn inspect_empty_pid_reservation(
 
 #[cfg(unix)]
 async fn read_process_start_time(pid: u32) -> Result<String> {
-    let output = Command::new("ps")
+    let output = Command::new("/bin/ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .output()
         .await
