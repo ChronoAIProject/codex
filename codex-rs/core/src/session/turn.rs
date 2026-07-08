@@ -102,6 +102,7 @@ use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::SafetyBufferingEvent;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -1315,6 +1316,16 @@ struct SamplingRequestResult {
     last_agent_message: Option<String>,
 }
 
+fn completed_response_is_empty(
+    token_usage: Option<&TokenUsage>,
+    saw_response_output: bool,
+) -> bool {
+    !saw_response_output
+        && token_usage.is_some_and(|usage| {
+            usage.input_tokens > 0 && usage.output_tokens == 0 && usage.reasoning_output_tokens == 0
+        })
+}
+
 /// Ephemeral per-response state for streaming a single proposed plan.
 /// This is intentionally not persisted or stored in session/state since it
 /// only exists while a response is actively streaming. The final plan text
@@ -1934,6 +1945,7 @@ async fn try_run_sampling_request(
     )> = None;
     let mut should_emit_turn_diff = false;
     let mut should_emit_token_count = false;
+    let mut saw_response_output = false;
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
@@ -1986,6 +1998,7 @@ async fn try_run_sampling_request(
         match event {
             ResponseEvent::Created => {}
             ResponseEvent::OutputItemDone(item) => {
+                saw_response_output = true;
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
                     && let Ok(Some(event)) = consumer.finish()
                 {
@@ -2080,6 +2093,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
+                saw_response_output = true;
                 if let ResponseItem::CustomToolCall {
                     call_id,
                     name,
@@ -2214,6 +2228,12 @@ async fn try_run_sampling_request(
                 end_turn,
                 ..
             } => {
+                if completed_response_is_empty(token_usage.as_ref(), saw_response_output) {
+                    break Err(CodexErr::Stream(
+                        "response.completed returned no output".into(),
+                        None,
+                    ));
+                }
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
@@ -2238,6 +2258,7 @@ async fn try_run_sampling_request(
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {
+                saw_response_output = true;
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
                 if let Some(active) = active_item.as_ref() {
@@ -2291,6 +2312,7 @@ async fn try_run_sampling_request(
                 delta,
                 summary_index,
             } => {
+                saw_response_output = true;
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;
@@ -2309,6 +2331,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+                saw_response_output = true;
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;
@@ -2327,6 +2350,7 @@ async fn try_run_sampling_request(
                 delta,
                 content_index,
             } => {
+                saw_response_output = true;
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;

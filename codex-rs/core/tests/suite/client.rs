@@ -3461,6 +3461,68 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_response_completion_emits_error_message() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+
+    let empty_response = sse(vec![
+        ev_response_created("resp_empty"),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_empty",
+                "usage": {
+                    "input_tokens": 44395,
+                    "input_tokens_details": null,
+                    "output_tokens": 0,
+                    "output_tokens_details": {
+                        "reasoning_tokens": 0
+                    },
+                    "total_tokens": 44395
+                }
+            }
+        }),
+    ]);
+
+    let responses_mock = mount_sse_once(&server, empty_response).await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(|config| {
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "trigger empty response".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let error_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Error(_))).await;
+    assert!(
+        matches!(
+            error_event,
+            EventMsg::Error(ref err)
+                if err.message
+                    == "stream disconnected before completion: response.completed returned no output"
+        ),
+        "expected empty response error; got {error_event:?}"
+    );
+
+    assert_eq!(responses_mock.requests().len(), 1);
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    Ok(())
+}
+
 /// We try to avoid setting env vars in tests because std::env::set_var() is
 /// process-wide and unsafe. Though for this test, we want to simulate the
 /// presence of an environment variable that the provider will read for auth, so
