@@ -578,6 +578,7 @@ pub(crate) struct ChatWidget {
     clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     copy_last_response_binding: Vec<KeyBinding>,
     running_commands: HashMap<String, RunningCommand>,
+    pending_file_change_approval_changes: HashMap<String, HashMap<PathBuf, FileChange>>,
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
@@ -882,11 +883,12 @@ fn exec_approval_request_from_params(
 
 fn patch_approval_request_from_params(
     params: FileChangeRequestApprovalParams,
+    changes: HashMap<PathBuf, FileChange>,
 ) -> ApplyPatchApprovalRequestEvent {
     ApplyPatchApprovalRequestEvent {
         call_id: params.item_id,
         turn_id: params.turn_id,
-        changes: HashMap::new(),
+        changes,
         reason: params.reason,
         grant_root: params.grant_root,
     }

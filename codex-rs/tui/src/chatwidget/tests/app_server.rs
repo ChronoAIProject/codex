@@ -719,6 +719,63 @@ async fn live_app_server_file_change_item_started_preserves_changes() {
 }
 
 #[tokio::test]
+async fn live_app_server_file_change_approval_preserves_changes_for_review() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::FileChange {
+                id: "patch-1".to_string(),
+                changes: vec![FileUpdateChange {
+                    path: "foo.txt".to_string(),
+                    kind: PatchChangeKind::Add,
+                    diff: "hello\n".to_string(),
+                }],
+                status: AppServerPatchApplyStatus::InProgress,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_request(
+        ServerRequest::FileChangeRequestApproval {
+            request_id: AppServerRequestId::Integer(1),
+            params: codex_app_server_protocol::FileChangeRequestApprovalParams {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "patch-1".to_string(),
+                started_at_ms: 0,
+                reason: None,
+                grant_root: None,
+            },
+        },
+        /*replay_kind*/ None,
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+
+    let AppEvent::FullScreenApprovalRequest(crate::bottom_pane::ApprovalRequest::ApplyPatch {
+        changes,
+        ..
+    }) = rx.recv().await.expect("fullscreen approval event")
+    else {
+        panic!("expected fullscreen apply-patch approval request");
+    };
+    assert_eq!(
+        changes,
+        HashMap::from([(
+            PathBuf::from("foo.txt"),
+            FileChange::Add {
+                content: "hello\n".to_string(),
+            },
+        )])
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_command_execution_strips_shell_wrapper() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let script = r#"python3 -c 'print("Hello, world!")'"#;

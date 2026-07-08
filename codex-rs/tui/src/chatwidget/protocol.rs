@@ -286,8 +286,11 @@ impl ChatWidget {
     ) {
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_started(item),
-            ThreadItem::FileChange { id: _, changes, .. } => {
-                self.on_patch_apply_begin(file_update_changes_to_display(changes));
+            ThreadItem::FileChange { id, changes, .. } => {
+                let changes = file_update_changes_to_display(changes);
+                self.pending_file_change_approval_changes
+                    .insert(id, changes.clone());
+                self.on_patch_apply_begin(changes);
             }
             item @ ThreadItem::McpToolCall { .. } => self.on_mcp_tool_call_started(item),
             ThreadItem::WebSearch { id, .. } => {
