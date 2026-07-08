@@ -48,6 +48,8 @@ use codex_app_server_protocol::ThreadDeletedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -314,6 +316,83 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         }),
         "empty turn/start should not synthesize an empty user message: {input:?}"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_response_waits_until_turn_is_readable() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::default(),
+    )?;
+
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            thread_source: Some(ThreadSource::User),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: Some("client-message-1".to_string()),
+            input: vec![V2UserInput::Text {
+                text: "stay visible".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
+
+    let read_req = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: true,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_req)),
+    )
+    .await??;
+    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
+
+    let readable_turn = thread
+        .turns
+        .iter()
+        .find(|readable_turn| readable_turn.id == turn.id)
+        .expect("thread/read should include the accepted turn");
+    assert_eq!(readable_turn.status, TurnStatus::InProgress);
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
 
     Ok(())
 }

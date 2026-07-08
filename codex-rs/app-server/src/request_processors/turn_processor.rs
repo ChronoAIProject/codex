@@ -12,6 +12,7 @@ use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+const TURN_START_MATERIALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
     if input.iter().any(|item| {
@@ -554,6 +555,8 @@ impl TurnRequestProcessor {
         self.outgoing
             .record_request_turn_id(&request_id, &turn_id)
             .await;
+        self.wait_for_active_turn_snapshot(thread_id, &turn_id)
+            .await;
         let turn = Turn {
             id: turn_id,
             items: vec![],
@@ -566,6 +569,31 @@ impl TurnRequestProcessor {
         };
 
         Ok(TurnStartResponse { turn })
+    }
+
+    async fn wait_for_active_turn_snapshot(&self, thread_id: ThreadId, turn_id: &str) {
+        let deadline = tokio::time::Instant::now() + TURN_START_MATERIALIZATION_TIMEOUT;
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        loop {
+            {
+                let state = thread_state.lock().await;
+                if state
+                    .active_turn_snapshot()
+                    .is_some_and(|turn| turn.id == turn_id)
+                {
+                    return;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    turn_id,
+                    "timed out waiting for active turn snapshot after turn/start"
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     async fn build_environment_override(
