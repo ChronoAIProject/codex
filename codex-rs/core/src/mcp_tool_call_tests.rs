@@ -2025,6 +2025,13 @@ fn synthetic_decline_request_user_input_response_stays_decline() {
 }
 
 #[test]
+fn missing_request_user_input_response_marks_approval_unavailable() {
+    let response = parse_mcp_tool_approval_response(/*response*/ None, "approval");
+
+    assert_eq!(response, McpToolApprovalDecision::Unavailable);
+}
+
+#[test]
 fn accepted_elicitation_response_uses_always_persist_meta() {
     let response = parse_mcp_tool_approval_elicitation_response(
         Some(ElicitationResponse {

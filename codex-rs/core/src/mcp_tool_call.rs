@@ -284,6 +284,19 @@ pub(crate) async fn handle_mcp_tool_call(
                 )
                 .await
             }
+            McpToolApprovalDecision::Unavailable => {
+                let message = "MCP tool call requires approval, but this session cannot prompt for approval. Pre-approve this MCP tool with default_tools_approval_mode = \"approve\" or run Codex interactively.".to_string();
+                notify_mcp_tool_call_skip(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &call_id,
+                    invocation,
+                    item_metadata.clone(),
+                    message,
+                    /*already_started*/ true,
+                )
+                .await
+            }
         };
 
         let status = if result.is_ok() { "ok" } else { "error" };
@@ -1003,6 +1016,7 @@ enum McpToolApprovalDecision {
     AcceptAndRemember,
     Decline { message: Option<String> },
     Cancel,
+    Unavailable,
 }
 
 #[derive(Clone)]
@@ -1889,7 +1903,7 @@ fn parse_mcp_tool_approval_response(
     question_id: &str,
 ) -> McpToolApprovalDecision {
     let Some(response) = response else {
-        return McpToolApprovalDecision::Cancel;
+        return McpToolApprovalDecision::Unavailable;
     };
     let answers = response
         .answers
@@ -1971,7 +1985,8 @@ async fn apply_mcp_tool_approval_decision(
         }
         McpToolApprovalDecision::Accept
         | McpToolApprovalDecision::Decline { .. }
-        | McpToolApprovalDecision::Cancel => {}
+        | McpToolApprovalDecision::Cancel
+        | McpToolApprovalDecision::Unavailable => {}
     }
 }
 
