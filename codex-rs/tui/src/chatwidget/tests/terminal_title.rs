@@ -141,3 +141,23 @@ async fn terminal_title_activity_indicators_do_not_animate_when_animations_are_d
     );
     assert!(!chat.should_animate_terminal_title_action_required());
 }
+
+#[tokio::test]
+async fn command_completion_reasserts_managed_terminal_title() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_terminal_title = Some(vec!["app-name".to_string(), "project".to_string()]);
+    chat.refresh_terminal_title();
+    assert_eq!(
+        chat.last_terminal_title,
+        Some("codex | project".to_string())
+    );
+
+    chat.last_terminal_title = Some("foreign child process title".to_string());
+    let exec = begin_exec(&mut chat, "call-reassert-title", "echo done");
+    end_exec(&mut chat, exec, "done\n", "", /*exit_code*/ 0);
+
+    assert_eq!(
+        chat.last_terminal_title,
+        Some("codex | project".to_string())
+    );
+}

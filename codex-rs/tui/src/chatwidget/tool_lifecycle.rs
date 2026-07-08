@@ -253,6 +253,8 @@ impl ChatWidget {
         }
         // Mark that actual work was done (MCP tool call)
         self.transcript.had_work_activity = true;
+        self.last_terminal_title = None;
+        self.refresh_terminal_title();
     }
 
     pub(crate) fn handle_queued_item_started_now(&mut self, item: ThreadItem) {

@@ -452,6 +452,8 @@ impl ChatWidget {
         }
         // Mark that actual work was done (command executed)
         self.transcript.had_work_activity = true;
+        self.last_terminal_title = None;
+        self.refresh_terminal_title();
         if is_user_shell {
             self.maybe_send_next_queued_input();
         }
