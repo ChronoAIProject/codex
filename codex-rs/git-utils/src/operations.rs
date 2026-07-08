@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::GitToolingError;
+use crate::info::get_git_repo_root;
 
 const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
@@ -47,15 +48,9 @@ pub(crate) fn resolve_head(path: &Path) -> Result<Option<String>, GitToolingErro
 }
 
 pub(crate) fn resolve_repository_root(path: &Path) -> Result<PathBuf, GitToolingError> {
-    let root = run_git_for_stdout(
-        path,
-        vec![
-            OsString::from("rev-parse"),
-            OsString::from("--show-toplevel"),
-        ],
-        /*env*/ None,
-    )?;
-    Ok(PathBuf::from(root))
+    get_git_repo_root(path).ok_or_else(|| GitToolingError::NotAGitRepository {
+        path: path.to_path_buf(),
+    })
 }
 
 pub(crate) fn run_git_for_status<I, S>(
@@ -149,3 +144,7 @@ struct GitRun {
     command: String,
     output: std::process::Output,
 }
+
+#[cfg(test)]
+#[path = "operations_tests.rs"]
+mod tests;
