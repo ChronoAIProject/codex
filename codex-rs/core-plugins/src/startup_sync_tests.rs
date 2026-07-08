@@ -33,6 +33,51 @@ fn git_command_sanitizes_ambient_repository_environment() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn reset_curated_plugins_checkout_ignores_inherited_git_repo_environment() {
+    const CHILD_ENV: &str = "CODEX_STARTUP_SYNC_RESET_ENV_CHILD";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let tmp = tempdir().expect("tempdir");
+        let git_path = tmp.path().join("git");
+        write_executable_script(
+            &git_path,
+            r#"#!/bin/sh
+if [ "${GIT_DIR+x}" = "x" ] || [ "${GIT_WORK_TREE+x}" = "x" ]; then
+  echo "repository-local git environment leaked into startup sync" >&2
+  exit 1
+fi
+if [ "$1" = "-C" ] && { [ "$3" = "reset" ] || [ "$3" = "clean" ]; }; then
+  exit 0
+fi
+echo "unexpected git invocation: $@" >&2
+exit 1
+"#,
+        );
+
+        reset_curated_plugins_checkout(tmp.path(), git_path.to_str().expect("utf8 path"))
+            .expect("reset should ignore inherited git repository environment");
+        return;
+    }
+
+    let output = Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("reset_curated_plugins_checkout_ignores_inherited_git_repo_environment")
+        .arg("--exact")
+        .env(CHILD_ENV, "1")
+        .env("GIT_DIR", "/tmp/codex-host-repo.git")
+        .env("GIT_WORK_TREE", "/tmp/codex-host-worktree")
+        .output()
+        .expect("run child test process");
+
+    assert!(
+        output.status.success(),
+        "child test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn write_file(path: &Path, contents: &str) {
     std::fs::create_dir_all(path.parent().expect("file should have a parent")).unwrap();
     std::fs::write(path, contents).unwrap();
