@@ -312,12 +312,12 @@ impl ModelProvider for ConfiguredModelProvider {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
-        match config_model_catalog {
-            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+        match (self.info.requires_openai_auth, config_model_catalog) {
+            (false, Some(model_catalog)) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
             )),
-            None => {
+            (true, _) | (false, None) => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
                     self.info.clone(),
                     self.auth_manager.clone(),
@@ -752,5 +752,49 @@ mod tests {
                 .iter()
                 .any(|model| model.slug == "provider-model")
         );
+    }
+
+    #[tokio::test]
+    async fn openai_auth_provider_ignores_configured_static_model_catalog() {
+        let server = MockServer::start().await;
+        let remote_models = vec![remote_model("openai-model")];
+
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(ModelsResponse {
+                        models: remote_models,
+                    }),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut provider_info = provider_for(server.uri());
+        provider_info.requires_openai_auth = true;
+        let provider = create_model_provider(
+            provider_info,
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        );
+
+        let manager = provider.models_manager(
+            test_codex_home(),
+            Some(ModelsResponse {
+                models: vec![remote_model("qwen3.6:35b")],
+            }),
+        );
+
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+        let model_slugs = catalog
+            .models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(model_slugs, vec!["openai-model"]);
     }
 }
