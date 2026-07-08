@@ -76,7 +76,7 @@ pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static
     let dot = if is_closed {
         "•".into()
     } else {
-        "•".green()
+        "●".green().bold()
     };
     vec![dot, " ".into()]
 }
@@ -880,6 +880,19 @@ mod tests {
         assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
         assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn active_agent_picker_status_dot_is_distinct_from_closed_dot() {
+        let active = agent_picker_status_dot_spans(/*is_closed*/ false);
+        let closed = agent_picker_status_dot_spans(/*is_closed*/ true);
+
+        assert_eq!(active[0].content.as_ref(), "●");
+        assert_eq!(active[0].style.fg, Some(Color::Green));
+        assert!(active[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(closed[0].content.as_ref(), "•");
+        assert_eq!(closed[0].style.fg, None);
+        assert!(!closed[0].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
