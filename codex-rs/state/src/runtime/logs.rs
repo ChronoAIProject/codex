@@ -300,10 +300,9 @@ WHERE id IN (
             return Ok(());
         };
         self.delete_logs_before(cutoff.timestamp()).await?;
-        // Startup cleanup should not wait behind or block foreground work.
-        // PASSIVE checkpoints copy whatever is immediately available and skip
-        // frames that would require waiting on active readers or writers.
-        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+        // Startup cleanup runs before foreground work starts, so reclaim the
+        // copied WAL pages instead of leaving a large sidecar in place.
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(self.logs_pool.as_ref())
             .await?;
         Ok(())
@@ -554,6 +553,7 @@ mod tests {
     use sqlx::sqlite::SqliteConnectOptions;
     use std::borrow::Cow;
     use std::path::Path;
+    use tokio::fs;
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
         SqlitePool::connect_with(
@@ -573,6 +573,13 @@ mod tests {
             .expect("count log rows");
         pool.close().await;
         count
+    }
+
+    async fn file_size(path: &Path) -> u64 {
+        fs::metadata(path)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
     }
 
     #[tokio::test]
@@ -719,6 +726,49 @@ mod tests {
             .expect("read auto_vacuum pragma");
         assert_eq!(auto_vacuum, 2);
         pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn logs_startup_maintenance_truncates_existing_wal() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let large_body = "x".repeat(32 * 1024);
+        let entries: Vec<LogEntry> = (0..128)
+            .map(|idx| LogEntry {
+                ts: 1,
+                ts_nanos: idx,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some(large_body.clone()),
+                feedback_log_body: Some(large_body.clone()),
+                thread_id: Some("thread-1".to_string()),
+                process_uuid: Some("proc-1".to_string()),
+                module_path: Some("mod".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(7),
+            })
+            .collect();
+        runtime
+            .insert_logs(&entries)
+            .await
+            .expect("insert enough logs to grow the wal");
+
+        let wal_path = logs_db_path(codex_home.as_path()).with_extension("sqlite-wal");
+        let wal_size_before = file_size(wal_path.as_path()).await;
+        assert!(wal_size_before > 0);
+
+        runtime
+            .run_logs_startup_maintenance()
+            .await
+            .expect("run startup log maintenance");
+
+        let wal_size_after = file_size(wal_path.as_path()).await;
+        assert_eq!(wal_size_after, 0);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
