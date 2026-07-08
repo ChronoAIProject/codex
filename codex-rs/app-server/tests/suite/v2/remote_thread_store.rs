@@ -197,6 +197,50 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
 }
 
 #[tokio::test]
+async fn archived_thread_list_with_non_local_store_includes_all_providers_by_default() -> Result<()>
+{
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &server.uri(), &store_id)?;
+
+    let thread_store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    let client = start_in_process_server(codex_home.path()).await?;
+
+    let response = client
+        .request(ClientRequest::ThreadList {
+            request_id: RequestId::Integer(1),
+            params: ThreadListParams {
+                cursor: None,
+                limit: Some(10),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: None,
+                source_kinds: None,
+                archived: Some(true),
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            },
+        })
+        .await?
+        .expect("thread/list should succeed");
+    let _: ThreadListResponse =
+        serde_json::from_value(response).expect("thread/list response should parse");
+
+    assert_eq!(
+        thread_store.last_list_threads_call().await,
+        Some((Some(Vec::new()), true))
+    );
+
+    client.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn cold_thread_resume_reuses_non_local_history_probe() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;

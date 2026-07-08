@@ -391,6 +391,7 @@ pub struct InMemoryThreadStore {
 #[derive(Default)]
 struct InMemoryThreadStoreState {
     calls: InMemoryThreadStoreCalls,
+    last_list_threads_call: Option<(Option<Vec<String>>, bool)>,
     created_threads: HashMap<ThreadId, CreateThreadParams>,
     histories: HashMap<ThreadId, Vec<RolloutItem>>,
     metadata_updates: HashMap<ThreadId, ThreadMetadataPatch>,
@@ -417,6 +418,11 @@ impl InMemoryThreadStore {
     /// Returns the calls observed by this store.
     pub async fn calls(&self) -> InMemoryThreadStoreCalls {
         self.state.lock().await.calls.clone()
+    }
+
+    /// Returns the latest `list_threads` call metadata observed by this store.
+    pub async fn last_list_threads_call(&self) -> Option<(Option<Vec<String>>, bool)> {
+        self.state.lock().await.last_list_threads_call.clone()
     }
 
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
@@ -670,6 +676,11 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage> {
         Box::pin(async move {
+            {
+                let mut state = self.state.lock().await;
+                state.last_list_threads_call =
+                    Some((params.model_providers.clone(), params.archived));
+            }
             let mut page = InMemoryThreadStore::list_threads(self).await?;
             match params.relation_filter {
                 Some(ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {

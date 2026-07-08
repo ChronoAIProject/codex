@@ -3730,6 +3730,9 @@ impl ThreadRequestProcessor {
                     Some(providers)
                 }
             }
+            None if archived && !self.thread_store.as_any().is::<LocalThreadStore>() => {
+                Some(Vec::new())
+            }
             None if relation_filter.is_some() => None,
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
