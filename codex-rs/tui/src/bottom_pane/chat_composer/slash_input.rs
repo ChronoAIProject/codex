@@ -635,6 +635,22 @@ mod tests {
     }
 
     #[test]
+    fn feedback_with_inline_text_dispatches_as_command_args() {
+        let text = "/feedback this should not be a prompt";
+        let mut composer = composer_with_text_at_cursor(text, text.len());
+        composer.popups.active = ActivePopup::None;
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::CommandWithArgs(
+                SlashCommand::Feedback,
+                "this should not be a prompt".to_string(),
+                Vec::new()
+            )
+        );
+    }
+
+    #[test]
     fn slash_completion_does_not_turn_command_suffix_into_args() {
         let mut composer = composer_with_text_at_cursor("/review", "/re".len());
         assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);

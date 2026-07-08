@@ -155,6 +155,7 @@ impl SlashCommand {
             self,
             SlashCommand::Review
                 | SlashCommand::Rename
+                | SlashCommand::Feedback
                 | SlashCommand::Plan
                 | SlashCommand::Goal
                 | SlashCommand::Ide
