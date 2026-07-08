@@ -1315,7 +1315,9 @@ pub(super) fn push_thread_filters<'a>(
             builder.push(" AND threads.cwd IN (");
             let mut separated = builder.separated(", ");
             for cwd in cwd_filters {
-                separated.push_bind(cwd.display().to_string());
+                for cwd in cwd_filter_query_values(cwd.as_path()) {
+                    separated.push_bind(cwd);
+                }
             }
             separated.push_unseparated(")");
         }
@@ -1411,6 +1413,49 @@ fn metadata_preview(metadata: &crate::ThreadMetadata) -> &str {
         .as_deref()
         .or(metadata.first_user_message.as_deref())
         .unwrap_or_default()
+}
+
+fn cwd_filter_query_values(cwd: &Path) -> Vec<String> {
+    let cwd = cwd.display().to_string();
+    let mut values = vec![cwd.clone()];
+    if let Some(equivalent_cwd) =
+        strip_windows_verbatim_prefix(&cwd).or_else(|| add_windows_verbatim_prefix(&cwd))
+    {
+        values.push(equivalent_cwd);
+    }
+    values
+}
+
+fn strip_windows_verbatim_prefix(path: &str) -> Option<String> {
+    for prefix in [r"\\?\UNC\", r"\\.\UNC\"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            return Some(format!(r"\\{rest}"));
+        }
+    }
+    for prefix in [r"\\?\", r"\\.\"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn add_windows_verbatim_prefix(path: &str) -> Option<String> {
+    if path.starts_with(r"\\?\") || path.starts_with(r"\\.\") {
+        return None;
+    }
+    if let Some(rest) = path.strip_prefix(r"\\") {
+        return Some(format!(r"\\?\UNC\{rest}"));
+    }
+    if is_windows_drive_path(path) {
+        return Some(format!(r"\\?\{path}"));
+    }
+    None
+}
+
+fn is_windows_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }
 
 #[cfg(test)]
@@ -1765,14 +1810,22 @@ mod tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
         let other_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread id");
+        let windows_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread id");
         let first_cwd = codex_home.join("first");
         let second_cwd = codex_home.join("second");
         let other_cwd = codex_home.join("other");
+        let windows_cwd = PathBuf::from(r"C:\Work\ProjectAlpha");
 
         for (thread_id, cwd, updated_at) in [
             (first_id, first_cwd.clone(), 1_700_000_100),
             (second_id, second_cwd.clone(), 1_700_000_300),
             (other_id, other_cwd, 1_700_000_500),
+            (
+                windows_id,
+                PathBuf::from(r"\\?\C:\Work\ProjectAlpha"),
+                1_700_000_700,
+            ),
         ] {
             let mut metadata = test_thread_metadata(&codex_home, thread_id, cwd);
             metadata.updated_at =
@@ -1840,6 +1893,27 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![first_id]);
         assert_eq!(second_page.next_anchor, None);
+
+        let windows_cwd_filters = [windows_cwd];
+        let page = runtime
+            .list_threads(
+                /*page_size*/ 10,
+                ThreadFilterOptions {
+                    archived_only: false,
+                    allowed_sources: &[],
+                    model_providers: None,
+                    cwd_filters: Some(&windows_cwd_filters),
+                    anchor: None,
+                    sort_key: SortKey::UpdatedAt,
+                    sort_direction: SortDirection::Desc,
+                    search_term: None,
+                },
+            )
+            .await
+            .expect("list with equivalent Windows cwd filter should succeed");
+
+        let ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![windows_id]);
 
         let page = runtime
             .list_threads(
