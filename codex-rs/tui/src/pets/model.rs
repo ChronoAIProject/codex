@@ -601,7 +601,7 @@ fn app_state_animation(
     frame_duration_ms: u64,
     final_frame_duration_ms: u64,
 ) -> Animation {
-    let primary_frames = (0..frame_count)
+    let frames = (0..frame_count)
         .map(|column_index| AnimationFrame {
             sprite_index: row_index * catalog::DEFAULT_FRAME_COLUMNS as usize + column_index,
             duration: Duration::from_millis(if column_index == frame_count - 1 {
@@ -611,17 +611,9 @@ fn app_state_animation(
             }),
         })
         .collect::<Vec<_>>();
-    let primary_frame_count = primary_frames.len() * 3;
-    let frames = primary_frames
-        .iter()
-        .chain(primary_frames.iter())
-        .chain(primary_frames.iter())
-        .cloned()
-        .chain(idle_animation().frames)
-        .collect();
     Animation {
         frames,
-        loop_start: Some(primary_frame_count),
+        loop_start: Some(/*loop_start*/ 0),
         fallback: "idle".to_string(),
     }
 }
@@ -688,23 +680,14 @@ mod tests {
     }
 
     #[test]
-    fn app_running_animation_repeats_then_settles_into_idle() {
+    fn app_running_animation_loops_current_state() {
         let animations = default_animations();
         let running = &animations["running"];
         let primary = vec![56, 57, 58, 59, 60, 61];
 
-        assert_eq!(sprite_indices(running)[0..6], primary);
-        assert_eq!(sprite_indices(running)[6..12], primary);
-        assert_eq!(sprite_indices(running)[12..18], primary);
-        assert_eq!(
-            sprite_indices(running)[18..],
-            sprite_indices(&animations["idle"])
-        );
-        assert_eq!(
-            durations_ms(running)[0..6],
-            vec![120, 120, 120, 120, 120, 220]
-        );
-        assert_eq!(running.loop_start, Some(/*loop_start*/ 18));
+        assert_eq!(sprite_indices(running), primary);
+        assert_eq!(durations_ms(running), vec![120, 120, 120, 120, 120, 220]);
+        assert_eq!(running.loop_start, Some(/*loop_start*/ 0));
     }
 
     #[test]
