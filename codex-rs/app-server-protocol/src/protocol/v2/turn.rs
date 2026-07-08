@@ -81,7 +81,6 @@ pub struct TurnStartParams {
     #[ts(optional = nullable)]
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Optional client-provided context fragments keyed by an opaque source identifier.
-    #[experimental("turn/start.additionalContext")]
     #[ts(optional = nullable)]
     pub additional_context: Option<HashMap<String, AdditionalContextEntry>>,
     /// Optional environments for this turn and subsequent turns.

@@ -5,12 +5,16 @@ import type { Personality } from "../Personality";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { ReasoningSummary } from "../ReasoningSummary";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { AdditionalContextEntry } from "./AdditionalContextEntry";
 import type { ApprovalsReviewer } from "./ApprovalsReviewer";
 import type { AskForApproval } from "./AskForApproval";
 import type { SandboxPolicy } from "./SandboxPolicy";
 import type { UserInput } from "./UserInput";
 
 export type TurnStartParams = {threadId: string, clientUserMessageId?: string | null, input: Array<UserInput>, /**
+ * Optional client-provided context fragments keyed by an opaque source identifier.
+ */
+additionalContext?: { [key in string]?: AdditionalContextEntry } | null, /**
  * Override the working directory for this turn and subsequent turns.
  */
 cwd?: string | null, /**

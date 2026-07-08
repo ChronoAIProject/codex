@@ -4104,6 +4104,36 @@ fn turn_start_params_round_trip_multi_agent_mode() {
 }
 
 #[test]
+fn turn_start_additional_context_is_stable() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "additionalContext": {
+            "ide-selection": {
+                "value": "selected text",
+                "kind": "application"
+            }
+        }
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.additional_context,
+        Some(HashMap::from([(
+            "ide-selection".to_string(),
+            AdditionalContextEntry {
+                value: "selected text".to_string(),
+                kind: AdditionalContextKind::Application,
+            },
+        )]))
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        None
+    );
+}
+
+#[test]
 fn thread_start_params_round_trip_multi_agent_mode() {
     let params: ThreadStartParams = serde_json::from_value(json!({
         "multiAgentMode": "proactive"

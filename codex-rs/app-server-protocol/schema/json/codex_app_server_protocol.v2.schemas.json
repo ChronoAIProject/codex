@@ -17915,6 +17915,16 @@
     "TurnStartParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "additionalContext": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AdditionalContextEntry"
+          },
+          "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "approvalPolicy": {
           "anyOf": [
             {
