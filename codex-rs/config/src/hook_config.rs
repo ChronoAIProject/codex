@@ -34,25 +34,25 @@ pub struct HookStateToml {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HookEventsToml {
-    #[serde(rename = "PreToolUse", default)]
+    #[serde(rename = "PreToolUse", alias = "preToolUse", default)]
     pub pre_tool_use: Vec<MatcherGroup>,
-    #[serde(rename = "PermissionRequest", default)]
+    #[serde(rename = "PermissionRequest", alias = "permissionRequest", default)]
     pub permission_request: Vec<MatcherGroup>,
-    #[serde(rename = "PostToolUse", default)]
+    #[serde(rename = "PostToolUse", alias = "postToolUse", default)]
     pub post_tool_use: Vec<MatcherGroup>,
-    #[serde(rename = "PreCompact", default)]
+    #[serde(rename = "PreCompact", alias = "preCompact", default)]
     pub pre_compact: Vec<MatcherGroup>,
-    #[serde(rename = "PostCompact", default)]
+    #[serde(rename = "PostCompact", alias = "postCompact", default)]
     pub post_compact: Vec<MatcherGroup>,
-    #[serde(rename = "SessionStart", default)]
+    #[serde(rename = "SessionStart", alias = "sessionStart", default)]
     pub session_start: Vec<MatcherGroup>,
-    #[serde(rename = "UserPromptSubmit", default)]
+    #[serde(rename = "UserPromptSubmit", alias = "userPromptSubmit", default)]
     pub user_prompt_submit: Vec<MatcherGroup>,
-    #[serde(rename = "SubagentStart", default)]
+    #[serde(rename = "SubagentStart", alias = "subagentStart", default)]
     pub subagent_start: Vec<MatcherGroup>,
-    #[serde(rename = "SubagentStop", default)]
+    #[serde(rename = "SubagentStop", alias = "subagentStop", default)]
     pub subagent_stop: Vec<MatcherGroup>,
-    #[serde(rename = "Stop", default)]
+    #[serde(rename = "Stop", alias = "stop", default)]
     pub stop: Vec<MatcherGroup>,
 }
 

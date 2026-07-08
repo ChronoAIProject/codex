@@ -55,6 +55,69 @@ fn hooks_file_deserializes_existing_json_shape() {
 }
 
 #[test]
+fn hooks_file_deserializes_camel_case_event_names() {
+    let parsed: HooksFile = serde_json::from_str(
+        r#"{
+  "hooks": {
+    "userPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /tmp/user_prompt.py"
+          }
+        ]
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /tmp/pre.py"
+          }
+        ]
+      }
+    ]
+  }
+}"#,
+    )
+    .expect("camelCase hook event names should deserialize");
+
+    assert_eq!(
+        parsed,
+        HooksFile {
+            description: None,
+            hooks: HookEventsToml {
+                pre_tool_use: vec![MatcherGroup {
+                    matcher: Some("Bash".to_string()),
+                    hooks: vec![HookHandlerConfig::Command {
+                        command: "python3 /tmp/pre.py".to_string(),
+                        command_windows: None,
+                        timeout_sec: None,
+                        r#async: false,
+                        status_message: None,
+                    }],
+                }],
+                user_prompt_submit: vec![MatcherGroup {
+                    matcher: Some(String::new()),
+                    hooks: vec![HookHandlerConfig::Command {
+                        command: "python3 /tmp/user_prompt.py".to_string(),
+                        command_windows: None,
+                        timeout_sec: None,
+                        r#async: false,
+                        status_message: None,
+                    }],
+                }],
+                ..Default::default()
+            },
+        }
+    );
+}
+
+#[test]
 fn hooks_file_rejects_events_outside_hooks_object() {
     let error = serde_json::from_str::<HooksFile>(
         r#"{
