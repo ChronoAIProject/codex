@@ -1997,6 +1997,29 @@ async fn agent_turn_complete_notification_does_not_reuse_stale_copy_source() {
 }
 
 #[tokio::test]
+async fn task_start_clears_stale_agent_turn_complete_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    complete_turn_with_message(&mut chat, "turn-1", Some("Previous completed reply"));
+    chat.on_task_started();
+
+    assert_matches!(chat.pending_notification, None);
+}
+
+#[tokio::test]
+async fn task_start_preserves_pending_plan_mode_prompt_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+
+    chat.open_plan_implementation_prompt();
+    chat.on_task_started();
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::PlanModePrompt { ref title }) if title == PLAN_IMPLEMENTATION_TITLE
+    );
+}
+
+#[tokio::test]
 async fn active_goal_without_follow_up_suppresses_agent_turn_complete_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);

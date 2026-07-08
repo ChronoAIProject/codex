@@ -51,6 +51,12 @@ impl ChatWidget {
 
     pub(super) fn on_task_started(&mut self) {
         self.input_queue.user_turn_pending_start = false;
+        if matches!(
+            self.pending_notification,
+            Some(Notification::AgentTurnComplete { .. })
+        ) {
+            self.pending_notification = None;
+        }
         self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
         self.transcript.reset_turn_flags();
