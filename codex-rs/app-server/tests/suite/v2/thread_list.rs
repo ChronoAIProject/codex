@@ -1209,7 +1209,7 @@ async fn thread_list_relation_filters_reject_invalid_requests() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result<()> {
+async fn thread_list_empty_source_kinds_includes_app_server_threads() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;
 
@@ -1230,6 +1230,15 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
         /*git_info*/ None,
         CoreSessionSource::Exec,
     )?;
+    let app_server_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-02-01T12-00-00",
+        "2025-02-01T12:00:00Z",
+        "AppServer",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        CoreSessionSource::Mcp,
+    )?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
 
@@ -1247,9 +1256,10 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
 
     assert_eq!(next_cursor, None);
     let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
-    assert_eq!(ids, vec![cli_id.as_str()]);
+    assert_eq!(ids, vec![app_server_id.as_str(), cli_id.as_str()]);
     assert_ne!(cli_id, exec_id);
-    assert_eq!(data[0].source, SessionSource::Cli);
+    assert_eq!(data[0].source, SessionSource::AppServer);
+    assert_eq!(data[1].source, SessionSource::Cli);
 
     Ok(())
 }

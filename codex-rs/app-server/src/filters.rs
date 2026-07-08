@@ -11,7 +11,7 @@ pub(crate) fn compute_source_filters(
     };
 
     if source_kinds.is_empty() {
-        return (INTERACTIVE_SESSION_SOURCES.to_vec(), None);
+        return (default_source_filters(), None);
     }
 
     let requires_post_filter = source_kinds.iter().any(|kind| {
@@ -48,6 +48,12 @@ pub(crate) fn compute_source_filters(
             .collect::<Vec<_>>();
         (interactive_sources, Some(source_kinds))
     }
+}
+
+fn default_source_filters() -> Vec<CoreSessionSource> {
+    let mut sources = INTERACTIVE_SESSION_SOURCES.to_vec();
+    sources.push(CoreSessionSource::Mcp);
+    sources
 }
 
 pub(crate) fn source_kind_matches(source: &CoreSessionSource, filter: &[ThreadSourceKind]) -> bool {
@@ -100,7 +106,16 @@ mod tests {
     fn compute_source_filters_empty_means_interactive_sources() {
         let (allowed_sources, filter) = compute_source_filters(Some(Vec::new()));
 
-        assert_eq!(allowed_sources, INTERACTIVE_SESSION_SOURCES.to_vec());
+        assert_eq!(
+            allowed_sources,
+            vec![
+                CoreSessionSource::Cli,
+                CoreSessionSource::VSCode,
+                CoreSessionSource::Custom("atlas".to_string()),
+                CoreSessionSource::Custom("chatgpt".to_string()),
+                CoreSessionSource::Mcp,
+            ]
+        );
         assert_eq!(filter, None);
     }
 
