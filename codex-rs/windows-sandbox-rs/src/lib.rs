@@ -54,7 +54,7 @@ mod audit;
 mod cap;
 #[cfg(target_os = "windows")]
 mod deny_read_acl;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 mod deny_read_state;
 #[cfg(target_os = "windows")]
 mod desktop;
