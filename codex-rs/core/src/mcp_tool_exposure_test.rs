@@ -238,7 +238,7 @@ enabled = true
 }
 
 #[tokio::test]
-async fn defers_effective_tool_sets_when_search_is_available() {
+async fn directly_exposes_non_app_mcp_tools_when_search_is_available() {
     let config = test_config().await;
     let mcp_tools = numbered_mcp_tools(/*count*/ 2);
 
@@ -246,35 +246,30 @@ async fn defers_effective_tool_sets_when_search_is_available() {
         &mcp_tools, /*connectors*/ None, &config, /*search_tool_enabled*/ true,
     );
 
-    assert!(exposure.direct_tools.is_empty());
-    let deferred_tools = exposure
-        .deferred_tools
-        .as_ref()
-        .expect("MCP tools should be discoverable through tool_search");
-    assert_eq!(tool_names(deferred_tools), tool_names(&mcp_tools));
+    assert_eq!(tool_names(&exposure.direct_tools), tool_names(&mcp_tools));
+    assert!(exposure.deferred_tools.is_none());
 }
 
 #[tokio::test]
-async fn defers_apps_and_non_app_mcp_tools() {
+async fn defers_apps_without_deferring_non_app_mcp_tools() {
     let config = test_config().await;
-    let mcp_tools = vec![
-        make_mcp_tool(
-            "rmcp",
-            "tool",
-            "mcp__rmcp",
-            "tool",
-            /*connector_id*/ None,
-            /*connector_name*/ None,
-        ),
-        make_mcp_tool(
-            CODEX_APPS_MCP_SERVER_NAME,
-            "calendar_create_event",
-            "mcp__codex_apps__calendar",
-            "_create_event",
-            Some("calendar"),
-            Some("Calendar"),
-        ),
-    ];
+    let non_app_tool = make_mcp_tool(
+        "rmcp",
+        "tool",
+        "mcp__rmcp",
+        "tool",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+    let app_tool = make_mcp_tool(
+        CODEX_APPS_MCP_SERVER_NAME,
+        "calendar_create_event",
+        "mcp__codex_apps__calendar",
+        "_create_event",
+        Some("calendar"),
+        Some("Calendar"),
+    );
+    let mcp_tools = vec![non_app_tool.clone(), app_tool.clone()];
     let connectors = vec![make_connector("calendar", "Calendar")];
 
     let exposure = build_mcp_tool_exposure(
@@ -284,15 +279,13 @@ async fn defers_apps_and_non_app_mcp_tools() {
         /*search_tool_enabled*/ true,
     );
 
-    assert!(exposure.direct_tools.is_empty());
+    assert_eq!(
+        tool_names(&exposure.direct_tools),
+        tool_names(&[non_app_tool])
+    );
     let deferred_tools = exposure
         .deferred_tools
         .as_ref()
-        .expect("MCP tools should be discoverable through tool_search");
-    let deferred_tool_names = tool_names(deferred_tools);
-    assert!(deferred_tool_names.contains(&ToolName::namespaced("mcp__rmcp", "tool")));
-    assert!(deferred_tool_names.contains(&ToolName::namespaced(
-        "mcp__codex_apps__calendar",
-        "_create_event"
-    )));
+        .expect("Codex App MCP tools should be discoverable through tool_search");
+    assert_eq!(tool_names(deferred_tools), tool_names(&[app_tool]));
 }
