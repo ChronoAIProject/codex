@@ -68,6 +68,7 @@ pub async fn get_git_repo_root_with_fs(
 /// Timeout for git commands to prevent freezing on large repositories
 const GIT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_secs(5);
 const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+const MAX_DETAILED_UNTRACKED_DIFFS: usize = 32;
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct GitInfo {
@@ -774,21 +775,24 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
         if !untracked.is_empty() {
             // Use platform-appropriate null device and guard paths with `--`.
             let null_device: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
-            let futures_iter = untracked.into_iter().map(|file| async move {
-                let file_owned = file;
-                let args_vec: Vec<&str> = vec![
-                    "diff",
-                    "--no-textconv",
-                    "--no-ext-diff",
-                    "--binary",
-                    "--no-index",
-                    // -- ensures that filenames that start with - are not treated as options.
-                    "--",
-                    null_device,
-                    &file_owned,
-                ];
-                run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
-            });
+            let futures_iter = untracked
+                .into_iter()
+                .take(MAX_DETAILED_UNTRACKED_DIFFS)
+                .map(|file| async move {
+                    let file_owned = file;
+                    let args_vec: Vec<&str> = vec![
+                        "diff",
+                        "--no-textconv",
+                        "--no-ext-diff",
+                        "--binary",
+                        "--no-index",
+                        // -- ensures that filenames that start with - are not treated as options.
+                        "--",
+                        null_device,
+                        &file_owned,
+                    ];
+                    run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
+                });
             let results = join_all(futures_iter).await;
             for extra in results.into_iter().flatten() {
                 if extra.status.code().is_some_and(|c| c == 0 || c == 1)
@@ -1085,5 +1089,49 @@ mod tests {
                 format!("-c {disabled_hooks} -c core.fsmonitor=true status --porcelain"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn diff_against_sha_bounds_detailed_untracked_file_diffs() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo = temp_dir.path();
+        let init_status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo)
+            .status()
+            .expect("initialize test repository");
+        assert_eq!(init_status.code(), Some(0));
+        let commit_status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(repo)
+            .status()
+            .expect("create initial commit");
+        assert_eq!(commit_status.code(), Some(0));
+
+        for idx in 0..=MAX_DETAILED_UNTRACKED_DIFFS {
+            std::fs::write(repo.join(format!("untracked-{idx:02}.txt")), "new\n")
+                .expect("write untracked file");
+        }
+
+        let head = GitSha::new("HEAD");
+        let diff = diff_against_sha(repo, &head)
+            .await
+            .expect("collect diff against HEAD");
+
+        assert_eq!(
+            diff.matches("diff --git ").count(),
+            MAX_DETAILED_UNTRACKED_DIFFS
+        );
+        assert!(diff.contains("untracked-31.txt"));
+        assert!(!diff.contains("untracked-32.txt"));
     }
 }
