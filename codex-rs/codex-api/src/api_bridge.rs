@@ -13,6 +13,7 @@ use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
 use http::HeaderMap;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde_json::Value;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
@@ -208,5 +209,18 @@ struct UsageErrorBody {
     #[serde(rename = "type")]
     error_type: Option<String>,
     plan_type: Option<PlanType>,
+    #[serde(default, deserialize_with = "deserialize_optional_unix_timestamp")]
     resets_at: Option<i64>,
+}
+
+fn deserialize_optional_unix_timestamp<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }))
 }
