@@ -363,6 +363,9 @@ impl SandboxManager {
                 use crate::seatbelt::create_seatbelt_command_args;
 
                 let pending = pending_sandboxed_request?;
+                let browser_use_socket_root =
+                    AbsolutePathBuf::from_absolute_path("/tmp/codex-browser-use")
+                        .expect("browser use socket root should be absolute");
                 let mut args = create_seatbelt_command_args(CreateSeatbeltCommandArgsParams {
                     command: os_argv_to_strings(argv),
                     file_system_sandbox_policy: &pending.effective_file_system_policy,
@@ -372,7 +375,7 @@ impl SandboxManager {
                     managed_network,
                     environment_id,
                     network,
-                    extra_allow_unix_sockets: &[],
+                    extra_allow_unix_sockets: std::slice::from_ref(&browser_use_socket_root),
                 })
                 .map_err(SandboxTransformError::EnvironmentNetworkProxy)?;
                 let mut full_command = Vec::with_capacity(1 + args.len());

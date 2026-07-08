@@ -711,6 +711,60 @@ async fn create_seatbelt_args_merges_proxy_and_explicit_unix_socket_paths() -> a
 }
 
 #[test]
+fn create_seatbelt_args_allows_reading_explicit_unix_socket_roots() {
+    let cwd = TempDir::new().expect("temp cwd");
+    let readable_root = absolute_path(cwd.path().to_str().expect("temp path should be UTF-8"));
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+        path: FileSystemPath::Path {
+            path: readable_root.clone(),
+        },
+        access: FileSystemAccessMode::Read,
+    }]);
+    let extra_allow_unix_sockets = vec![absolute_path("/tmp/codex-browser-use")];
+
+    let args = create_seatbelt_command_args(CreateSeatbeltCommandArgsParams {
+        command: vec!["/usr/bin/true".to_string()],
+        file_system_sandbox_policy: &file_system_policy,
+        network_sandbox_policy: NetworkSandboxPolicy::Restricted,
+        sandbox_policy_cwd: cwd.path(),
+        enforce_managed_network: false,
+        managed_network: None,
+        environment_id: None,
+        network: None,
+        extra_allow_unix_sockets: &extra_allow_unix_sockets,
+    })
+    .unwrap();
+
+    let expected_socket_root = normalize_path_for_sandbox(Path::new("/tmp/codex-browser-use"))
+        .expect("socket root should normalize")
+        .to_string_lossy()
+        .into_owned();
+    let readable_root_arg = args
+        .iter()
+        .find(|arg| {
+            arg.starts_with("-DREADABLE_ROOT_")
+                && arg.ends_with(&format!("={expected_socket_root}"))
+        })
+        .expect("seatbelt args should pass the socket root as a readable root");
+    let readable_root_param = readable_root_arg
+        .trim_start_matches("-D")
+        .split_once('=')
+        .expect("readable root arg should contain a value")
+        .0;
+    let policy = seatbelt_policy_arg(&args);
+
+    assert!(
+        policy.contains(&format!("(subpath (param \"{readable_root_param}\"))")),
+        "policy should allow listing explicit unix socket roots so clients can discover sockets:\n{policy}"
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg == &format!("-DUNIX_SOCKET_PATH_0={expected_socket_root}")),
+        "seatbelt args should pass the configured socket root as a socket param: {args:?}"
+    );
+}
+
+#[test]
 fn create_seatbelt_args_preserves_full_network_with_explicit_unix_socket_paths() {
     let cwd = TempDir::new().expect("temp cwd");
     let file_system_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(

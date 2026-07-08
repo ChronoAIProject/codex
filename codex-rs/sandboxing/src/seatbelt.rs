@@ -219,6 +219,13 @@ fn unix_socket_dir_params(proxy: &ProxyPolicyInputs) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+fn unix_socket_read_roots(proxy: &ProxyPolicyInputs) -> Vec<AbsolutePathBuf> {
+    unix_socket_path_params(proxy)
+        .into_iter()
+        .map(|param| param.path)
+        .collect()
+}
+
 /// Returns zero or more complete Seatbelt policy lines for unix socket rules.
 /// When non-empty, the returned string is newline-terminated so callers can
 /// append it directly to larger policy blocks.
@@ -676,6 +683,12 @@ pub fn create_seatbelt_command_args(
             )
         };
 
+    let proxy = proxy_policy_inputs(
+        managed_network,
+        network,
+        environment_id,
+        extra_allow_unix_sockets,
+    )?;
     let (file_read_policy, file_read_dir_params) =
         if file_system_sandbox_policy.has_full_disk_read_access() {
             if unreadable_roots.is_empty() {
@@ -699,11 +712,13 @@ pub fn create_seatbelt_command_args(
                 )
             }
         } else {
+            let mut readable_roots =
+                file_system_sandbox_policy.get_readable_roots_with_cwd(sandbox_policy_cwd);
+            readable_roots.extend(unix_socket_read_roots(&proxy));
             let (policy, params) = build_seatbelt_access_policy(
                 "file-read*",
                 "READABLE_ROOT",
-                file_system_sandbox_policy
-                    .get_readable_roots_with_cwd(sandbox_policy_cwd)
+                readable_roots
                     .into_iter()
                     .map(|root| SeatbeltAccessRoot {
                         excluded_subpaths: unreadable_roots
@@ -726,12 +741,6 @@ pub fn create_seatbelt_command_args(
             }
         };
 
-    let proxy = proxy_policy_inputs(
-        managed_network,
-        network,
-        environment_id,
-        extra_allow_unix_sockets,
-    )?;
     let network_policy =
         dynamic_network_policy_for_network(network_sandbox_policy, enforce_managed_network, &proxy);
 
