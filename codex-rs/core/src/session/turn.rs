@@ -364,6 +364,11 @@ pub(crate) async fn run_turn(
                             .await;
                         return Ok(None);
                     }
+                    if run_pending_session_start_hooks(&sess, &turn_context).await {
+                        return Ok(None);
+                    }
+                    next_step_context =
+                        Some(sess.capture_step_context(Arc::clone(&turn_context)).await);
                     can_drain_pending_input = !model_needs_follow_up;
                     continue;
                 }

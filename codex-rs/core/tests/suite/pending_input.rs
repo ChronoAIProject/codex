@@ -1,4 +1,6 @@
 use core_test_support::test_codex::local_selections;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use codex_core::CodexThread;
@@ -17,6 +19,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
+use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
@@ -50,6 +53,43 @@ fn ev_message_item_done(id: &str, text: &str) -> Value {
             "content": [{"type": "output_text", "text": text}]
         }
     })
+}
+
+fn write_compact_session_start_hook_with_context(home: &Path, additional_context: &str) {
+    let script_path = home.join("compact_session_start_hook.py");
+    let log_path = home.join("compact_session_start_hook_log.jsonl");
+    let additional_context_json =
+        serde_json::to_string(additional_context).expect("serialize additional context");
+    let script = format!(
+        r#"import json
+from pathlib import Path
+
+Path(r"{log_path}").write_text("ran\n", encoding="utf-8")
+
+print(json.dumps({{
+    "hookSpecificOutput": {{
+        "hookEventName": "SessionStart",
+        "additionalContext": {additional_context_json}
+    }}
+}}))
+"#,
+        log_path = log_path.display(),
+    );
+    let hooks = serde_json::json!({
+        "hooks": {
+            "SessionStart": [{
+                "matcher": "compact",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}", script_path.display()),
+                    "statusMessage": "running compact session start hook",
+                }]
+            }]
+        }
+    });
+
+    fs::write(&script_path, script).expect("write compact session start hook script");
+    fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hooks.json");
 }
 
 fn sse_event(event: Value) -> String {
@@ -757,6 +797,7 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact() {
+    let compact_context = "remember the mid-turn compacted reef";
     let first_chunks = vec![
         chunk(ev_response_created("resp-1")),
         chunk(ev_function_call("call-1", "test_tool", "{}")),
@@ -805,17 +846,21 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
     ])
     .await;
 
-    let codex = test_codex()
+    let test = test_codex()
         .with_model("gpt-5.4")
+        .with_pre_build_hook(move |home| {
+            write_compact_session_start_hook_with_context(home, compact_context);
+        })
         .with_config(|config| {
             config.model_provider.name = "OpenAI (test)".to_string();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);
+            trust_discovered_hooks(config);
         })
         .build_with_streaming_server(&server)
         .await
-        .expect("build streaming Codex test session")
-        .codex;
+        .expect("build streaming Codex test session");
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, "first prompt").await;
     submit_user_input(&codex, "second prompt").await;
@@ -828,6 +873,12 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
 
     let post_compact_body: Value = from_slice(&requests[2]).expect("parse post-compact request");
     let steered_body: Value = from_slice(&requests[3]).expect("parse steered request");
+    assert!(
+        test.codex_home_path()
+            .join("compact_session_start_hook_log.jsonl")
+            .exists(),
+        "compact session-start hook should run"
+    );
 
     let post_compact_user_texts = message_input_texts(&post_compact_body, "user");
     assert!(
@@ -835,6 +886,14 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
             .iter()
             .any(|text| text == "second prompt"),
         "steered input should stay pending until the model resumes after compaction"
+    );
+
+    let post_compact_developer_texts = message_input_texts(&post_compact_body, "developer");
+    assert!(
+        post_compact_developer_texts
+            .iter()
+            .any(|text| text == compact_context),
+        "compact session-start context should be included in the post-compact continuation"
     );
 
     let steered_user_texts = message_input_texts(&steered_body, "user");
