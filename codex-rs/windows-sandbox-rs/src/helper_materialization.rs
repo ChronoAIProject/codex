@@ -208,7 +208,18 @@ pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Op
     }
 
     let resource_candidate = dir.join(RESOURCES_DIRNAME).join(file_name);
-    resource_candidate.is_file().then_some(resource_candidate)
+    if resource_candidate.is_file() {
+        return Some(resource_candidate);
+    }
+
+    if let Some(package_dir) = dir.parent() {
+        let package_resource_candidate = package_dir.join(RESOURCES_DIRNAME).join(file_name);
+        if package_resource_candidate.is_file() {
+            return Some(package_resource_candidate);
+        }
+    }
+
+    None
 }
 
 fn helper_destination_for_source(
@@ -374,7 +385,9 @@ mod tests {
     use super::materialized_file_name;
     use pretty_assertions::assert_eq;
     use std::fs;
+    #[cfg(target_os = "windows")]
     use std::path::Path;
+    #[cfg(target_os = "windows")]
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -428,6 +441,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn helper_bin_dir_is_under_sandbox_bin() {
         let codex_home = Path::new(r"C:\Users\example\.codex");
@@ -496,6 +510,28 @@ mod tests {
         let resolved =
             bundled_executable_path_for_exe(&exe, /*file_name*/ "codex-command-runner.exe")
                 .expect("helper path");
+
+        assert_eq!(resolved, helper);
+    }
+
+    #[test]
+    fn helper_source_lookup_checks_parent_resource_dir_for_nested_exe() {
+        let tmp = TempDir::new().expect("tempdir");
+        let package_dir = tmp.path().join("package");
+        let app_dir = package_dir.join("app");
+        let resources_dir = package_dir.join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&app_dir).expect("create app dir");
+        fs::create_dir_all(&resources_dir).expect("create resources dir");
+        let exe = app_dir.join("codex.exe");
+        let helper = resources_dir.join("codex-windows-sandbox-setup.exe");
+        fs::write(&exe, b"codex").expect("write exe");
+        fs::write(&helper, b"setup").expect("write setup");
+
+        let resolved = bundled_executable_path_for_exe(
+            &exe,
+            /*file_name*/ "codex-windows-sandbox-setup.exe",
+        )
+        .expect("helper path");
 
         assert_eq!(resolved, helper);
     }

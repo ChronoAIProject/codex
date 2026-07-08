@@ -62,13 +62,15 @@ mod desktop;
 mod dpapi;
 #[cfg(target_os = "windows")]
 mod env;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(all(test, not(target_os = "windows")), allow(dead_code))]
 mod helper_materialization;
 #[cfg(target_os = "windows")]
 mod hide_users;
 #[cfg(target_os = "windows")]
 mod identity;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(all(test, not(target_os = "windows")), allow(dead_code))]
 mod logging;
 #[cfg(target_os = "windows")]
 mod path_normalization;
@@ -837,4 +839,14 @@ mod stub {
     ) -> Result<()> {
         bail!("Windows sandbox is only available on Windows")
     }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+pub(crate) fn sandbox_bin_dir(codex_home: &std::path::Path) -> std::path::PathBuf {
+    codex_home.join(".sandbox-bin")
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+pub(crate) fn sandbox_dir(codex_home: &std::path::Path) -> std::path::PathBuf {
+    codex_home.join(".sandbox")
 }
