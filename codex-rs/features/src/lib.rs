@@ -460,9 +460,6 @@ impl Features {
                 "undo" => {
                     continue;
                 }
-                "js_repl" => {
-                    continue;
-                }
                 "js_repl_tools_only" => {
                     continue;
                 }

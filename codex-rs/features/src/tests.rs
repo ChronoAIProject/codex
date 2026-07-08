@@ -510,7 +510,7 @@ fn from_sources_ignores_removed_undo_feature_key() {
 }
 
 #[test]
-fn from_sources_ignores_removed_js_repl_feature_keys() {
+fn from_sources_applies_js_repl_feature_key() {
     let features_toml = FeaturesToml::from(BTreeMap::from([
         ("js_repl".to_string(), true),
         ("js_repl_tools_only".to_string(), true),
@@ -525,7 +525,8 @@ fn from_sources_ignores_removed_js_repl_feature_keys() {
         FeatureOverrides::default(),
     );
 
-    assert_eq!(features, Features::with_defaults());
+    assert_eq!(features.enabled(Feature::JsRepl), true);
+    assert_eq!(features.enabled(Feature::JsReplToolsOnly), false);
 }
 
 #[test]
