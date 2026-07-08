@@ -1543,6 +1543,7 @@ async fn test_source_filter_excludes_non_matching_sessions() {
     let home = temp.path();
 
     let interactive_id = Uuid::from_u128(42);
+    let app_server_id = Uuid::from_u128(43);
     let non_interactive_id = Uuid::from_u128(77);
 
     write_session_file(
@@ -1551,6 +1552,14 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         interactive_id,
         /*num_records*/ 2,
         Some(SessionSource::Cli),
+    )
+    .unwrap();
+    write_session_file(
+        home,
+        "2025-08-02T11-00-00",
+        app_server_id,
+        /*num_records*/ 2,
+        Some(SessionSource::Mcp),
     )
     .unwrap();
     write_session_file(
@@ -1581,8 +1590,11 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         .map(|item| item.path.as_path())
         .collect();
 
-    assert_eq!(paths.len(), 1);
-    assert!(paths.iter().all(|path| {
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().any(|path| {
+        path.ends_with("rollout-2025-08-02T11-00-00-00000000-0000-0000-0000-00000000002b.jsonl")
+    }));
+    assert!(paths.iter().any(|path| {
         path.ends_with("rollout-2025-08-02T10-00-00-00000000-0000-0000-0000-00000000002a.jsonl")
     }));
 
@@ -1603,7 +1615,10 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         .into_iter()
         .map(|item| item.path)
         .collect();
-    assert_eq!(all_paths.len(), 2);
+    assert_eq!(all_paths.len(), 3);
+    assert!(all_paths.iter().any(|path| {
+        path.ends_with("rollout-2025-08-02T11-00-00-00000000-0000-0000-0000-00000000002b.jsonl")
+    }));
     assert!(all_paths.iter().any(|path| {
         path.ends_with("rollout-2025-08-02T10-00-00-00000000-0000-0000-0000-00000000002a.jsonl")
     }));
