@@ -970,7 +970,7 @@ impl TextArea {
         }
         let mut target = self.cursor_pos;
         for _ in 0..n {
-            target = self.prev_atomic_boundary(target);
+            target = self.prev_delete_boundary(target);
             if target == 0 {
                 break;
             }
@@ -1655,6 +1655,23 @@ impl TextArea {
             Ok(None) => 0,
             Err(_) => pos.saturating_sub(1),
         }
+    }
+
+    fn prev_delete_boundary(&self, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        if let Some(idx) = self
+            .elements
+            .iter()
+            .position(|e| pos > e.range.start && pos <= e.range.end)
+        {
+            return self.elements[idx].range.start;
+        }
+        self.text[..pos]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(idx, _)| idx)
     }
 
     fn next_atomic_boundary(&self, pos: usize) -> usize {
@@ -3106,6 +3123,20 @@ mod tests {
         t.input(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
         assert_eq!(t.text(), "ac");
         assert_eq!(t.cursor(), 1);
+    }
+
+    #[test]
+    fn backspace_deletes_one_thai_mark_at_a_time() {
+        let mut t = ta_with("ไม่ได้");
+        t.set_cursor(t.text().len());
+
+        t.delete_backward(/*n*/ 1);
+        assert_eq!(t.text(), "ไม่ได");
+        assert_eq!(t.cursor(), t.text().len());
+
+        t.delete_backward(/*n*/ 1);
+        assert_eq!(t.text(), "ไม่ไ");
+        assert_eq!(t.cursor(), t.text().len());
     }
 
     #[test]
