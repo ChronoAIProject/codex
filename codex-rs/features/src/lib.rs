@@ -466,9 +466,6 @@ impl Features {
                 "js_repl_tools_only" => {
                     continue;
                 }
-                "remote_control" => {
-                    continue;
-                }
                 "apply_patch_freeform" => {
                     continue;
                 }
@@ -1295,7 +1292,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteControl,
         key: "remote_control",
-        stage: Stage::Removed,
+        stage: Stage::Experimental {
+            name: "Remote control",
+            menu_description: "Connect this Codex app to ChatGPT mobile.",
+            announcement: "NEW: Remote control is available in /experimental.",
+        },
         default_enabled: false,
     },
     FeatureSpec {

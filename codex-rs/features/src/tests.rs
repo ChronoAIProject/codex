@@ -333,8 +333,11 @@ fn mentions_v2_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn remote_control_is_removed_and_disabled_by_default() {
-    assert_eq!(Feature::RemoteControl.stage(), Stage::Removed);
+fn remote_control_is_experimental_and_disabled_by_default() {
+    assert!(matches!(
+        Feature::RemoteControl.stage(),
+        Stage::Experimental { .. }
+    ));
     assert_eq!(Feature::RemoteControl.default_enabled(), false);
     assert_eq!(
         feature_for_key("remote_control"),
@@ -343,14 +346,14 @@ fn remote_control_is_removed_and_disabled_by_default() {
 }
 
 #[test]
-fn remote_control_config_is_ignored() {
+fn remote_control_can_be_enabled_from_config() {
     let mut entries = BTreeMap::new();
     entries.insert("remote_control".to_string(), true);
 
     let mut features = Features::with_defaults();
     features.apply_map(&entries);
 
-    assert_eq!(features.enabled(Feature::RemoteControl), false);
+    assert_eq!(features.enabled(Feature::RemoteControl), true);
 }
 
 #[test]
