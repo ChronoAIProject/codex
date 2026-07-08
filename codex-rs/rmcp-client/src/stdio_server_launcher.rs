@@ -253,15 +253,13 @@ impl LocalStdioServerLauncher {
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
 
-        let mut command = Command::new(resolved_program);
+        let launch_command = LocalLaunchCommand::new(resolved_program, args);
+        let mut command = launch_command.command();
         command
             .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
             .current_dir(cwd)
             .env_clear()
-            .envs(envs)
-            .args(args);
+            .envs(envs);
         #[cfg(unix)]
         command.process_group(0);
 
@@ -296,6 +294,86 @@ impl LocalStdioServerLauncher {
             process,
         })
     }
+}
+
+struct LocalLaunchCommand {
+    program: OsString,
+    args: Vec<OsString>,
+    stdin: Stdio,
+    stdout: Stdio,
+}
+
+impl LocalLaunchCommand {
+    fn new(program: OsString, args: Vec<OsString>) -> Self {
+        #[cfg(target_os = "macos")]
+        if let Some(app_path) = macos_app_bundle_path_for_executable(Path::new(&program)) {
+            let stdin = Stdio::piped();
+            let stdout = Stdio::piped();
+            let args = macos_open_args(&app_path, args);
+            return Self {
+                program: OsString::from("/usr/bin/open"),
+                args,
+                stdin,
+                stdout,
+            };
+        }
+
+        Self {
+            program,
+            args,
+            stdin: Stdio::piped(),
+            stdout: Stdio::piped(),
+        }
+    }
+
+    fn command(self) -> Command {
+        let mut command = Command::new(self.program);
+        command
+            .stdin(self.stdin)
+            .stdout(self.stdout)
+            .args(self.args);
+        command
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_path_for_executable(program: &Path) -> Option<PathBuf> {
+    let components = program.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        if component.as_os_str() != "MacOS" || index < 2 {
+            continue;
+        }
+        if components[index - 1].as_os_str() != "Contents" {
+            continue;
+        }
+
+        let app_path = components[..index - 1].iter().collect::<PathBuf>();
+        if app_path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            return Some(app_path);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_open_args(app_path: &Path, server_args: Vec<OsString>) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("-W"),
+        OsString::from("-n"),
+        OsString::from("-g"),
+        OsString::from("--stdin"),
+        OsString::from("/dev/stdin"),
+        OsString::from("--stdout"),
+        OsString::from("/dev/stdout"),
+        OsString::from("-a"),
+        app_path.as_os_str().to_os_string(),
+        OsString::from("--args"),
+    ];
+    args.extend(server_args);
+    args
 }
 
 impl LocalProcessTerminator {
@@ -591,6 +669,7 @@ mod tests {
     use codex_protocol::config_types::EnvironmentVariablePattern;
     use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::shell_environment;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn remote_env_policy_uses_core_env_without_remote_source_vars() {
@@ -657,5 +736,47 @@ mod tests {
             Some("remote-secret")
         );
         assert!(!env.contains_key("UNREQUESTED_SECRET"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_launches_app_bundle_executables_through_launch_services() {
+        let launch = LocalLaunchCommand::new(
+            OsString::from(
+                "/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+            ),
+            vec![OsString::from("mcp")],
+        );
+
+        assert_eq!(launch.program, OsString::from("/usr/bin/open"));
+        assert_eq!(
+            launch.args,
+            vec![
+                OsString::from("-W"),
+                OsString::from("-n"),
+                OsString::from("-g"),
+                OsString::from("--stdin"),
+                OsString::from("/dev/stdin"),
+                OsString::from("--stdout"),
+                OsString::from("/dev/stdout"),
+                OsString::from("-a"),
+                OsString::from(
+                    "/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app",
+                ),
+                OsString::from("--args"),
+                OsString::from("mcp"),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_launch_preserves_regular_binary_commands() {
+        let launch = LocalLaunchCommand::new(
+            OsString::from("/usr/bin/node"),
+            vec![OsString::from("server.js")],
+        );
+
+        assert_eq!(launch.program, OsString::from("/usr/bin/node"));
+        assert_eq!(launch.args, vec![OsString::from("server.js")]);
     }
 }
