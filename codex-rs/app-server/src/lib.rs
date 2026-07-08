@@ -78,6 +78,7 @@ use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY: &str = "Codex rebuilt its local database.";
+const REMOTE_CONTROL_DAEMON_CLIENT_NAME: &str = "Codex Desktop";
 
 mod analytics_utils;
 mod app_info;
@@ -748,6 +749,12 @@ pub async fn run_main_with_transport_options(
             transport_accept_handles.push(accept_handle);
         }
         AppServerTransport::Off => {}
+    }
+    if app_server_client_name_rx.is_none() && remote_control_explicitly_requested {
+        let (app_server_client_name_tx, app_server_client_name_rx_inner) =
+            oneshot::channel::<String>();
+        let _ = app_server_client_name_tx.send(REMOTE_CONTROL_DAEMON_CLIENT_NAME.to_string());
+        app_server_client_name_rx = Some(app_server_client_name_rx_inner);
     }
     drop(unix_socket_startup_lock);
 

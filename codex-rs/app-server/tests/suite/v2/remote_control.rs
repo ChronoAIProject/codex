@@ -332,6 +332,87 @@ async fn listen_off_ignores_persisted_enable_when_disabled_by_requirements() -> 
 }
 
 #[tokio::test]
+#[serial]
+async fn explicit_remote_control_startup_uses_desktop_enrollment_key() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let listener = configured_remote_control_listener(codex_home.path()).await?;
+    let websocket_url = format!(
+        "ws://{}/backend-api/wham/remote/control/server",
+        listener.local_addr()?
+    );
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+
+    let app_server = tokio::spawn(run_main_with_transport_options(
+        Arg0DispatchPaths {
+            codex_self_exe: Some(std::env::current_exe()?),
+            codex_linux_sandbox_exe: None,
+            main_execve_wrapper_exe: None,
+        },
+        CliConfigOverrides::default(),
+        LoaderOverrides::default(),
+        /*strict_config*/ false,
+        /*default_analytics_enabled*/ false,
+        AppServerTransport::Off,
+        SessionSource::VSCode,
+        AppServerWebsocketAuthSettings::default(),
+        AppServerRuntimeOptions {
+            plugin_startup_tasks: PluginStartupTasks::Skip,
+            remote_control_startup_mode: RemoteControlStartupMode::EnabledEphemeral,
+            install_shutdown_signal_handler: false,
+        },
+    ));
+
+    let enroll_request = timeout(STARTUP_TIMEOUT, read_http_request(&listener)).await??;
+    assert_eq!(
+        enroll_request.request_line,
+        "POST /backend-api/wham/remote/control/server/enroll HTTP/1.1"
+    );
+    respond_with_json(
+        enroll_request.reader.into_inner(),
+        serde_json::json!({
+            "server_id": "server-id",
+            "environment_id": "environment-id",
+            "remote_control_token": "remote-control-token",
+            "expires_at": "2999-01-01T00:00:00Z",
+        }),
+    )
+    .await?;
+    let request = timeout(STARTUP_TIMEOUT, read_http_request(&listener)).await??;
+    assert!(
+        request
+            .request_line
+            .starts_with("GET /backend-api/wham/remote/control/server ")
+    );
+
+    let enrollment = state_db
+        .get_remote_control_enrollment(&websocket_url, "account_id", Some("Codex Desktop"))
+        .await?;
+    let server_name = enrollment
+        .as_ref()
+        .context("desktop enrollment should exist")?
+        .server_name
+        .clone();
+    assert_eq!(
+        enrollment,
+        Some(RemoteControlEnrollmentRecord {
+            websocket_url,
+            account_id: "account_id".to_string(),
+            app_server_client_name: Some("Codex Desktop".to_string()),
+            server_id: "server-id".to_string(),
+            environment_id: "environment-id".to_string(),
+            server_name,
+            remote_control_enabled: None,
+        })
+    );
+
+    app_server.abort();
+    let _ = app_server.await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn listen_off_exits_without_persisted_remote_control_enable() -> Result<()> {
     for persisted_preference in [None, Some(false)] {
         let codex_home = TempDir::new()?;
