@@ -38,9 +38,8 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
-//! running, `Tab` submits just like Enter so input is never dropped.
-//! `Tab` does not submit when entering a `!` shell command.
+//! `Enter` submits immediately. `Tab` requests queuing while a task is running, but does not submit
+//! when no task is running so it remains available for completion workflows.
 //!
 //! On submit/queue paths, the composer:
 //!
@@ -3103,8 +3102,7 @@ impl ChatComposer {
         } else {
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
-        if self.queue_keys.is_pressed(key_event)
-            && (self.is_task_running || self.queue_submissions || !self.is_bang_shell_command())
+        if self.queue_keys.is_pressed(key_event) && (self.is_task_running || self.queue_submissions)
         {
             return self.handle_submission(self.is_task_running || self.queue_submissions);
         }
@@ -8811,7 +8809,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_submits_when_no_task_running() {
+    fn tab_does_not_submit_when_no_task_running() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -8825,17 +8823,13 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
-
         type_chars_humanlike(&mut composer, &['h', 'i']);
 
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert!(matches!(
-            result,
-            InputResult::Submitted { ref text, .. } if text == "hi"
-        ));
-        assert!(composer.draft.textarea.is_empty());
+        assert_eq!(result, InputResult::None);
+        assert_eq!("hi", composer.draft.textarea.text());
     }
 
     #[test]
