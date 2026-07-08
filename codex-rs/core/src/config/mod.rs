@@ -3204,8 +3204,9 @@ impl Config {
                                 windows_sandbox_level,
                             )
                         });
-                    network_proxy_config_for_profile_selection(
-                        effective_permission_selection.profiles.as_ref(),
+                    network_proxy_config_for_profile_selection_with_requirements(
+                        cfg.permissions.as_ref(),
+                        requirements_toml,
                         default_permissions,
                     )?
                 } else {
@@ -3229,10 +3230,12 @@ impl Config {
             } else {
                 None
             };
-            let configured_network_proxy_config = network_proxy_config_for_profile_selection(
-                effective_permission_selection.profiles.as_ref(),
-                default_permissions,
-            )?;
+            let configured_network_proxy_config =
+                network_proxy_config_for_profile_selection_with_requirements(
+                    cfg.permissions.as_ref(),
+                    requirements_toml,
+                    default_permissions,
+                )?;
             let (mut file_system_sandbox_policy, network_sandbox_policy) =
                 compile_permission_profile_selection(
                     effective_permission_selection.profiles.as_ref(),
@@ -3275,8 +3278,8 @@ impl Config {
                 // when doing so would lose roots, network, or tmp settings.
                 None
             } else {
-                let selected_profile_extends = cfg
-                    .permissions
+                let selected_profile_extends = effective_permission_selection
+                    .profiles
                     .as_ref()
                     .and_then(|permissions| permissions.entries.get(default_permissions))
                     .and_then(|profile| profile.extends.clone());
@@ -4084,10 +4087,12 @@ impl Config {
                         ),
                     )
                 })?;
-            let mut configured_network_proxy_config = network_proxy_config_for_profile_selection(
-                cfg.permissions.as_ref(),
-                active_permission_profile.id.as_str(),
-            )?;
+            let mut configured_network_proxy_config =
+                network_proxy_config_for_profile_selection_with_requirements(
+                    cfg.permissions.as_ref(),
+                    self.config_layer_stack.requirements_toml(),
+                    active_permission_profile.id.as_str(),
+                )?;
             if self.features.enabled(Feature::NetworkProxy)
                 && permission_profile.network_sandbox_policy().is_enabled()
             {
@@ -4160,6 +4165,15 @@ fn merge_managed_permission_profiles(
     }
 
     Ok(Some(merged_permissions))
+}
+
+fn network_proxy_config_for_profile_selection_with_requirements(
+    configured_permissions: Option<&PermissionsToml>,
+    requirements_toml: &ConfigRequirementsToml,
+    profile_name: &str,
+) -> std::io::Result<NetworkProxyConfig> {
+    let permissions = merge_managed_permission_profiles(configured_permissions, requirements_toml)?;
+    network_proxy_config_for_profile_selection(permissions.as_ref(), profile_name)
 }
 
 fn resolve_effective_permission_selection<'a>(

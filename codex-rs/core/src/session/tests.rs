@@ -4790,6 +4790,86 @@ async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn active_managed_profile_update_rebuilds_network_proxy_config() -> std::io::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let cwd = tempfile::tempdir().expect("create cwd");
+    std::fs::write(
+        codex_home.path().join(codex_config::CONFIG_TOML_FILE),
+        r#"
+[features]
+network_proxy = true
+"#,
+    )?;
+    let requirements_path = codex_home.path().join("requirements.toml");
+    std::fs::write(
+        &requirements_path,
+        r#"
+default_permissions = "github_only"
+
+[allowed_permission_profiles]
+github_only = true
+":read-only" = true
+
+[permissions.github_only]
+extends = ":read-only"
+
+[permissions.github_only.network]
+enabled = true
+allow_local_binding = false
+
+[permissions.github_only.network.domains]
+"github.com" = "allow"
+"#,
+    )?;
+    let mut loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+    loader_overrides.system_requirements_path = Some(requirements_path);
+    let selected_config = Arc::new(
+        ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .loader_overrides(loader_overrides)
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(cwd.path().to_path_buf()),
+                default_permissions: Some("github_only".to_string()),
+                ..Default::default()
+            })
+            .build()
+            .await?,
+    );
+
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.permission_profile_state = selected_config
+        .permissions
+        .permission_profile_state()
+        .clone();
+    session_configuration.original_config_do_not_use = Arc::clone(&selected_config);
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            permission_profile: Some(selected_config.permissions.permission_profile().clone()),
+            active_permission_profile: selected_config.permissions.active_permission_profile(),
+            ..Default::default()
+        })
+        .expect("managed active profile update should apply");
+
+    assert_eq!(
+        updated.active_permission_profile(),
+        Some(ActivePermissionProfile {
+            id: "github_only".to_string(),
+            extends: Some(":read-only".to_string()),
+        })
+    );
+    assert!(
+        updated
+            .original_config_do_not_use
+            .permissions
+            .network
+            .as_ref()
+            .is_some_and(|network| network.enabled())
+    );
+    Ok(())
+}
+
 #[cfg_attr(windows, ignore)]
 #[tokio::test]
 async fn new_default_turn_uses_config_aware_skills_for_role_overrides() {
