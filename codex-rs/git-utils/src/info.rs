@@ -742,7 +742,7 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
     let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
     let output = run_git_command_with_timeout_from(
         git,
-        &["diff", "--no-textconv", "--no-ext-diff", &sha.0],
+        &["diff", "--no-textconv", "--no-ext-diff", "--binary", &sha.0],
         cwd,
         fsmonitor,
     )
@@ -907,6 +907,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Command as StdCommand;
 
     #[test]
     fn canonicalize_git_remote_url_normalizes_github_variants() {
@@ -1085,5 +1086,53 @@ mod tests {
                 format!("-c {disabled_hooks} -c core.fsmonitor=true status --porcelain"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn diff_against_sha_includes_binary_patch_for_tracked_binary_file() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo = temp_dir.path();
+        run_git(repo, &["init", "--initial-branch=main"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        run_git(repo, &["config", "user.name", "Test User"]);
+
+        std::fs::write(repo.join("image.png"), b"\x89PNG\r\n\x1a\n\0before")
+            .expect("write initial png");
+        run_git(repo, &["add", "image.png"]);
+        run_git(repo, &["commit", "-m", "initial image"]);
+        let base_sha = GitSha::new(run_git_stdout(repo, &["rev-parse", "HEAD"]).trim());
+
+        std::fs::write(repo.join("image.png"), b"\x89PNG\r\n\x1a\n\0after").expect("modify png");
+
+        let diff = diff_against_sha(repo, &base_sha)
+            .await
+            .expect("collect diff");
+        assert!(
+            diff.contains("GIT binary patch"),
+            "tracked binary changes should include an applyable binary patch:\n{diff}"
+        );
+        assert!(
+            !diff.contains("Binary files a/image.png and b/image.png differ"),
+            "tracked binary changes should not be emitted as a placeholder diff:\n{diff}"
+        );
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let status = StdCommand::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("run git");
+        assert_eq!(status.code(), Some(0), "git {args:?}");
+    }
+
+    fn run_git_stdout(repo: &Path, args: &[&str]) -> String {
+        let output = StdCommand::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git");
+        assert_eq!(output.status.code(), Some(0), "git {args:?}");
+        String::from_utf8(output.stdout).expect("git stdout should be utf-8")
     }
 }
