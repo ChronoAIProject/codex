@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::path::PathBuf;
 
 use codex_utils_image::PromptImageMode;
 use codex_utils_image::data_url_from_bytes;
@@ -1525,6 +1526,70 @@ fn unsupported_image_error_placeholder(path: &std::path::Path, mime: &str) -> Co
     }
 }
 
+fn read_local_image(path: &Path) -> io::Result<Vec<u8>> {
+    read_local_image_with_wsl_mount_root(path, Path::new("/mnt"), is_wsl())
+}
+
+fn read_local_image_with_wsl_mount_root(
+    path: &Path,
+    wsl_mount_root: &Path,
+    is_wsl: bool,
+) -> io::Result<Vec<u8>> {
+    std::fs::read(path).or_else(|err| {
+        if !is_wsl {
+            return Err(err);
+        }
+        let Some(wsl_path) = windows_drive_path_to_wsl_mount(path, wsl_mount_root) else {
+            return Err(err);
+        };
+        std::fs::read(wsl_path).map_err(|_| err)
+    })
+}
+
+fn is_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+            return true;
+        }
+        match std::fs::read_to_string("/proc/version") {
+            Ok(version) => version.to_lowercase().contains("microsoft"),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+fn windows_drive_path_to_wsl_mount(path: &Path, wsl_mount_root: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = path.to_str()?;
+        let bytes = path.as_bytes();
+        if bytes.len() < 3
+            || bytes[1] != b':'
+            || !(bytes[2] == b'\\' || bytes[2] == b'/')
+            || !bytes[0].is_ascii_alphabetic()
+        {
+            return None;
+        }
+
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        let tail = path[3..].replace('\\', "/");
+        let mut mapped = wsl_mount_root.join(drive.to_string());
+        mapped.extend(tail.split('/').filter(|component| !component.is_empty()));
+        Some(mapped)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        let _ = wsl_mount_root;
+        None
+    }
+}
+
 pub fn local_image_content_items_with_label_number(
     path: &std::path::Path,
     file_bytes: Vec<u8>,
@@ -1742,7 +1807,7 @@ impl ResponseInputItem {
                     UserInput::LocalImage { path, detail, .. } => {
                         image_index += 1;
                         let detail = detail.unwrap_or(DEFAULT_IMAGE_DETAIL);
-                        match std::fs::read(&path) {
+                        match read_local_image(&path) {
                             Ok(file_bytes) => match local_image_preparation {
                                 LocalImagePreparation::Process => {
                                     local_image_content_items_with_label_number(
@@ -3553,6 +3618,31 @@ mod tests {
             }
             other => panic!("expected message response but got {other:?}"),
         }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_local_image_falls_back_to_windows_drive_path_wsl_mount() -> Result<()> {
+        let dir = tempdir()?;
+        let mnt = dir.path().join("mnt");
+        let drive_root = mnt.join("c");
+        let image_path = drive_root
+            .join("Users")
+            .join("Alice")
+            .join("AppData")
+            .join("Local")
+            .join("Temp")
+            .join("codex-clipboard.png");
+        std::fs::create_dir_all(image_path.parent().expect("image path has parent"))?;
+        std::fs::write(&image_path, TINY_PNG_BYTES)?;
+
+        let windows_path = Path::new(r"C:\Users\Alice\AppData\Local\Temp\codex-clipboard.png");
+        let file_bytes =
+            read_local_image_with_wsl_mount_root(windows_path, &mnt, /*is_wsl*/ true)?;
+
+        assert_eq!(file_bytes, TINY_PNG_BYTES);
 
         Ok(())
     }
