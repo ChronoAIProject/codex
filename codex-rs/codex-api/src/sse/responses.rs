@@ -448,6 +448,93 @@ pub fn process_responses_event(
     Ok(None)
 }
 
+#[derive(Default)]
+pub(crate) struct ResponsesEventProcessor {
+    text_delta: OutputTextDeltaNormalizer,
+}
+
+impl ResponsesEventProcessor {
+    pub(crate) fn process_event(
+        &mut self,
+        event: ResponsesStreamEvent,
+    ) -> std::result::Result<Option<ResponseEvent>, ResponsesEventError> {
+        let resets_text_delta = matches!(
+            event.kind.as_str(),
+            "response.output_item.added"
+                | "response.output_item.done"
+                | "response.completed"
+                | "response.failed"
+        );
+        let event = process_responses_event(event)?;
+        match event {
+            Some(ResponseEvent::OutputTextDelta(delta)) => Ok(self
+                .text_delta
+                .normalize(delta)
+                .map(ResponseEvent::OutputTextDelta)),
+            Some(ResponseEvent::OutputItemAdded(item)) => {
+                self.text_delta.reset();
+                self.text_delta.seed(&assistant_output_text(&item));
+                Ok(Some(ResponseEvent::OutputItemAdded(item)))
+            }
+            event => {
+                if resets_text_delta {
+                    self.text_delta.reset();
+                }
+                Ok(event)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutputTextDeltaNormalizer {
+    text: String,
+    cumulative: bool,
+}
+
+impl OutputTextDeltaNormalizer {
+    fn seed(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.cumulative = !text.is_empty();
+    }
+
+    fn normalize(&mut self, delta: String) -> Option<String> {
+        if self.cumulative
+            && let Some(suffix) = delta.strip_prefix(&self.text)
+        {
+            let suffix = suffix.to_string();
+            self.text = delta;
+            return if suffix.is_empty() {
+                None
+            } else {
+                Some(suffix)
+            };
+        }
+
+        self.text.push_str(&delta);
+        self.cumulative = false;
+        Some(delta)
+    }
+
+    fn reset(&mut self) {
+        self.text.clear();
+        self.cumulative = false;
+    }
+}
+
+fn assistant_output_text(item: &ResponseItem) -> String {
+    match item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => content
+            .iter()
+            .filter_map(|item| match item {
+                codex_protocol::models::ContentItem::OutputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 pub async fn process_sse(
     stream: ByteStream,
@@ -475,6 +562,7 @@ async fn process_sse_with_treatment(
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let mut event_processor = ResponsesEventProcessor::default();
 
     loop {
         let start = Instant::now();
@@ -556,7 +644,7 @@ async fn process_sse_with_treatment(
             return;
         }
 
-        match process_responses_event(event) {
+        match event_processor.process_event(event) {
             Ok(Some(event)) => {
                 let is_completed = matches!(event, ResponseEvent::Completed { .. });
                 if tx_event.send(Ok(event)).await.is_err() {
@@ -882,6 +970,66 @@ mod tests {
             } if item_id == "ctc_1" && call_id == "call_1" && delta == "*** Begin"
         );
         assert_matches!(&events[1], ResponseEvent::Completed { .. });
+    }
+
+    #[tokio::test]
+    async fn output_text_delta_keeps_only_suffix_after_seeded_assistant_text() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "生成後会先"}]
+                }
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "delta": "生成後会先確認します",
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_matches!(&events[0], ResponseEvent::OutputItemAdded(_));
+        assert_matches!(
+            &events[1],
+            ResponseEvent::OutputTextDelta(delta) if delta == "確認します"
+        );
+        assert_matches!(&events[2], ResponseEvent::Completed { .. });
+    }
+
+    #[tokio::test]
+    async fn output_text_delta_keeps_incremental_suffix_that_matches_prior_delta() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_text.delta",
+                "delta": "はい",
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "delta": "はい、",
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputTextDelta(delta) if delta == "はい"
+        );
+        assert_matches!(
+            &events[1],
+            ResponseEvent::OutputTextDelta(delta) if delta == "はい、"
+        );
+        assert_matches!(&events[2], ResponseEvent::Completed { .. });
     }
 
     #[tokio::test]
