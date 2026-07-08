@@ -7730,6 +7730,82 @@ async fn refresh_mcp_servers_keeps_the_previous_runtime_alive() {
 }
 
 #[tokio::test]
+async fn optional_streamable_http_mcp_auth_probe_does_not_block_session_start() {
+    let (mcp_url, shutdown_hanging_server) = start_hanging_http_server().await;
+    let server = start_mock_server().await;
+    let result = timeout(StdDuration::from_secs(4), async {
+        test_codex()
+            .with_config(move |config| {
+                config
+                    .mcp_servers
+                    .set(HashMap::from([(
+                        "slow".to_string(),
+                        McpServerConfig {
+                            auth: Default::default(),
+                            transport: McpServerTransportConfig::StreamableHttp {
+                                url: mcp_url,
+                                bearer_token_env_var: None,
+                                http_headers: None,
+                                env_http_headers: None,
+                            },
+                            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+                            enabled: true,
+                            required: false,
+                            supports_parallel_tool_calls: false,
+                            disabled_reason: None,
+                            startup_timeout_sec: None,
+                            tool_timeout_sec: None,
+                            default_tools_approval_mode: None,
+                            enabled_tools: None,
+                            disabled_tools: None,
+                            scopes: None,
+                            oauth: None,
+                            oauth_resource: None,
+                            tools: HashMap::new(),
+                        },
+                    )]))
+                    .expect("set MCP servers");
+            })
+            .build_with_auto_env(&server)
+            .await
+    })
+    .await;
+    let _ = shutdown_hanging_server.send(());
+
+    assert!(result.is_ok(), "session start timed out");
+    result
+        .expect("session start should not time out")
+        .expect("session should start");
+}
+
+async fn start_hanging_http_server() -> (String, tokio::sync::oneshot::Sender<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging HTTP server");
+    let addr = listener
+        .local_addr()
+        .expect("hanging HTTP server should have local address");
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                accept_result = listener.accept() => {
+                    let Ok((stream, _addr)) = accept_result else {
+                        break;
+                    };
+                    tokio::spawn(async move {
+                        let _stream = stream;
+                        std::future::pending::<()>().await;
+                    });
+                }
+            }
+        }
+    });
+    (format!("http://{addr}/mcp"), shutdown_tx)
+}
+
+#[tokio::test]
 async fn built_tools_uses_the_step_mcp_runtime() -> anyhow::Result<()> {
     let (session, turn_context) = make_session_and_context().await;
     let session = Arc::new(session);

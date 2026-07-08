@@ -20,7 +20,10 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+
+const SESSION_INIT_MCP_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Context for an initialized model agent
 ///
@@ -689,14 +692,24 @@ impl Session {
                 .await;
             let mcp_servers = codex_mcp::effective_mcp_servers(&mcp_config, auth.as_ref());
             let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(&mcp_config);
-            let auth_statuses = compute_auth_statuses(
-                mcp_servers.iter(),
-                config_for_mcp.mcp_oauth_credentials_store_mode,
-                config_for_mcp.auth_keyring_backend_kind(),
-                auth.as_ref(),
-                &mcp_runtime_context_for_auth,
+            let auth_statuses = match tokio::time::timeout(
+                SESSION_INIT_MCP_AUTH_STATUS_TIMEOUT,
+                compute_auth_statuses(
+                    mcp_servers.iter(),
+                    config_for_mcp.mcp_oauth_credentials_store_mode,
+                    config_for_mcp.auth_keyring_backend_kind(),
+                    auth.as_ref(),
+                    &mcp_runtime_context_for_auth,
+                ),
             )
-            .await;
+            .await
+            {
+                Ok(auth_statuses) => auth_statuses,
+                Err(_) => {
+                    warn!("timed out determining startup MCP auth statuses");
+                    HashMap::new()
+                }
+            };
             (
                 auth,
                 mcp_config,
