@@ -32,7 +32,9 @@ use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as SerdeError;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -75,6 +77,7 @@ pub struct ThreadStartParams {
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.
     #[experimental("thread/start.runtimeWorkspaceRoots")]
+    #[serde(default, deserialize_with = "deserialize_runtime_workspace_roots")]
     #[ts(optional = nullable)]
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     #[experimental(nested)]
@@ -360,6 +363,7 @@ pub struct ThreadResumeParams {
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.
     #[experimental("thread/resume.runtimeWorkspaceRoots")]
+    #[serde(default, deserialize_with = "deserialize_runtime_workspace_roots")]
     #[ts(optional = nullable)]
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     #[experimental(nested)]
@@ -528,6 +532,7 @@ pub struct ThreadForkParams {
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.
     #[experimental("thread/fork.runtimeWorkspaceRoots")]
+    #[serde(default, deserialize_with = "deserialize_runtime_workspace_roots")]
     #[ts(optional = nullable)]
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     #[experimental(nested)]
@@ -621,6 +626,59 @@ fn instruction_source_path_uris(sources: &[LegacyAppPathString]) -> Vec<PathUri>
             })
         })
         .collect()
+}
+
+fn deserialize_runtime_workspace_roots<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<AbsolutePathBuf>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(raw_roots) = Option::<Vec<String>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    raw_roots
+        .into_iter()
+        .map(|raw_path| {
+            let path =
+                normalize_wsl_unc_path(&raw_path).unwrap_or_else(|| PathBuf::from(&raw_path));
+            AbsolutePathBuf::from_absolute_path_checked(path).map_err(|err| {
+                SerdeError::custom(format!(
+                    "runtimeWorkspaceRoots path `{raw_path}` must be absolute: {err}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn normalize_wsl_unc_path(raw_path: &str) -> Option<PathBuf> {
+    let normalized = raw_path.replace('/', "\\");
+    let normalized = strip_prefix_ignore_ascii_case(&normalized, "\\\\?\\UNC\\")
+        .or_else(|| strip_prefix_ignore_ascii_case(&normalized, "\\\\.\\UNC\\"))
+        .unwrap_or(&normalized);
+    let wsl_path = strip_prefix_ignore_ascii_case(normalized, "\\\\wsl.localhost\\")
+        .or_else(|| strip_prefix_ignore_ascii_case(normalized, "\\\\wsl$\\"))
+        .or_else(|| strip_prefix_ignore_ascii_case(normalized, "wsl.localhost\\"))
+        .or_else(|| strip_prefix_ignore_ascii_case(normalized, "wsl$\\"))?;
+    let (_distro, path) = wsl_path.split_once('\\')?;
+    let path = path.trim_matches('\\');
+    if path.is_empty() {
+        Some(PathBuf::from("/"))
+    } else {
+        Some(PathBuf::from(format!("/{}", path.replace('\\', "/"))))
+    }
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    if value.len() >= prefix.len()
+        && value.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    {
+        Some(&value[prefix.len()..])
+    } else {
+        None
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

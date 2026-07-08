@@ -823,6 +823,33 @@ fn permission_profile_selection_uses_id_string() {
 }
 
 #[test]
+fn thread_lifecycle_params_accept_wsl_unc_runtime_workspace_roots() {
+    let expected_roots = Some(vec![
+        AbsolutePathBuf::try_from(PathBuf::from("/home/dev/workspace")).expect("absolute WSL path"),
+    ]);
+
+    let start: ThreadStartParams = serde_json::from_value(json!({
+        "runtimeWorkspaceRoots": ["\\\\wsl.localhost\\Ubuntu\\home\\dev\\workspace"],
+    }))
+    .expect("thread/start params deserialize");
+    assert_eq!(start.runtime_workspace_roots, expected_roots);
+
+    let resume: ThreadResumeParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "runtimeWorkspaceRoots": ["\\\\wsl$\\Ubuntu\\home\\dev\\workspace"],
+    }))
+    .expect("thread/resume params deserialize");
+    assert_eq!(resume.runtime_workspace_roots, expected_roots);
+
+    let fork: ThreadForkParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "runtimeWorkspaceRoots": ["\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\dev\\workspace"],
+    }))
+    .expect("thread/fork params deserialize");
+    assert_eq!(fork.runtime_workspace_roots, expected_roots);
+}
+
+#[test]
 fn thread_path_params_deserialize_empty_path_as_none() {
     let resume: ThreadResumeParams = serde_json::from_value(json!({
         "threadId": "thread-1",
