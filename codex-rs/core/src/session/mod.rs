@@ -37,6 +37,7 @@ use crate::default_skill_metadata_budget;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::ExecPolicyManager;
 use crate::image_preparation::prepare_response_items;
+use crate::image_preparation::strip_images_from_response_items;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
@@ -2985,8 +2986,10 @@ impl Session {
         } else {
             items
         };
+        let mut persisted_items = items.clone();
+        strip_images_from_response_items(&mut persisted_items);
         let compacted_item = CompactedItem {
-            replacement_history: Some(items.clone()),
+            replacement_history: Some(persisted_items),
             ..compacted_item
         };
         // Compaction starts a new history window, so its WorldState baseline must be full.

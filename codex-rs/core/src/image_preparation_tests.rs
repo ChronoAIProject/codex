@@ -167,6 +167,74 @@ fn preparation_replaces_only_failed_tool_images_and_preserves_metadata() {
 }
 
 #[test]
+fn strip_images_removes_image_payloads_and_preserves_text() {
+    let mut items = vec![
+        ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,abc".to_string(),
+                    detail: Some(ImageDetail::High),
+                },
+                ContentItem::InputText {
+                    text: "keep message text".to_string(),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::FunctionCallOutput {
+            id: Some("fco-1".to_string()),
+            call_id: "call-1".to_string(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: "keep tool text".to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,def".to_string(),
+                        detail: Some(ImageDetail::High),
+                    },
+                ]),
+                success: Some(true),
+            },
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    strip_images_from_response_items(&mut items);
+
+    assert_eq!(
+        items,
+        vec![
+            ResponseItem::Message {
+                id: Some("msg-1".to_string()),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "keep message text".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: Some("fco-1".to_string()),
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::ContentItems(vec![
+                        FunctionCallOutputContentItem::InputText {
+                            text: "keep tool text".to_string(),
+                        },
+                    ]),
+                    success: Some(true),
+                },
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+}
+
+#[test]
 fn preparation_errors_use_bounded_actionable_placeholders() {
     let cases = [
         (
