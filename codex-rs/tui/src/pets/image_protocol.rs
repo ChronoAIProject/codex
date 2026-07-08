@@ -110,6 +110,10 @@ impl FromStr for ProtocolSelection {
 }
 
 pub(crate) fn detect_pet_image_support() -> PetImageSupport {
+    detect_pet_image_support_for_terminal(&terminal_info())
+}
+
+fn detect_pet_image_support_for_terminal(info: &TerminalInfo) -> PetImageSupport {
     if env::var_os("TMUX").is_some() || env::var_os("TMUX_PANE").is_some() {
         return PetImageSupport::Unsupported(PetImageUnsupportedReason::Tmux);
     }
@@ -121,7 +125,7 @@ pub(crate) fn detect_pet_image_support() -> PetImageSupport {
         return PetImageSupport::Unsupported(PetImageUnsupportedReason::Zellij);
     }
 
-    if env::var_os("KITTY_WINDOW_ID").is_some() {
+    if env::var_os("KITTY_WINDOW_ID").is_some() && supports_kitty_graphics(info) {
         return PetImageSupport::Supported(ImageProtocol::Kitty);
     }
 
@@ -129,7 +133,7 @@ pub(crate) fn detect_pet_image_support() -> PetImageSupport {
         return PetImageSupport::Supported(ImageProtocol::Kitty);
     }
 
-    pet_image_support_for_terminal(&terminal_info())
+    pet_image_support_for_terminal(info)
 }
 
 fn pet_image_support_for_terminal(info: &TerminalInfo) -> PetImageSupport {
@@ -172,7 +176,16 @@ fn supports_iterm2_kitty_graphics(info: &TerminalInfo) -> bool {
 
 fn is_iterm2_terminal(info: &TerminalInfo) -> bool {
     matches!(info.name, TerminalName::Iterm2)
-        || terminal_field_contains(info.term_program.as_deref(), "iterm")
+        || info
+            .term_program
+            .as_deref()
+            .is_some_and(is_iterm2_term_program)
+}
+
+fn is_iterm2_term_program(value: &str) -> bool {
+    ["iterm", "iterm.app", "iterm2"]
+        .iter()
+        .any(|program| value.eq_ignore_ascii_case(program))
 }
 
 fn supports_kitty_graphics(info: &TerminalInfo) -> bool {
@@ -407,6 +420,29 @@ mod tests {
         assert_eq!(
             ProtocolSelection::Sixel.resolve(),
             PetImageSupport::Supported(ImageProtocol::Sixel)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn kitty_env_does_not_override_unsupported_terminal() {
+        let _tmux = EnvVarGuard::new("TMUX", /*value*/ None);
+        let _tmux_pane = EnvVarGuard::new("TMUX_PANE", /*value*/ None);
+        let _zellij = EnvVarGuard::new("ZELLIJ", /*value*/ None);
+        let _zellij_session = EnvVarGuard::new("ZELLIJ_SESSION_NAME", /*value*/ None);
+        let _zellij_version = EnvVarGuard::new("ZELLIJ_VERSION", /*value*/ None);
+        let _kitty = EnvVarGuard::new("KITTY_WINDOW_ID", Some("1"));
+        let _wezterm = EnvVarGuard::new("WEZTERM_VERSION", /*value*/ None);
+        let _wezterm_executable = EnvVarGuard::new("WEZTERM_EXECUTABLE", /*value*/ None);
+
+        assert_eq!(
+            detect_pet_image_support_for_terminal(&terminal_info_for_test(
+                TerminalName::Unknown,
+                /*multiplexer*/ None,
+                Some("JetBrains-JediTerm"),
+                Some("xterm-256color"),
+            )),
+            PetImageSupport::Unsupported(PetImageUnsupportedReason::Terminal)
         );
     }
 
