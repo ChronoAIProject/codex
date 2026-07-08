@@ -121,6 +121,30 @@ async fn consume_account_rate_limit_reset_credit_maps_backend_outcomes() -> Resu
 }
 
 #[tokio::test]
+async fn consume_account_rate_limit_reset_credit_requires_reset_window() -> Result<()> {
+    let (codex_home, server) = chatgpt_test_context().await?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .and(body_json(json!({ "redeem_request_id": "request-reset" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": "reset",
+            "windows_reset": 0
+        })))
+        .mount(&server)
+        .await;
+
+    let mut mcp = initialized_app_server(codex_home.path()).await?;
+
+    assert_eq!(
+        consume_reset_credit(&mut mcp, "request-reset").await?,
+        ConsumeAccountRateLimitResetCreditResponse {
+            outcome: ConsumeAccountRateLimitResetCreditOutcome::NothingToReset,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn consume_account_rate_limit_reset_credit_rejects_empty_idempotency_key() -> Result<()> {
     let (codex_home, _server) = chatgpt_test_context().await?;
     let mut mcp = initialized_app_server(codex_home.path()).await?;

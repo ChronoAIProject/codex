@@ -29,17 +29,20 @@ impl AccountRequestProcessor {
         .await
         .map_err(|_| internal_error("rate limit reset consume timed out"))?
         .map_err(|err| internal_error(format!("failed to consume rate limit reset: {err}")))?;
-        let outcome = match response.code {
-            BackendConsumeRateLimitResetCreditCode::Reset => {
-                ConsumeAccountRateLimitResetCreditOutcome::Reset
-            }
-            BackendConsumeRateLimitResetCreditCode::NothingToReset => {
+        let outcome = match (response.code, response.windows_reset) {
+            (BackendConsumeRateLimitResetCreditCode::Reset, 0) => {
                 ConsumeAccountRateLimitResetCreditOutcome::NothingToReset
             }
-            BackendConsumeRateLimitResetCreditCode::NoCredit => {
+            (BackendConsumeRateLimitResetCreditCode::Reset, _) => {
+                ConsumeAccountRateLimitResetCreditOutcome::Reset
+            }
+            (BackendConsumeRateLimitResetCreditCode::NothingToReset, _) => {
+                ConsumeAccountRateLimitResetCreditOutcome::NothingToReset
+            }
+            (BackendConsumeRateLimitResetCreditCode::NoCredit, _) => {
                 ConsumeAccountRateLimitResetCreditOutcome::NoCredit
             }
-            BackendConsumeRateLimitResetCreditCode::AlreadyRedeemed => {
+            (BackendConsumeRateLimitResetCreditCode::AlreadyRedeemed, _) => {
                 ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed
             }
         };
