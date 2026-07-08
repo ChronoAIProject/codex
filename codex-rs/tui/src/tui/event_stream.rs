@@ -221,6 +221,10 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
         }
     }
 
+    fn terminal_is_focused(&self) -> bool {
+        self.terminal_focused.load(Ordering::Relaxed)
+    }
+
     /// Poll the draw broadcast stream for the next draw event. Draw events are used to trigger a redraw of the TUI.
     pub fn poll_draw_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
         match Pin::new(&mut self.draw_stream).poll_next(cx) {
@@ -237,6 +241,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     fn map_crossterm_event(&mut self, event: Event) -> Option<TuiEvent> {
         match event {
             Event::Key(key_event) => {
+                if !self.terminal_is_focused() {
+                    return None;
+                }
                 #[cfg(unix)]
                 if crate::tui::job_control::SUSPEND_KEY.is_press(key_event) {
                     self.broker.pause_events();
@@ -254,7 +261,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                 Some(TuiEvent::Key(key_event))
             }
             Event::Resize(_, _) => Some(TuiEvent::Resize),
-            Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
+            Event::Paste(pasted) => self
+                .terminal_is_focused()
+                .then_some(TuiEvent::Paste(pasted)),
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
                 crate::terminal_palette::requery_default_colors();
@@ -306,6 +315,9 @@ mod tests {
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
+    use crossterm::event::MouseButton;
+    use crossterm::event::MouseEvent;
+    use crossterm::event::MouseEventKind;
     use pretty_assertions::assert_eq;
     use std::task::Context;
     use std::task::Poll;
@@ -402,7 +414,12 @@ mod tests {
         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
 
-        handle.send(Ok(Event::FocusLost));
+        handle.send(Ok(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })));
         handle.send(Ok(Event::Key(KeyEvent::new(
             KeyCode::Char('a'),
             KeyModifiers::NONE,
@@ -414,6 +431,29 @@ mod tests {
                 assert_eq!(key, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
             }
             other => panic!("expected key event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn key_events_are_ignored_while_unfocused() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused.clone());
+
+        let ignored_key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        let expected_key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        handle.send(Ok(Event::FocusLost));
+        handle.send(Ok(Event::Key(ignored_key)));
+        handle.send(Ok(Event::FocusGained));
+        handle.send(Ok(Event::Key(expected_key)));
+
+        let first = stream.next().await;
+        let second = stream.next().await;
+
+        assert_eq!(terminal_focused.load(Ordering::Relaxed), true);
+        assert!(matches!(first, Some(TuiEvent::Draw)));
+        match second {
+            Some(TuiEvent::Key(key)) => assert_eq!(key, expected_key),
+            other => panic!("expected focused key event, got {other:?}"),
         }
     }
 
