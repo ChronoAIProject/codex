@@ -126,16 +126,23 @@ pub(super) fn enable_keyboard_enhancement() {
     let _ = execute!(
         stdout(),
         DisableModifyOtherKeys,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
+        PushKeyboardEnhancementFlags(keyboard_enhancement_flags(running_in_wsl()))
     );
 
     if tmux_should_enable_modify_other_keys() {
         let _ = execute!(stdout(), EnableModifyOtherKeys);
     }
+}
+
+fn keyboard_enhancement_flags(is_wsl: bool) -> KeyboardEnhancementFlags {
+    let mut flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+
+    if !is_wsl {
+        flags |= KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+    }
+
+    flags
 }
 
 fn running_in_tmux_session() -> bool {
@@ -283,11 +290,13 @@ mod tests {
     use super::EnableModifyOtherKeys;
     use super::ResetKeyboardEnhancementFlags;
     use super::keyboard_enhancement_disabled_for;
+    use super::keyboard_enhancement_flags;
     use super::parse_bool_env;
     use super::tmux_session_detected;
     use super::tmux_should_enable_modify_other_keys_for;
     use super::vscode_terminal_detected;
     use crossterm::Command;
+    use crossterm::event::KeyboardEnhancementFlags;
     use pretty_assertions::assert_eq;
 
     fn ansi_for(command: impl Command) -> String {
@@ -337,6 +346,25 @@ mod tests {
             /*is_wsl*/ false,
             /*is_vscode_terminal*/ false
         ));
+    }
+
+    #[test]
+    fn keyboard_enhancement_flags_omit_alternate_keys_in_wsl() {
+        assert_eq!(
+            keyboard_enhancement_flags(/*is_wsl*/ true),
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        );
+    }
+
+    #[test]
+    fn keyboard_enhancement_flags_include_alternate_keys_outside_wsl() {
+        assert_eq!(
+            keyboard_enhancement_flags(/*is_wsl*/ false),
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        );
     }
 
     #[test]
