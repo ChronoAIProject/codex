@@ -281,6 +281,26 @@ startup_timeout_sec = 10
         }
     );
 
+    let request_id = app_server
+        .send_mcp_server_tool_call_request(McpServerToolCallParams {
+            thread_id: selected_thread.clone(),
+            server: OAUTH_MCP_SERVER_NAME.to_string(),
+            tool: "echo".to_string(),
+            arguments: Some(json!({"message": "after oauth login"})),
+            meta: None,
+        })
+        .await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app_server.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let response: McpServerToolCallResponse = to_response(response)?;
+    assert_eq!(
+        response.structured_content,
+        Some(json!({"echo": "ECHOING: after oauth login"}))
+    );
+
     let namespace = format!("mcp__{MCP_SERVER_NAME}");
     let response_mock = responses::mount_sse_sequence(
         &responses_server,
