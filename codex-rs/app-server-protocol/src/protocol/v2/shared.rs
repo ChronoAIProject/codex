@@ -289,8 +289,11 @@ impl From<CoreApprovalsReviewer> for ApprovalsReviewer {
 #[serde(rename_all = "kebab-case")]
 #[ts(rename_all = "kebab-case", export_to = "v2/")]
 pub enum SandboxMode {
+    #[serde(alias = "readOnly")]
     ReadOnly,
+    #[serde(alias = "workspaceWrite")]
     WorkspaceWrite,
+    #[serde(alias = "dangerFullAccess")]
     DangerFullAccess,
 }
 

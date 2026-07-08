@@ -121,6 +121,21 @@ fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagen
 }
 
 #[test]
+fn sandbox_mode_accepts_v2_camel_case_wire_values() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "sandbox": "dangerFullAccess"
+    }))
+    .expect("thread start params should accept v2 sandbox mode");
+    assert_eq!(params.sandbox, Some(SandboxMode::DangerFullAccess));
+
+    let legacy_params: ThreadStartParams = serde_json::from_value(json!({
+        "sandbox": "danger-full-access"
+    }))
+    .expect("thread start params should accept legacy sandbox mode");
+    assert_eq!(legacy_params.sandbox, Some(SandboxMode::DangerFullAccess));
+}
+
+#[test]
 fn turn_defaults_legacy_missing_items_view_to_full() {
     let turn: Turn = serde_json::from_value(json!({
         "id": "turn_123",
