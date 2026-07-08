@@ -2568,6 +2568,11 @@ fn provider_reachability_plan(config: &Config) -> ReachabilityPlan {
         &config.model_provider_id,
         &config.model_provider.name,
         config.model_provider.base_url.as_deref(),
+        config
+            .model_provider
+            .aws
+            .as_ref()
+            .and_then(|aws| aws.region.as_deref()),
         config.model_provider.query_params.as_ref(),
         config.model_provider.is_amazon_bedrock(),
         &config.chatgpt_base_url,
@@ -2580,6 +2585,7 @@ fn default_reachability_plan() -> ReachabilityPlan {
         "openai",
         "OpenAI",
         /*provider_base_url*/ None,
+        /*provider_aws_region*/ None,
         /*provider_query_params*/ None,
         /*is_amazon_bedrock*/ false,
         "https://chatgpt.com/backend-api/",
@@ -2617,10 +2623,16 @@ fn provider_reachability_plan_from_parts(
     provider_id: &str,
     provider_name: &str,
     provider_base_url: Option<&str>,
+    provider_aws_region: Option<&str>,
     provider_query_params: Option<&HashMap<String, String>>,
     is_amazon_bedrock: bool,
     chatgpt_base_url: &str,
 ) -> ReachabilityPlan {
+    let bedrock_base_url = provider_aws_region
+        .map(str::trim)
+        .filter(|region| !region.is_empty())
+        .map(|region| format!("https://bedrock-mantle.{region}.api.aws/openai/v1"));
+    let provider_base_url = bedrock_base_url.as_deref().or(provider_base_url);
     let provider_route_probe_url = provider_base_url
         .or_else(|| {
             (mode == ProviderAuthReachabilityMode::ApiKey).then_some("https://api.openai.com/v1")
@@ -3618,6 +3630,7 @@ mod tests {
                 "azure",
                 "azure",
                 Some("https://example.openai.azure.com/openai/v1"),
+                /*provider_aws_region*/ None,
                 /*provider_query_params*/ None,
                 /*is_amazon_bedrock*/ false,
                 "https://chatgpt.com/backend-api/",
@@ -3644,6 +3657,7 @@ mod tests {
                 "custom",
                 "Custom",
                 Some("https://example.com/openai/v1/"),
+                /*provider_aws_region*/ None,
                 Some(&query_params),
                 /*is_amazon_bedrock*/ false,
                 "https://chatgpt.com/backend-api/",
@@ -3669,12 +3683,21 @@ mod tests {
             "amazon-bedrock",
             "Amazon Bedrock",
             Some("https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"),
+            Some("us-west-2"),
             /*provider_query_params*/ None,
             /*is_amazon_bedrock*/ true,
             "https://chatgpt.com/backend-api/",
         );
 
-        assert_eq!(plan.endpoints[0].route_probe_url, None);
+        assert_eq!(
+            plan.endpoints,
+            vec![ReachabilityEndpoint {
+                label: "amazon-bedrock API".to_string(),
+                url: "https://bedrock-mantle.us-west-2.api.aws/openai/v1".to_string(),
+                required: true,
+                route_probe_url: None,
+            }]
+        );
     }
 
     #[test]
@@ -3684,6 +3707,7 @@ mod tests {
             "openai",
             "OpenAI",
             /*provider_base_url*/ None,
+            /*provider_aws_region*/ None,
             /*provider_query_params*/ None,
             /*is_amazon_bedrock*/ false,
             "https://chatgpt.com/backend-api/",
@@ -3737,6 +3761,7 @@ mod tests {
             "openai",
             "OpenAI",
             Some(&format!("http://{addr}/xxxx")),
+            /*provider_aws_region*/ None,
             /*provider_query_params*/ None,
             /*is_amazon_bedrock*/ false,
             "https://chatgpt.com/backend-api/",
@@ -3778,6 +3803,7 @@ mod tests {
             "openai",
             "OpenAI",
             Some(&format!("http://{addr}/v1")),
+            /*provider_aws_region*/ None,
             /*provider_query_params*/ None,
             /*is_amazon_bedrock*/ false,
             "https://chatgpt.com/backend-api/",
