@@ -45,6 +45,7 @@ use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 pub(crate) struct SessionServices {
     /// Mirror of the latest manager for extension resource clients that predate runtime snapshots.
@@ -113,7 +114,10 @@ impl SessionServices {
     ) -> Result<()> {
         let runtime =
             self.publish_mcp_runtime(config, runtime_context, available_environment_ids, manager);
-        runtime.manager().validate_required_servers().await
+        if let Err(error) = runtime.manager().validate_required_servers().await {
+            warn!("required MCP server validation failed during startup: {error:#}");
+        }
+        Ok(())
     }
 
     pub(crate) fn publish_mcp_runtime(

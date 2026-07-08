@@ -161,6 +161,52 @@ fn user_turn_with_permission_profile(
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_required_mcp_server_does_not_block_thread_startup() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let mut servers = config.mcp_servers.get().clone();
+        servers.insert(
+            "offline".to_string(),
+            McpServerConfig {
+                auth: Default::default(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "missing-required-mcp-server".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                environment_id: "local".to_string(),
+                enabled: true,
+                required: true,
+                supports_parallel_tool_calls: false,
+                disabled_reason: None,
+                startup_timeout_sec: Some(Duration::from_secs(1)),
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            },
+        );
+        config
+            .mcp_servers
+            .set(servers)
+            .expect("test MCP servers should accept any configuration");
+    });
+
+    let test = builder.build(&server).await?;
+    let runtime = test.codex.current_mcp_runtime().await;
+    assert!(runtime.manager().has_servers());
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum McpCallEvent {
     Begin(String),
