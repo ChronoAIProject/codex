@@ -119,6 +119,12 @@ fn response_completed_chunks(response_id: &str) -> Vec<StreamingSseChunk> {
     ]
 }
 
+fn ev_completed_with_end_turn(response_id: &str, end_turn: bool) -> Value {
+    let mut event = ev_completed(response_id);
+    event["response"]["end_turn"] = json!(end_turn);
+    event
+}
+
 async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
         .with_model("gpt-5.4")
@@ -701,6 +707,30 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
 
     let requests = server.requests().await;
     assert_two_responses_input_snapshot("pending_input_queued_mail_after_commentary", &requests);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_response_end_turn_false_without_tool_output_does_not_continue() {
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("final answer")),
+        chunk(ev_message_item_done("msg-1", "final answer")),
+        chunk(ev_completed_with_end_turn("resp-1", false)),
+    ];
+
+    let (server, _completions) = start_streaming_sse_server(vec![first_chunks]).await;
+    let codex = build_codex(&server).await;
+
+    submit_user_input(&codex, "first prompt").await;
+
+    wait_for_agent_message(&codex, "final answer").await;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 1);
 
     server.shutdown().await;
 }
