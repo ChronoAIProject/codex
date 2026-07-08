@@ -192,26 +192,7 @@ where
         }
         InsertHistoryMode::Standard => {
             let writer = terminal.backend_mut();
-            let cursor_top = if area.bottom() < screen_size.height {
-                // If the viewport is not at the bottom of the screen, scroll it down to make room.
-                // Don't scroll it past the bottom of the screen.
-                let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
-
-                let top_1based = area.top() + 1;
-                queue!(writer, SetScrollRegion(top_1based..screen_size.height))?;
-                queue!(writer, MoveTo(/*x*/ 0, area.top()))?;
-                for _ in 0..scroll_amount {
-                    queue!(writer, Print("\x1bM"))?;
-                }
-                queue!(writer, ResetScrollRegion)?;
-
-                let cursor_top = area.top().saturating_sub(1);
-                area.y += scroll_amount;
-                should_update_area = true;
-                cursor_top
-            } else {
-                area.top().saturating_sub(1)
-            };
+            let cursor_top = area.top().saturating_sub(1);
 
             // Limit the scroll region to the lines from the top of the screen to the
             // top of the viewport. With this in place, when we add lines inside this
@@ -733,6 +714,23 @@ mod tests {
                 cell.fgcolor()
             );
         }
+    }
+
+    #[test]
+    fn vt100_insert_history_preserves_viewport_above_screen_bottom() {
+        let width: u16 = 40;
+        let height: u16 = 10;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(
+            /*x*/ 0, /*y*/ 2, /*width*/ width, /*height*/ 3,
+        );
+        term.set_viewport_area(viewport);
+
+        insert_history_lines(&mut term, vec![Line::from("new finalized row")])
+            .expect("insert history");
+
+        assert_eq!(term.viewport_area, viewport);
     }
 
     #[test]
