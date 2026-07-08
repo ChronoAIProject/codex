@@ -143,37 +143,31 @@ release_asset_digest_or_empty() {
   resolved_version="$2"
   release_json="$(download_text "$(release_metadata_url "$resolved_version")")"
 
-  digest="$(printf '%s\n' "$release_json" | awk -v asset="$asset" '
-    /"name":[[:space:]]*"[^"]+"/ {
-      name = $0
-      sub(/^.*"name":[[:space:]]*"/, "", name)
-      sub(/".*$/, "", name)
-      if (name == asset) {
-        in_asset = 1
-        asset_depth = depth
-      }
-    }
-
-    in_asset && /"digest":[[:space:]]*"[^"]+"/ {
-      digest = $0
-      sub(/^.*"digest":[[:space:]]*"/, "", digest)
-      sub(/".*$/, "", digest)
-    }
-
+  digest="$(printf '%s\n' "$release_json" | tr '\n' ' ' | awk -v asset="$asset" '
     {
-      line = $0
-      opens = gsub(/\{/, "{", line)
-      closes = gsub(/\}/, "}", line)
-      depth += opens - closes
+      remaining = $0
+      while (match(remaining, /"name":[[:space:]]*"[^"]+"/)) {
+        candidate = substr(remaining, RSTART, RLENGTH)
+        sub(/^"name":[[:space:]]*"/, "", candidate)
+        sub(/"$/, "", candidate)
+        remaining = substr(remaining, RSTART + RLENGTH)
+        next_name = index(remaining, "\"name\"")
+        if (next_name > 0) {
+          asset_json = substr(remaining, 1, next_name - 1)
+        } else {
+          asset_json = remaining
+        }
+        if (candidate != asset) {
+          continue
+        }
 
-      if (in_asset && depth < asset_depth) {
-        in_asset = 0
-      }
-    }
-
-    END {
-      if (digest != "") {
-        print digest
+        if (match(asset_json, /"digest":[[:space:]]*"sha256:[0-9a-fA-F]{64}"/)) {
+          digest = substr(asset_json, RSTART, RLENGTH)
+          sub(/^"digest":[[:space:]]*"/, "", digest)
+          sub(/"$/, "", digest)
+          print digest
+          exit
+        }
       }
     }
   ')"
@@ -779,6 +773,10 @@ update_visible_command() {
 verify_visible_command() {
   "$BIN_PATH" --version >/dev/null
 }
+
+if [ "${CODEX_INSTALL_TEST_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0
+fi
 
 parse_args "$@"
 
