@@ -1315,6 +1315,43 @@ struct SamplingRequestResult {
     last_agent_message: Option<String>,
 }
 
+struct PendingAssistantOutputItem {
+    item: ResponseItem,
+    previously_streamed_item: Option<TurnItem>,
+}
+
+fn can_coalesce_assistant_output_item(previous: &ResponseItem, next: &ResponseItem) -> bool {
+    let (
+        ResponseItem::Message {
+            id: previous_id,
+            role: previous_role,
+            phase: previous_phase,
+            ..
+        },
+        ResponseItem::Message {
+            id: next_id,
+            role: next_role,
+            phase: next_phase,
+            ..
+        },
+    ) = (previous, next)
+    else {
+        return false;
+    };
+    let (Some(previous_text), Some(next_text)) = (
+        last_assistant_message_from_item(previous, /*plan_mode*/ false),
+        last_assistant_message_from_item(next, /*plan_mode*/ false),
+    ) else {
+        return false;
+    };
+    previous_role == "assistant"
+        && next_role == "assistant"
+        && previous_phase == next_phase
+        && (previous_id == next_id || previous_id.is_some() && next_id.is_some())
+        && next_text.starts_with(&previous_text)
+        && next_text != previous_text
+}
+
 /// Ephemeral per-response state for streaming a single proposed plan.
 /// This is intentionally not persisted or stored in session/state since it
 /// only exists while a response is actively streaming. The final plan text
@@ -1849,6 +1886,28 @@ async fn handle_assistant_item_done_in_plan_mode(
     false
 }
 
+async fn flush_pending_assistant_output_item(
+    pending: &mut Option<PendingAssistantOutputItem>,
+    ctx: &mut HandleOutputCtx,
+    in_flight: &mut FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>>,
+    last_agent_message: &mut Option<String>,
+    needs_follow_up: &mut bool,
+) -> CodexResult<()> {
+    let Some(pending) = pending.take() else {
+        return Ok(());
+    };
+    let output_result =
+        handle_output_item_done(ctx, pending.item, pending.previously_streamed_item).await?;
+    if let Some(tool_future) = output_result.tool_future {
+        in_flight.push_back(tool_future);
+    }
+    if let Some(agent_message) = output_result.last_agent_message {
+        *last_agent_message = Some(agent_message);
+    }
+    *needs_follow_up |= output_result.needs_follow_up;
+    Ok(())
+}
+
 #[instrument(level = "trace", skip_all)]
 async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>>,
@@ -1938,6 +1997,7 @@ async fn try_run_sampling_request(
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
+    let mut pending_assistant_output_item: Option<PendingAssistantOutputItem> = None;
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
@@ -2056,14 +2116,59 @@ async fn try_run_sampling_request(
                     | ResponseItem::Other => false,
                 };
 
-                let output_result =
-                    match handle_output_item_done(&mut ctx, item, previously_streamed_item)
-                        .instrument(handle_responses)
-                        .await
+                let is_assistant_message = matches!(
+                    &item,
+                    ResponseItem::Message { role, .. } if role == "assistant"
+                );
+                if is_assistant_message {
+                    if pending_assistant_output_item
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            can_coalesce_assistant_output_item(&pending.item, &item)
+                        })
                     {
-                        Ok(output_result) => output_result,
-                        Err(err) => break Err(err),
-                    };
+                        pending_assistant_output_item = Some(PendingAssistantOutputItem {
+                            item,
+                            previously_streamed_item,
+                        });
+                        continue;
+                    }
+                    if let Err(err) = flush_pending_assistant_output_item(
+                        &mut pending_assistant_output_item,
+                        &mut ctx,
+                        &mut in_flight,
+                        &mut last_agent_message,
+                        &mut needs_follow_up,
+                    )
+                    .instrument(handle_responses)
+                    .await
+                    {
+                        break Err(err);
+                    }
+                    pending_assistant_output_item = Some(PendingAssistantOutputItem {
+                        item,
+                        previously_streamed_item,
+                    });
+                    continue;
+                }
+
+                let output_result = match async {
+                    flush_pending_assistant_output_item(
+                        &mut pending_assistant_output_item,
+                        &mut ctx,
+                        &mut in_flight,
+                        &mut last_agent_message,
+                        &mut needs_follow_up,
+                    )
+                    .await?;
+                    handle_output_item_done(&mut ctx, item, previously_streamed_item).await
+                }
+                .instrument(handle_responses)
+                .await
+                {
+                    Ok(output_result) => output_result,
+                    Err(err) => break Err(err),
+                };
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
                 }
@@ -2214,6 +2319,24 @@ async fn try_run_sampling_request(
                 end_turn,
                 ..
             } => {
+                let mut ctx = HandleOutputCtx {
+                    sess: sess.clone(),
+                    turn_context: turn_context.clone(),
+                    turn_store: Arc::clone(&turn_store),
+                    tool_runtime: tool_runtime.clone(),
+                    cancellation_token: cancellation_token.child_token(),
+                };
+                if let Err(err) = flush_pending_assistant_output_item(
+                    &mut pending_assistant_output_item,
+                    &mut ctx,
+                    &mut in_flight,
+                    &mut last_agent_message,
+                    &mut needs_follow_up,
+                )
+                .await
+                {
+                    break Err(err);
+                }
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,

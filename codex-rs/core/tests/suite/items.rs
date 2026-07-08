@@ -212,6 +212,69 @@ async fn assistant_message_item_is_emitted() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cumulative_assistant_message_snapshots_are_coalesced() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let TestCodex { codex, .. } = test_codex().build(&server).await?;
+
+    let first_response = sse(vec![
+        ev_response_created("resp-1"),
+        ev_assistant_message("msg-1", "partial"),
+        ev_assistant_message("msg-2", "partial final"),
+        ev_completed("resp-1"),
+    ]);
+    mount_sse_once(&server, first_response).await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "please summarize results".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let second_response = sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]);
+    let second_mock = mount_sse_once(&server, second_response).await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "continue".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let assistant_messages: Vec<String> = second_mock
+        .single_request()
+        .inputs_of_type("message")
+        .into_iter()
+        .filter(|item| item["role"] == "assistant")
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .filter(|span| span["type"] == "output_text")
+        .filter_map(|span| span["text"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(assistant_messages, vec!["partial final".to_string()]);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reasoning_item_is_emitted() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
