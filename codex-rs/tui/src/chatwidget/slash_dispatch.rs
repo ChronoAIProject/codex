@@ -418,6 +418,9 @@ impl ChatWidget {
             SlashCommand::Mention => {
                 self.insert_str("@");
             }
+            SlashCommand::Loop => {
+                self.add_error_message("Usage: /loop <minutes>m <message>".to_string());
+            }
             SlashCommand::Skills => {
                 self.open_skills_menu();
             }
@@ -848,6 +851,21 @@ impl ChatWidget {
                     self.clear_live_goal_submission();
                 }
             }
+            SlashCommand::Loop if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                if self.is_user_turn_pending_or_running() {
+                    self.queue_user_message(user_message);
+                } else {
+                    self.submit_user_message(user_message);
+                }
+            }
             SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
                     let command = cmd.command();
@@ -1048,6 +1066,7 @@ impl ChatWidget {
             | SlashCommand::Stop
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate
+            | SlashCommand::Loop
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

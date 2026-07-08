@@ -47,6 +47,7 @@ pub enum SlashCommand {
     Raw,
     Diff,
     Mention,
+    Loop,
     Status,
     Usage,
     DebugConfig,
@@ -99,6 +100,7 @@ impl SlashCommand {
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
+            SlashCommand::Loop => "ask Codex to repeat a prompt: /loop <minutes>m <message>",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
@@ -166,6 +168,7 @@ impl SlashCommand {
                 | SlashCommand::Side
                 | SlashCommand::Btw
                 | SlashCommand::Resume
+                | SlashCommand::Loop
                 | SlashCommand::SandboxReadRoot
         )
     }
@@ -219,6 +222,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Usage
+            | SlashCommand::Loop
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -286,6 +290,13 @@ mod tests {
     }
 
     #[test]
+    fn loop_command_parses_and_accepts_inline_args() {
+        assert_eq!(SlashCommand::Loop.command(), "loop");
+        assert_eq!(SlashCommand::from_str("loop"), Ok(SlashCommand::Loop));
+        assert!(SlashCommand::Loop.supports_inline_args());
+    }
+
+    #[test]
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
@@ -295,6 +306,7 @@ mod tests {
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+        assert!(SlashCommand::Loop.available_during_task());
     }
 
     #[test]
