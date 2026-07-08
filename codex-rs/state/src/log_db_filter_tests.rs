@@ -1,10 +1,48 @@
 use pretty_assertions::assert_eq;
+use tracing::Level;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
 use super::*;
+
+#[test]
+fn default_filter_caps_payload_heavy_targets_below_trace() {
+    let filter = default_filter();
+
+    assert_eq!(
+        [
+            (
+                "codex_client::transport",
+                filter.would_enable("codex_client::transport", &Level::TRACE),
+            ),
+            (
+                "codex_api::sse::responses",
+                filter.would_enable("codex_api::sse::responses", &Level::TRACE),
+            ),
+            (
+                "codex_state",
+                filter.would_enable("codex_state", &Level::TRACE)
+            ),
+            (
+                "codex_client::transport",
+                filter.would_enable("codex_client::transport", &Level::DEBUG),
+            ),
+            (
+                "codex_api::sse::responses",
+                filter.would_enable("codex_api::sse::responses", &Level::DEBUG),
+            ),
+        ],
+        [
+            ("codex_client::transport", false),
+            ("codex_api::sse::responses", false),
+            ("codex_state", true),
+            ("codex_client::transport", true),
+            ("codex_api::sse::responses", true),
+        ]
+    );
+}
 
 #[tokio::test]
 async fn sqlite_sink_drops_low_level_opentelemetry_sdk_logs() {
