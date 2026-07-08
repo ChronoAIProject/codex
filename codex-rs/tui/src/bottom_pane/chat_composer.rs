@@ -2934,14 +2934,18 @@ impl ChatComposer {
         );
         let trimmed_rest = inline_command.rest.trim();
         args_elements = Self::trim_text_elements(inline_command.rest, trimmed_rest, args_elements);
-        let SlashCommandItem::Builtin(cmd) = command else {
-            return None;
-        };
-        Some(InputResult::CommandWithArgs(
-            cmd,
-            trimmed_rest.to_string(),
-            args_elements,
-        ))
+        match command {
+            SlashCommandItem::Builtin(cmd) => Some(InputResult::CommandWithArgs(
+                cmd,
+                trimmed_rest.to_string(),
+                args_elements,
+            )),
+            SlashCommandItem::ServiceTier(command) => {
+                self.draft.textarea.set_text_clearing_elements("");
+                self.draft.is_bash_mode = false;
+                Some(InputResult::ServiceTierCommand(command))
+            }
+        }
     }
 
     /// Expand pending placeholders and extract normalized inline-command args.

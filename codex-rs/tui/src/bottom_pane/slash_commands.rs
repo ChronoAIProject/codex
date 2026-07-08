@@ -34,7 +34,7 @@ impl SlashCommandItem {
     pub(crate) fn supports_inline_args(&self) -> bool {
         match self {
             Self::Builtin(cmd) => cmd.supports_inline_args(),
-            Self::ServiceTier(_) => false,
+            Self::ServiceTier(_) => true,
         }
     }
 
@@ -342,6 +342,18 @@ mod tests {
         assert_eq!(
             find_slash_command("fast", flags, from_ref(&command)),
             Some(SlashCommandItem::ServiceTier(command))
+        );
+    }
+
+    #[test]
+    fn service_tier_commands_support_inline_args() {
+        assert!(
+            SlashCommandItem::ServiceTier(ServiceTierCommand {
+                id: "priority".to_string(),
+                name: "fast".to_string(),
+                description: "fastest inference".to_string(),
+            })
+            .supports_inline_args()
         );
     }
 }

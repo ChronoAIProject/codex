@@ -2656,6 +2656,39 @@ async fn fast_slash_command_updates_and_persists_local_service_tier() {
 }
 
 #[tokio::test]
+async fn fast_slash_command_with_args_disables_fast_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+
+    submit_composer_text(&mut chat, "/fast off");
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
+                ..
+            }) if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        )),
+        "expected /fast off to reset service tier; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistServiceTierSelection {
+                service_tier: Some(service_tier),
+            }
+            if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        )),
+        "expected /fast off to persist default service tier; events: {events:?}"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn fast_keybinding_toggle_uses_same_events_as_fast_slash_command() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     set_fast_mode_test_catalog(&mut chat);
