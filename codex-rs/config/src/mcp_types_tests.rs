@@ -107,6 +107,35 @@ fn deserialize_stdio_command_server_config_with_arg_with_args_and_env() {
 }
 
 #[test]
+fn deserialize_stdio_command_server_config_expands_env_placeholders() {
+    let expected_path = std::env::var("PATH").expect("PATH should be set in test environment");
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            command = "echo"
+            env = { "PATH_COPY" = "${PATH}", "MISSING" = "${CODEX_TEST_ENV_PLACEHOLDER_MISSING}" }
+        "#,
+    )
+    .expect("should deserialize command config");
+
+    assert_eq!(
+        cfg.transport,
+        McpServerTransportConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec![],
+            env: Some(HashMap::from([
+                ("PATH_COPY".to_string(), expected_path),
+                (
+                    "MISSING".to_string(),
+                    "${CODEX_TEST_ENV_PLACEHOLDER_MISSING}".to_string()
+                ),
+            ])),
+            env_vars: Vec::new(),
+            cwd: None,
+        }
+    );
+}
+
+#[test]
 fn deserialize_stdio_command_server_config_with_env_vars() {
     let cfg: McpServerConfig = toml::from_str(
         r#"

@@ -367,6 +367,11 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             for env_var in &env_vars {
                 env_var.validate_source()?;
             }
+            let env = env.map(|env| {
+                env.into_iter()
+                    .map(|(key, value)| (key, expand_env_placeholders(&value)))
+                    .collect()
+            });
             McpServerTransportConfig::Stdio {
                 command,
                 args: args.unwrap_or_default(),
@@ -427,6 +432,46 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
 const fn default_enabled() -> bool {
     true
+}
+
+fn expand_env_placeholders(value: &str) -> String {
+    let mut expanded = String::new();
+    let mut remainder = value;
+
+    while let Some(start) = remainder.find("${") {
+        let (prefix, after_prefix) = remainder.split_at(start);
+        expanded.push_str(prefix);
+        let after_open = &after_prefix[2..];
+        let Some(end) = after_open.find('}') else {
+            expanded.push_str(after_prefix);
+            return expanded;
+        };
+
+        let name = &after_open[..end];
+        if is_env_placeholder_name(name)
+            && let Ok(env_value) = std::env::var(name)
+        {
+            expanded.push_str(&env_value);
+        } else {
+            expanded.push_str("${");
+            expanded.push_str(name);
+            expanded.push('}');
+        }
+        remainder = &after_open[end + 1..];
+    }
+
+    expanded.push_str(remainder);
+    expanded
+}
+
+fn is_env_placeholder_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
