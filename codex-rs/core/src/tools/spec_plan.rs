@@ -91,6 +91,7 @@ use codex_tools::shell_command_backend_for_features;
 use codex_tools::shell_type_for_model_and_features;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::instrument;
 use tracing::warn;
@@ -386,20 +387,50 @@ fn image_generation_tool_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
-    (turn_context
-        .provider
-        .info()
-        .uses_openai_actor_authorization()
-        || (turn_context.provider.info().requires_openai_auth
-            && turn_context
-                .auth_manager
-                .as_deref()
-                .is_some_and(AuthManager::current_auth_uses_codex_backend)))
+    (openai_authenticated_image_generation_provider(turn_context)
+        || turn_context
+            .provider
+            .info()
+            .uses_openai_actor_authorization())
         && turn_context.provider.capabilities().image_generation
         && turn_context
             .model_info
             .input_modalities
             .contains(&InputModality::Image)
+}
+
+fn openai_authenticated_image_generation_provider(turn_context: &TurnContext) -> bool {
+    if !turn_context.provider.info().requires_openai_auth {
+        return false;
+    }
+
+    turn_context
+        .auth_manager
+        .as_deref()
+        .is_some_and(AuthManager::current_auth_uses_codex_backend)
+        || custom_openai_provider_endpoint(turn_context)
+}
+
+fn custom_openai_provider_endpoint(turn_context: &TurnContext) -> bool {
+    if !turn_context.provider.info().is_openai() {
+        return false;
+    }
+
+    let Some(base_url) = turn_context.provider.info().base_url.as_deref() else {
+        return false;
+    };
+
+    let Ok(url) = url::Url::parse(base_url) else {
+        return true;
+    };
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+
+    host != "localhost"
+        && host
+            .parse::<IpAddr>()
+            .map_or(true, |addr| !addr.is_loopback())
 }
 
 fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool {
