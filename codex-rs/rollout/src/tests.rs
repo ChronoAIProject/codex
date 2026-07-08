@@ -130,6 +130,29 @@ async fn find_thread_path_falls_back_when_db_path_is_stale() {
 }
 
 #[tokio::test]
+async fn find_thread_path_falls_back_when_stale_db_path_parent_is_missing() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let uuid = Uuid::from_u128(1302);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+    let runtime = insert_state_db_thread(
+        home,
+        thread_id,
+        home.join(format!(
+            "sessions/2099/01/01/rollout-2099-01-01T00-00-00-{uuid}.jsonl"
+        ))
+        .as_path(),
+        /*archived*/ false,
+    )
+    .await;
+
+    let found = find_thread_path_by_id_str(home, &uuid.to_string(), Some(runtime.as_ref()))
+        .await
+        .expect("lookup should succeed");
+    assert_eq!(found, None);
+}
+
+#[tokio::test]
 async fn read_thread_item_from_rollout_rejects_unknown_canonical_history_mode() {
     let temp = TempDir::new().unwrap();
     let home = temp.path();

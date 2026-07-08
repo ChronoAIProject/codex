@@ -1401,7 +1401,7 @@ async fn find_thread_path_by_id_str_in_subdir(
 
     let mut root = codex_home.to_path_buf();
     root.push(subdir);
-    if !root.exists() {
+    if !root.exists() && unverified_db_path.is_some() {
         return Ok(unverified_db_path);
     }
     let (filename_match, filename_scan_error) = match find_rollout_path_by_id_from_filenames(

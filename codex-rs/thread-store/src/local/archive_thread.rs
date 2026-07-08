@@ -176,4 +176,62 @@ mod tests {
         assert!(updated.archived_at.is_some());
         assert_eq!(updated.recency_at, metadata.recency_at);
     }
+
+    #[tokio::test]
+    async fn archive_thread_falls_back_to_filesystem_when_sqlite_path_is_stale() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(1202);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        runtime
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await
+            .expect("backfill should be complete");
+        let stale_path = home
+            .path()
+            .join("sessions/2099/01/01")
+            .join(format!("rollout-2099-01-01T00-00-00-{uuid}.jsonl"));
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            stale_path,
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.model_provider = Some(config.default_model_provider_id.clone());
+        builder.cwd = home.path().to_path_buf();
+        builder.cli_version = Some("test_version".to_string());
+        let metadata = builder.build(config.default_model_provider_id.as_str());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive thread");
+
+        let archived_path = home
+            .path()
+            .join(ARCHIVED_SESSIONS_SUBDIR)
+            .join(active_path.file_name().expect("file name"));
+        assert!(!active_path.exists());
+        assert!(archived_path.exists());
+        let updated = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("state db read should succeed")
+            .expect("thread metadata should exist");
+        assert_eq!(updated.rollout_path, archived_path);
+        assert!(updated.archived_at.is_some());
+    }
 }
