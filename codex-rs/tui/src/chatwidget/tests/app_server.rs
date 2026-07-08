@@ -1036,6 +1036,25 @@ async fn live_app_server_failed_turn_consolidates_streamed_answer() {
 }
 
 #[tokio::test]
+async fn streamed_answer_final_payload_after_flush_is_not_rendered_twice() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_turn_started(&mut chat, "turn-1");
+    while rx.try_recv().is_ok() {}
+
+    let message = "Does that sound good?";
+    handle_agent_message_delta(&mut chat, message);
+    chat.finalize_completed_assistant_message(/*message*/ None);
+    complete_assistant_message(&mut chat, "msg-1", message, Some(MessagePhase::FinalAnswer));
+
+    let consolidated_messages = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter(|event| matches!(event, AppEvent::ConsolidateAgentMessage { .. }))
+        .count();
+
+    assert_eq!(consolidated_messages, 1);
+}
+
+#[tokio::test]
 async fn live_app_server_stream_recovery_restores_previous_status_header() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

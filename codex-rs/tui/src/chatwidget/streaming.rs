@@ -96,12 +96,17 @@ impl ChatWidget {
 
     pub(super) fn finalize_completed_assistant_message(&mut self, message: Option<&str>) {
         // If we have a stream_controller, the finalized message payload is redundant because the
-        // visible content has already been accumulated through deltas.
+        // visible content has already been accumulated through deltas. The same is true if the
+        // stream was already finalized before the item completion arrived.
         if self.stream_controller.is_none()
+            && !self.transcript.saw_agent_message_delta_this_turn
             && let Some(message) = message
             && !message.is_empty()
         {
             self.handle_streaming_delta(message.to_string());
+        }
+        if message.is_some() {
+            self.transcript.saw_agent_message_delta_this_turn = false;
         }
         self.flush_answer_stream_with_separator();
         self.handle_stream_finished();
@@ -109,6 +114,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_agent_message_delta(&mut self, delta: String) {
+        self.transcript.saw_agent_message_delta_this_turn = true;
         self.handle_streaming_delta(delta);
     }
 
