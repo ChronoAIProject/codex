@@ -23,7 +23,7 @@ use crate::sandbox_utils::inject_git_safe_directory;
 use crate::setup::effective_write_roots_for_permissions;
 use crate::token::LocalSid;
 use crate::token::create_readonly_token_with_cap;
-use crate::token::create_workspace_write_token_with_caps_from;
+use crate::token::create_workspace_write_token_with_caps_and_user_from;
 use crate::token::get_current_token_for_restriction;
 use crate::token::get_logon_sid_bytes;
 use crate::workspace_acl::is_command_cwd_root;
@@ -161,7 +161,8 @@ pub(crate) fn prepare_legacy_session_security(
                 .iter()
                 .map(|root| root.sid.as_ptr())
                 .collect();
-            let h_token = create_workspace_write_token_with_caps_from(base, cap_ptrs.as_slice());
+            let h_token =
+                create_workspace_write_token_with_caps_and_user_from(base, cap_ptrs.as_slice());
             CloseHandle(base);
             let h_token = h_token?;
             (h_token, None, None, write_root_sids)
