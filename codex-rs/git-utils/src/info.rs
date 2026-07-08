@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -847,7 +848,19 @@ fn find_ancestor_git_entry(base_dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
     loop {
         let dot_git = dir.join(".git");
-        if dot_git.exists() {
+        let has_valid_dot_git = if dot_git.is_dir() {
+            dot_git.join("HEAD").is_file()
+        } else {
+            fs::read_to_string(&dot_git)
+                .ok()
+                .and_then(|contents| {
+                    let git_dir = contents.trim().strip_prefix("gitdir:")?.trim();
+                    (!git_dir.is_empty()).then_some(())
+                })
+                .is_some()
+        };
+
+        if has_valid_dot_git {
             return Some((dir, dot_git));
         }
 
@@ -907,6 +920,17 @@ mod tests {
     use pretty_assertions::assert_eq;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn get_git_repo_root_ignores_empty_git_directory() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let repo = temp_dir.path().join("repo");
+        let nested = repo.join("nested");
+        std::fs::create_dir_all(repo.join(".git")).expect("create invalid git dir");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+
+        assert_eq!(get_git_repo_root(&nested), None);
+    }
 
     #[test]
     fn canonicalize_git_remote_url_normalizes_github_variants() {
