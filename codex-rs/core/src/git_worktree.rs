@@ -93,6 +93,8 @@ impl WorktreeHandle {
             ));
         }
 
+        let commitish = resolve_detached_commitish(&repo_root, "HEAD").await?;
+
         run_git_command(
             &repo_root,
             [
@@ -105,7 +107,7 @@ impl WorktreeHandle {
                         path.display()
                     )
                 })?,
-                "HEAD",
+                commitish.as_str(),
             ],
         )
         .await
@@ -160,6 +162,32 @@ impl WorktreeHandle {
 
         Ok(())
     }
+}
+
+async fn resolve_detached_commitish(repo_root: &Path, ref_name: &str) -> Result<String> {
+    if ref_exists(repo_root, ref_name).await? {
+        return Ok(ref_name.to_string());
+    }
+
+    let origin_ref = format!("origin/{ref_name}");
+    if ref_exists(repo_root, &origin_ref).await? {
+        return Ok(origin_ref);
+    }
+
+    Ok(ref_name.to_string())
+}
+
+async fn ref_exists(repo_root: &Path, ref_name: &str) -> Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--verify", "--quiet", ref_name]);
+    cmd.current_dir(repo_root);
+    let output = cmd.output().await.with_context(|| {
+        format!(
+            "failed to execute git rev-parse in `{}`",
+            repo_root.display()
+        )
+    })?;
+    Ok(output.status.success())
 }
 
 async fn worktree_registered(repo_root: &Path, target: &Path) -> Result<bool> {
@@ -351,5 +379,86 @@ mod tests {
         assert!(is_registered(&repo, second.path()).await);
 
         second.remove().await.expect("remove worktree");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn creates_worktree_from_remote_head_when_local_head_is_unborn() {
+        let temp = TempDir::new().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).await.expect("create repo dir");
+
+        run_git_with_env(&repo, ["init"], &GIT_ENV)
+            .await
+            .expect("git init");
+        run_git_with_env(&repo, ["config", "user.name", "Test User"], &GIT_ENV)
+            .await
+            .expect("config user.name");
+        run_git_with_env(
+            &repo,
+            ["config", "user.email", "test@example.com"],
+            &GIT_ENV,
+        )
+        .await
+        .expect("config user.email");
+        fs::write(repo.join("README.md"), b"hello world")
+            .await
+            .expect("write file");
+        run_git_with_env(&repo, ["add", "README.md"], &GIT_ENV)
+            .await
+            .expect("git add");
+        let tree = git_stdout_with_env(&repo, ["write-tree"], &GIT_ENV)
+            .await
+            .expect("write tree");
+        let commit =
+            git_stdout_with_env(&repo, ["commit-tree", tree.trim(), "-m", "init"], &GIT_ENV)
+                .await
+                .expect("create commit");
+        run_git_with_env(
+            &repo,
+            ["update-ref", "refs/remotes/origin/main", commit.trim()],
+            &GIT_ENV,
+        )
+        .await
+        .expect("create remote-tracking ref");
+        run_git_with_env(
+            &repo,
+            [
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+            &GIT_ENV,
+        )
+        .await
+        .expect("create origin head");
+
+        let handle = WorktreeHandle::create(&repo, &ConversationId::new())
+            .await
+            .expect("create worktree");
+
+        assert!(handle.path().join("README.md").exists());
+    }
+
+    async fn git_stdout_with_env<'a>(
+        cwd: &Path,
+        args: impl IntoIterator<Item = &'a str>,
+        envs: &[(&str, &str)],
+    ) -> Result<String> {
+        let mut cmd = Command::new("git");
+        cmd.args(args);
+        cmd.current_dir(cwd);
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        let output = cmd.output().await.context("failed to spawn git command")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "git command exited with status {} (cwd: {}): {}",
+                output.status,
+                cwd.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
     }
 }
