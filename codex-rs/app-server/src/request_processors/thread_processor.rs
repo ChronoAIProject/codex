@@ -1174,7 +1174,8 @@ impl ThreadRequestProcessor {
                 initial_history: match session_start_source
                     .unwrap_or(codex_app_server_protocol::ThreadStartSource::Startup)
                 {
-                    codex_app_server_protocol::ThreadStartSource::Startup => InitialHistory::New,
+                    codex_app_server_protocol::ThreadStartSource::Startup
+                    | codex_app_server_protocol::ThreadStartSource::Chatgpt => InitialHistory::New,
                     codex_app_server_protocol::ThreadStartSource::Clear => InitialHistory::Cleared,
                 },
                 history_mode,

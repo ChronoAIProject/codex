@@ -254,7 +254,8 @@
     "ThreadStartSource": {
       "enum": [
         "startup",
-        "clear"
+        "clear",
+        "chatgpt"
       ],
       "type": "string"
     },

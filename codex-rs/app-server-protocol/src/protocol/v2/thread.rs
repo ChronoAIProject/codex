@@ -44,6 +44,7 @@ use ts_rs::TS;
 pub enum ThreadStartSource {
     Startup,
     Clear,
+    Chatgpt,
 }
 
 // === Threads, Turns, and Items ===

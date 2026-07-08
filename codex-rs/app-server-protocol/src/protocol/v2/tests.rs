@@ -3936,6 +3936,27 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn thread_start_params_accept_chatgpt_session_start_source() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "sessionStartSource": "chatgpt"
+    }))
+    .expect("thread/start params should deserialize");
+
+    assert_eq!(
+        params.session_start_source,
+        Some(ThreadStartSource::Chatgpt)
+    );
+    assert_eq!(
+        serde_json::to_value(&params).expect("params should serialize")["sessionStartSource"],
+        "chatgpt"
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        None
+    );
+}
+
+#[test]
 fn thread_lifecycle_responses_default_missing_optional_fields() {
     let response = json!({
         "thread": {
