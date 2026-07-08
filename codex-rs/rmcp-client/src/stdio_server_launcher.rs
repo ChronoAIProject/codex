@@ -252,8 +252,9 @@ impl LocalStdioServerLauncher {
         let cwd = cwd.map(PathBuf::from).unwrap_or(fallback_cwd);
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
+        let (command_program, command_args) = local_stdio_command(resolved_program, args, &envs);
 
-        let mut command = Command::new(resolved_program);
+        let mut command = Command::new(command_program);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
@@ -261,7 +262,7 @@ impl LocalStdioServerLauncher {
             .current_dir(cwd)
             .env_clear()
             .envs(envs)
-            .args(args);
+            .args(command_args);
         #[cfg(unix)]
         command.process_group(0);
 
@@ -296,6 +297,51 @@ impl LocalStdioServerLauncher {
             process,
         })
     }
+}
+
+#[cfg(not(windows))]
+fn local_stdio_command(
+    program: OsString,
+    args: Vec<OsString>,
+    _envs: &HashMap<OsString, OsString>,
+) -> (OsString, Vec<OsString>) {
+    (program, args)
+}
+
+#[cfg(windows)]
+fn local_stdio_command(
+    program: OsString,
+    args: Vec<OsString>,
+    envs: &HashMap<OsString, OsString>,
+) -> (OsString, Vec<OsString>) {
+    if !has_windows_batch_extension(Path::new(&program)) {
+        return (program, args);
+    }
+
+    let shell = envs
+        .get(std::ffi::OsStr::new("COMSPEC"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .unwrap_or_else(|| OsString::from("cmd.exe"));
+    let mut shell_args = Vec::with_capacity(args.len() + 4);
+    shell_args.extend([
+        OsString::from("/d"),
+        OsString::from("/s"),
+        OsString::from("/c"),
+        program,
+    ]);
+    shell_args.extend(args);
+    (shell, shell_args)
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_batch_extension(program: &Path) -> bool {
+    program
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+        })
 }
 
 impl LocalProcessTerminator {
@@ -591,6 +637,48 @@ mod tests {
     use codex_protocol::config_types::EnvironmentVariablePattern;
     use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::shell_environment;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn windows_batch_extension_detection_is_case_insensitive() {
+        assert!(has_windows_batch_extension(Path::new(
+            r"C:\Program Files\nodejs\npx.CMD"
+        )));
+        assert!(has_windows_batch_extension(Path::new(
+            r"C:\Program Files\nodejs\corepack.bat"
+        )));
+        assert!(!has_windows_batch_extension(Path::new(
+            r"C:\Program Files\nodejs\node.exe"
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_stdio_command_runs_batch_files_through_cmd_shell() {
+        let envs = HashMap::from([(
+            OsString::from("COMSPEC"),
+            OsString::from(r"C:\Windows\System32\cmd.exe"),
+        )]);
+
+        let (program, args) = local_stdio_command(
+            OsString::from(r"C:\Program Files\nodejs\npx.cmd"),
+            vec![OsString::from("--yes"), OsString::from("@azure-devops/mcp")],
+            &envs,
+        );
+
+        assert_eq!(program, OsString::from(r"C:\Windows\System32\cmd.exe"));
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("/d"),
+                OsString::from("/s"),
+                OsString::from("/c"),
+                OsString::from(r"C:\Program Files\nodejs\npx.cmd"),
+                OsString::from("--yes"),
+                OsString::from("@azure-devops/mcp"),
+            ]
+        );
+    }
 
     #[test]
     fn remote_env_policy_uses_core_env_without_remote_source_vars() {
