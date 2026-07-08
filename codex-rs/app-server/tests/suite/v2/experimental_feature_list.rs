@@ -423,6 +423,23 @@ async fn experimental_feature_enablement_set_allows_remote_control() -> Result<(
 }
 
 #[tokio::test]
+async fn experimental_feature_enablement_set_allows_workspace_dependencies() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let enablement = BTreeMap::from([("workspace_dependencies".to_string(), true)]);
+
+    let actual = set_experimental_feature_enablement(&mut mcp, enablement.clone()).await?;
+
+    assert_eq!(
+        actual,
+        ExperimentalFeatureEnablementSetResponse { enablement }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn experimental_feature_enablement_set_empty_map_is_no_op() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
