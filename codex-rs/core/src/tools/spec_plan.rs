@@ -349,7 +349,13 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
 
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
     match turn_context.multi_agent_version {
-        MultiAgentVersion::Disabled => false,
+        MultiAgentVersion::Disabled => {
+            turn_context.config.multi_agent_version_from_features() == MultiAgentVersion::V1
+                && !exceeds_thread_spawn_depth_limit(
+                    next_thread_spawn_depth(&turn_context.session_source),
+                    turn_context.config.agent_max_depth,
+                )
+        }
         MultiAgentVersion::V1 => !exceeds_thread_spawn_depth_limit(
             next_thread_spawn_depth(&turn_context.session_source),
             turn_context.config.agent_max_depth,
