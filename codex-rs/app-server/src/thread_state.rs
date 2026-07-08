@@ -145,7 +145,8 @@ impl ThreadState {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
-        self.current_turn_history.handle_event(event);
+        self.current_turn_history
+            .handle_event_for_turn_id(event_turn_id, event);
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
             && !self.current_turn_history.has_active_turn()
         {
@@ -219,6 +220,25 @@ mod tests {
         ];
 
         assert_eq!(results, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn track_current_turn_event_uses_envelope_turn_id_for_implicit_turn() {
+        let mut state = ThreadState::default();
+
+        state.track_current_turn_event(
+            "turn-1",
+            &EventMsg::AgentMessage(codex_protocol::protocol::AgentMessageEvent {
+                message: "working".to_string(),
+                phase: None,
+                memory_citation: None,
+            }),
+        );
+
+        let turn = state
+            .active_turn_snapshot()
+            .expect("implicit turn should be tracked");
+        assert_eq!(turn.id, "turn-1");
     }
 
     fn thread_settings(model: &str) -> ThreadSettings {

@@ -231,6 +231,7 @@ pub struct ThreadHistoryBuilder {
     next_item_index: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
+    current_event_turn_id: Option<String>,
     active_change_set: Option<ThreadHistoryChangeSet>,
 }
 
@@ -248,6 +249,7 @@ impl ThreadHistoryBuilder {
             next_item_index: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
+            current_event_turn_id: None,
             active_change_set: None,
         }
     }
@@ -376,6 +378,12 @@ impl ThreadHistoryBuilder {
             EventMsg::TurnComplete(payload) => self.handle_turn_complete(payload),
             _ => {}
         }
+    }
+
+    pub fn handle_event_for_turn_id(&mut self, turn_id: &str, event: &EventMsg) {
+        self.current_event_turn_id = Some(turn_id.to_string());
+        self.handle_event(event);
+        self.current_event_turn_id = None;
     }
 
     pub fn handle_rollout_item(&mut self, item: &RolloutItem) {
@@ -1280,7 +1288,9 @@ impl ThreadHistoryBuilder {
 
     fn new_turn(&mut self, id: Option<String>) -> PendingTurn {
         let id = id.unwrap_or_else(|| {
-            if self.next_rollout_index == 0 {
+            if let Some(turn_id) = &self.current_event_turn_id {
+                turn_id.clone()
+            } else if self.next_rollout_index == 0 {
                 Uuid::now_v7().to_string()
             } else {
                 format!("rollout-{}", self.current_rollout_index)
