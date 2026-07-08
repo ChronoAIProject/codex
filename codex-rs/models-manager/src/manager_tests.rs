@@ -420,7 +420,7 @@ async fn get_model_info_matches_hyphenated_provider_namespace_suffix() {
 }
 
 #[tokio::test]
-async fn get_model_info_rejects_multi_segment_namespace_suffix_matching() {
+async fn get_model_info_matches_multi_segment_namespace_suffix() {
     let codex_home = tempdir().expect("temp dir");
     let config = ModelsManagerConfig::default();
     let manager = openai_manager_for_tests(
@@ -439,7 +439,7 @@ async fn get_model_info_rejects_multi_segment_namespace_suffix_matching() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(model_info.used_fallback_model_metadata);
+    assert!(!model_info.used_fallback_model_metadata);
 }
 
 #[tokio::test]

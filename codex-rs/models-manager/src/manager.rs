@@ -519,22 +519,30 @@ fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option
 }
 
 fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
-    // Retry metadata lookup for a single namespaced slug like `namespace/model-name`.
+    // Retry metadata lookup for namespaced slugs like `namespace/model-name`.
     //
-    // This only strips one leading namespace segment and only when the namespace looks
-    // like a simple provider id to avoid broadly matching arbitrary aliases.
-    let (namespace, suffix) = model.split_once('/')?;
-    if suffix.contains('/') {
-        return None;
+    // This only strips leading namespace segments when each namespace looks like
+    // a simple provider id to avoid broadly matching arbitrary aliases.
+    for (slash_index, _) in model.match_indices('/') {
+        let namespace = &model[..slash_index];
+        if namespace
+            .split('/')
+            .all(|segment| is_simple_provider_namespace(segment))
+        {
+            let suffix = &model[slash_index + 1..];
+            if let Some(model_info) = find_model_by_longest_prefix(suffix, candidates) {
+                return Some(model_info);
+            }
+        }
     }
-    if namespace.is_empty()
-        || !namespace
+    None
+}
+
+fn is_simple_provider_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return None;
-    }
-    find_model_by_longest_prefix(suffix, candidates)
 }
 
 pub(crate) fn construct_model_info_from_candidates(
