@@ -27,6 +27,35 @@ fn map_api_error_maps_server_overloaded_from_503_body() {
 }
 
 #[test]
+fn map_api_error_does_not_map_slow_down_to_model_capacity() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        REQUEST_ID_HEADER,
+        http::HeaderValue::from_static("req-slow"),
+    );
+    let body = serde_json::json!({
+        "error": {
+            "code": "slow_down",
+            "message": "Please slow down."
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::SERVICE_UNAVAILABLE,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(body.clone()),
+    }));
+
+    let CodexErr::UnexpectedStatus(err) = err else {
+        panic!("expected CodexErr::UnexpectedStatus, got {err:?}");
+    };
+    assert_eq!(err.status, http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.body, body);
+    assert_eq!(err.request_id.as_deref(), Some("req-slow"));
+}
+
+#[test]
 fn map_api_error_maps_cloudflare_blocked_response_to_user_message() {
     let mut headers = HeaderMap::new();
     headers.insert(CF_RAY_HEADER, http::HeaderValue::from_static("ray-id"));

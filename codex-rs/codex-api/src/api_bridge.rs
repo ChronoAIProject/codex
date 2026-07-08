@@ -54,7 +54,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                             .get("error")
                             .and_then(|error| error.get("code"))
                             .and_then(serde_json::Value::as_str),
-                        Some("server_is_overloaded" | "slow_down")
+                        Some("server_is_overloaded")
                     )
                 {
                     return CodexErr::ServerOverloaded;
