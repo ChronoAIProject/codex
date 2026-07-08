@@ -792,8 +792,73 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
+    schedule_windows_npm_update_cleanup(action);
     println!("\n🎉 Update ran successfully! Please restart Codex.");
     Ok(())
+}
+
+#[cfg(windows)]
+fn schedule_windows_npm_update_cleanup(action: UpdateAction) {
+    if action != UpdateAction::NpmGlobalLatest {
+        return;
+    }
+
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(openai_dir) = npm_openai_dir_from_exe(&current_exe) else {
+        return;
+    };
+    let script = delayed_npm_cleanup_script(&openai_dir);
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
+        .spawn();
+}
+
+#[cfg(not(windows))]
+fn schedule_windows_npm_update_cleanup(_action: UpdateAction) {}
+
+#[cfg(any(windows, test))]
+fn npm_openai_dir_from_exe(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut components = exe.components();
+    let mut path = std::path::PathBuf::new();
+
+    while let Some(component) = components.next() {
+        path.push(component.as_os_str());
+        if component.as_os_str() == "node_modules" {
+            let scoped_package = components.next()?;
+            let package_name = components.next()?;
+            if scoped_package.as_os_str() == "@openai"
+                && package_name
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| name == "codex" || name.starts_with("codex-"))
+            {
+                path.push(scoped_package.as_os_str());
+                return Some(path);
+            }
+            path.push(scoped_package.as_os_str());
+            path.push(package_name.as_os_str());
+        }
+    }
+
+    None
+}
+
+#[cfg(any(windows, test))]
+fn delayed_npm_cleanup_script(openai_dir: &std::path::Path) -> String {
+    let escaped_openai_dir = openai_dir.display().to_string().replace('\'', "''");
+    format!(
+        "Start-Sleep -Seconds 3; Get-ChildItem -LiteralPath '{escaped_openai_dir}' -Directory -Filter '.codex-*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+    )
 }
 
 fn run_update_command() -> anyhow::Result<()> {
@@ -2916,6 +2981,25 @@ mod tests {
     fn update_parses_as_update_subcommand() {
         let cli = MultitoolCli::try_parse_from(["codex", "update"]).expect("parse");
         assert!(matches!(cli.subcommand, Some(Subcommand::Update)));
+    }
+
+    #[test]
+    fn windows_npm_cleanup_targets_stale_codex_dirs_next_to_package() {
+        let exe = std::path::Path::new(
+            "/prefix/lib/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        );
+
+        let openai_dir = npm_openai_dir_from_exe(exe).expect("derive @openai package dir");
+        assert_eq!(
+            openai_dir,
+            std::path::PathBuf::from("/prefix/lib/node_modules/@openai")
+        );
+
+        let script = delayed_npm_cleanup_script(&openai_dir);
+        assert!(script.contains("-Filter '.codex-*'"), "{script}");
+        assert!(script.contains("-Directory"), "{script}");
+        assert!(script.contains("Remove-Item -Recurse -Force"), "{script}");
+        assert!(!script.contains("codex.exe"), "{script}");
     }
 
     #[test]
