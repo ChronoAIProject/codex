@@ -1,5 +1,6 @@
 use super::*;
 use base64::Engine;
+use codex_protocol::auth::KnownPlan;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -186,6 +187,31 @@ fn map_api_error_maps_usage_limit_limit_name_header() {
             .as_ref()
             .and_then(|snapshot| snapshot.limit_name.as_deref()),
         Some("codex_other")
+    );
+}
+
+#[test]
+fn map_api_error_normalizes_usage_limit_plan_type() {
+    let body = serde_json::json!({
+        "error": {
+            "type": "usage_limit_reached",
+            "plan_type": "PLUS",
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErr::UsageLimitReached(usage_limit) = err else {
+        panic!("expected CodexErr::UsageLimitReached, got {err:?}");
+    };
+    assert_eq!(
+        usage_limit.plan_type,
+        Some(PlanType::Known(KnownPlan::Plus))
     );
 }
 
