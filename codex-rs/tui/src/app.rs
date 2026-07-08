@@ -1348,6 +1348,7 @@ See the Codex keymap documentation for supported actions and examples."
 
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
         let desired_height = self.chat_widget.desired_height(tui.terminal.size()?.width);
+        let previous_viewport_height = tui.terminal.viewport_area.height;
         let mut rendered_area = Rect::default();
         tui.draw_with_resize_reflow(desired_height, |frame| {
             let area = frame.area();
@@ -1358,7 +1359,20 @@ See the Codex keymap documentation for supported actions and examples."
                 frame.set_cursor_position((x, y));
             }
         })?;
+        if previous_viewport_height != 0 && previous_viewport_height != rendered_area.height {
+            self.schedule_inline_viewport_height_reflow(&tui.frame_requester());
+        }
         Ok(rendered_area)
+    }
+
+    fn schedule_inline_viewport_height_reflow(&mut self, frame_requester: &tui::FrameRequester) {
+        if self.has_emitted_history_lines && self.overlay.is_none() {
+            if self.should_mark_reflow_as_stream_time() {
+                self.transcript_reflow.mark_resize_requested_during_stream();
+            }
+            self.transcript_reflow.schedule_immediate();
+            frame_requester.schedule_frame();
+        }
     }
 }
 

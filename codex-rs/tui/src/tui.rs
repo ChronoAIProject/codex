@@ -105,6 +105,7 @@ mod tests {
     use codex_config::types::NotificationCondition;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use ratatui::layout::Size;
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -168,6 +169,30 @@ mod tests {
         assert!(
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn resize_reflow_keeps_bottom_aligned_viewport_at_bottom_when_it_shrinks() {
+        let width = 80;
+        let height = 30;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            CustomTerminal::with_options_and_cursor_position(backend, Position { x: 0, y: 0 })
+                .expect("terminal");
+        terminal.last_known_screen_size = Size::new(width, height);
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 25, width, /*height*/ 5,
+        ));
+
+        let needs_full_repaint =
+            super::Tui::update_inline_viewport_for_resize_reflow(&mut terminal, /*height*/ 3)
+                .expect("resize viewport");
+
+        assert!(needs_full_repaint);
+        assert_eq!(
+            terminal.viewport_area,
+            Rect::new(/*x*/ 0, /*y*/ 27, width, /*height*/ 3,)
         );
     }
 }
@@ -812,10 +837,13 @@ impl Tui {
     /// Unlike the legacy draw path, this path does not scroll rows above the viewport when the
     /// terminal shrinks. Resize reflow owns rebuilding those rows from transcript source, so
     /// scrolling here would move the viewport once and then replay history into the wrong row.
-    fn update_inline_viewport_for_resize_reflow(
-        terminal: &mut Terminal,
+    fn update_inline_viewport_for_resize_reflow<B>(
+        terminal: &mut CustomTerminal<B>,
         height: u16,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        B: Backend + Write,
+    {
         let size = terminal.size()?;
         let terminal_height_shrank = size.height < terminal.last_known_screen_size.height;
         let terminal_height_grew = size.height > terminal.last_known_screen_size.height;
@@ -826,6 +854,7 @@ impl Tui {
         let mut area = terminal.viewport_area;
         area.height = height.min(size.height);
         area.width = size.width;
+        let viewport_height_shrank = area.height < previous_area.height;
         let mut needs_full_repaint = false;
 
         if area.bottom() > size.height {
@@ -836,7 +865,7 @@ impl Tui {
                     .scroll_region_up(0..area.top(), scroll_by)?;
             }
             area.y = size.height - area.height;
-        } else if terminal_height_grew && viewport_was_bottom_aligned {
+        } else if viewport_was_bottom_aligned && (terminal_height_grew || viewport_height_shrank) {
             area.y = size.height - area.height;
         }
 

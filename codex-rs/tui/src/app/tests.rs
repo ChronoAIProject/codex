@@ -4603,6 +4603,17 @@ async fn height_shrink_schedules_resize_reflow() {
     assert!(app.transcript_reflow.has_pending_reflow());
 }
 
+#[tokio::test]
+async fn inline_viewport_height_change_schedules_resize_reflow_after_history() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    let frame_requester = crate::tui::FrameRequester::test_dummy();
+
+    app.has_emitted_history_lines = true;
+    app.schedule_inline_viewport_height_reflow(&frame_requester);
+
+    assert!(app.transcript_reflow.has_pending_reflow());
+}
+
 fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
     Turn {
         id: turn_id.to_string(),
