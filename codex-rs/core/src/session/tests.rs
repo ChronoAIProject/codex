@@ -7730,6 +7730,43 @@ async fn refresh_mcp_servers_keeps_the_previous_runtime_alive() {
 }
 
 #[tokio::test]
+async fn refresh_mcp_servers_reuses_current_runtime_for_unchanged_config() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let old_runtime = session.services.latest_mcp_runtime();
+
+    let config = session.get_config().await;
+    let refresh_config = McpServerRefreshConfig {
+        mcp_servers: serde_json::to_value(config.mcp_servers.get()).expect("serialize MCP servers"),
+        mcp_oauth_credentials_store_mode: serde_json::to_value(
+            config.mcp_oauth_credentials_store_mode,
+        )
+        .expect("serialize store mode"),
+        auth_keyring_backend_kind: serde_json::to_value(config.auth_keyring_backend_kind())
+            .expect("serialize keyring backend"),
+    };
+    {
+        let mut guard = session.pending_mcp_server_refresh_config.lock().await;
+        *guard = Some(refresh_config);
+    }
+
+    session
+        .refresh_mcp_servers_if_requested(&turn_context, /*elicitation_reviewer*/ None)
+        .await;
+
+    let new_runtime = session.services.latest_mcp_runtime();
+    assert!(Arc::ptr_eq(&old_runtime, &new_runtime));
+    assert!(
+        session
+            .pending_mcp_server_refresh_config
+            .lock()
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn built_tools_uses_the_step_mcp_runtime() -> anyhow::Result<()> {
     let (session, turn_context) = make_session_and_context().await;
     let session = Arc::new(session);

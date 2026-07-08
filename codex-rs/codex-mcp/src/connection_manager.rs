@@ -116,6 +116,7 @@ pub struct McpConnectionManager {
     required_servers: Vec<String>,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
     prefix_mcp_tool_names: bool,
+    supports_openai_form_elicitation: bool,
     elicitation_requests: ElicitationRequestManager,
     startup_cancellation_token: CancellationToken,
 }
@@ -271,6 +272,7 @@ impl McpConnectionManager {
             required_servers,
             tool_plugin_provenance,
             prefix_mcp_tool_names,
+            supports_openai_form_elicitation,
             elicitation_requests: elicitation_requests.clone(),
             startup_cancellation_token: startup_cancellation_token.clone(),
         };
@@ -356,6 +358,7 @@ impl McpConnectionManager {
             required_servers: Vec::new(),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             prefix_mcp_tool_names,
+            supports_openai_form_elicitation: false,
             elicitation_requests: ElicitationRequestManager::new(
                 approval_policy.value(),
                 permission_profile.clone(),
@@ -368,6 +371,10 @@ impl McpConnectionManager {
 
     pub fn has_servers(&self) -> bool {
         !self.clients.is_empty()
+    }
+
+    pub fn supports_openai_form_elicitation(&self) -> bool {
+        self.supports_openai_form_elicitation
     }
 
     pub(crate) fn contains_server(&self, server_name: &str) -> bool {

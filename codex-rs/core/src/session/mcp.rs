@@ -338,6 +338,27 @@ impl Session {
             &mcp_runtime_context,
         )
         .await;
+        let current_runtime = self.services.latest_mcp_runtime();
+        let supports_openai_form_elicitation = self
+            .services
+            .supports_openai_form_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_runtime
+            .config()
+            .mcp_server_catalog
+            .has_same_servers(&mcp_config.mcp_server_catalog)
+            && current_runtime.config().connector_snapshot == mcp_config.connector_snapshot
+            && current_runtime.manager().supports_openai_form_elicitation()
+                == supports_openai_form_elicitation
+        {
+            return Arc::new(McpRuntimeSnapshot::new(
+                mcp_config,
+                current_runtime.manager_arc(),
+                mcp_runtime_context,
+                available_environment_ids.to_vec(),
+            ));
+        }
+
         let mcp_startup_cancellation_token = {
             let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
             // The previous runtime owns the old token and may still be serving an in-flight step.
@@ -346,7 +367,6 @@ impl Session {
             *guard = cancellation_token.clone();
             cancellation_token
         };
-        let current_runtime = self.services.latest_mcp_runtime();
         let refreshed_manager = McpConnectionManager::new(
             &mcp_servers,
             mcp_config.mcp_oauth_credentials_store_mode,
@@ -363,9 +383,7 @@ impl Session {
             codex_apps_tools_cache_key(auth.as_ref()),
             mcp_config.prefix_mcp_tool_names,
             mcp_config.client_elicitation_capability.clone(),
-            self.services
-                .supports_openai_form_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed),
+            supports_openai_form_elicitation,
             tool_plugin_provenance,
             auth.as_ref(),
             elicitation_reviewer,
