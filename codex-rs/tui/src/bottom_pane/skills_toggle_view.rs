@@ -23,7 +23,6 @@ use crate::render::RectExt as _;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::skills_helpers::match_skill;
-use crate::skills_helpers::truncate_skill_name;
 use crate::style::user_message_style;
 
 use super::CancellationEvent;
@@ -145,8 +144,7 @@ impl SkillsToggleView {
                     let is_selected = self.state.selected_idx == Some(visible_idx);
                     let prefix = if is_selected { '›' } else { ' ' };
                     let marker = if item.enabled { 'x' } else { ' ' };
-                    let item_name = truncate_skill_name(&item.name);
-                    let name = format!("{prefix} [{marker}] {item_name}");
+                    let name = format!("{prefix} [{marker}] {}", item.name);
                     GenericDisplayRow {
                         name,
                         description: Some(item.description.clone()),
@@ -475,6 +473,33 @@ mod tests {
         ];
         let view = SkillsToggleView::new(items, tx, crate::keymap::RuntimeKeymap::defaults().list);
         assert_snapshot!("skills_toggle_basic", render_lines(&view, /*width*/ 72));
+    }
+
+    #[test]
+    fn renders_long_skill_names_with_adaptive_width() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let items = vec![
+            SkillsToggleItem {
+                name: "superpowers-systematic-debugging (polish)".to_string(),
+                skill_name: "superpowers-systematic-debugging".to_string(),
+                description: "Find root causes before fixing bugs".to_string(),
+                enabled: true,
+                path: test_path_buf("/tmp/skills/systematic-debugging.toml").abs(),
+            },
+            SkillsToggleItem {
+                name: "superpowers-verification-before-completion (polish)".to_string(),
+                skill_name: "superpowers-verification-before-completion".to_string(),
+                description: "Verify completion before claiming the work is done".to_string(),
+                enabled: false,
+                path: test_path_buf("/tmp/skills/verification-before-completion.toml").abs(),
+            },
+        ];
+        let view = SkillsToggleView::new(items, tx, crate::keymap::RuntimeKeymap::defaults().list);
+        assert_snapshot!(
+            "skills_toggle_long_names_adaptive_width",
+            render_lines(&view, /*width*/ 96)
+        );
     }
 
     #[test]
