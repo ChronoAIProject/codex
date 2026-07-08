@@ -710,6 +710,8 @@ impl TurnRequestProcessor {
                 (None, None, None)
             };
         let effort = effort.map(Some);
+        self.validate_reasoning_effort_override(thread, model.as_deref(), effort.as_ref())
+            .await?;
 
         if has_any_overrides {
             thread
@@ -753,6 +755,43 @@ impl TurnRequestProcessor {
             collaboration_mode,
             personality,
         })
+    }
+
+    async fn validate_reasoning_effort_override(
+        &self,
+        thread: &CodexThread,
+        model: Option<&str>,
+        effort: Option<&Option<ReasoningEffort>>,
+    ) -> Result<(), JSONRPCErrorError> {
+        let Some(Some(effort)) = effort else {
+            return Ok(());
+        };
+
+        let snapshot = thread.config_snapshot().await;
+        let model = model.unwrap_or(snapshot.model.as_str());
+        let config = thread.config().await;
+        let model_info = self
+            .thread_manager
+            .get_models_manager()
+            .get_model_info(model, &config.to_models_manager_config())
+            .await;
+        if model_info
+            .supported_reasoning_levels
+            .iter()
+            .any(|preset| preset.effort == *effort)
+        {
+            return Ok(());
+        }
+
+        let supported = model_info
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(invalid_request(format!(
+            "model \"{model}\" does not support reasoning effort \"{effort}\"; supported: {supported}"
+        )))
     }
 
     async fn thread_settings_update_inner(

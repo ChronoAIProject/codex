@@ -1295,6 +1295,98 @@ async fn turn_start_rejects_invalid_permission_selection_before_starting_turn() 
 }
 
 #[tokio::test]
+async fn turn_start_rejects_unsupported_reasoning_effort_before_starting_turn() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::default(),
+    )?;
+    write_models_cache(codex_home.path())?;
+
+    let model = all_model_presets()
+        .iter()
+        .find(|preset| {
+            preset.show_in_picker
+                && preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort.effort == ReasoningEffort::XHigh)
+                && !preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort.effort == ReasoningEffort::Ultra)
+        })
+        .expect("bundled model catalog should include a non-ultra reasoning model");
+
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some(model.id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            effort: Some(ReasoningEffort::Ultra),
+            ..Default::default()
+        })
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        err.error.message,
+        format!(
+            "model \"{}\" does not support reasoning effort \"ultra\"; supported: low, medium, high, xhigh",
+            model.id
+        )
+    );
+    let turn_started = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await;
+    assert!(
+        turn_started.is_err(),
+        "did not expect a turn/started notification after rejected reasoning effort"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?;
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.url.path().ends_with("/responses")),
+        "rejected turn/start should not reach the model server"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_start_rejects_unknown_environment_before_starting_turn() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
