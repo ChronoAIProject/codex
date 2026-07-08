@@ -16,6 +16,7 @@ import zipfile
 
 from github_utils import github_request
 DEFAULT_REF = "main"
+SKILLS_REPO_DIR = "skills"
 
 
 @dataclass
@@ -176,6 +177,18 @@ def _copy_skill(src: str, dest_dir: str) -> None:
     shutil.copytree(src, dest_dir)
 
 
+def _skill_source_path(repo_root: str, path: str) -> str:
+    skill_src = os.path.join(repo_root, path)
+    if os.path.exists(skill_src):
+        return skill_src
+    bundled_prefix = f"{SKILLS_REPO_DIR}{os.sep}"
+    if path.startswith(bundled_prefix):
+        bundled_src = os.path.join(repo_root, SKILLS_REPO_DIR, path)
+        if os.path.exists(bundled_src):
+            return bundled_src
+    return skill_src
+
+
 def _build_repo_url(owner: str, repo: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
@@ -289,7 +302,7 @@ def main(argv: list[str]) -> int:
                 dest_dir = os.path.join(dest_root, skill_name)
                 if os.path.exists(dest_dir):
                     raise InstallError(f"Destination already exists: {dest_dir}")
-                skill_src = os.path.join(repo_root, path)
+                skill_src = _skill_source_path(repo_root, path)
                 _validate_skill(skill_src)
                 _copy_skill(skill_src, dest_dir)
                 installed.append((skill_name, dest_dir))
