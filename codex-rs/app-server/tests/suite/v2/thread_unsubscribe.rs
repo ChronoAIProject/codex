@@ -86,6 +86,58 @@ async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<(
 }
 
 #[tokio::test]
+async fn thread_unsubscribe_unloads_idle_thread_after_timeout() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_id = start_thread(&mut mcp).await?;
+
+    let unsubscribe_id = mcp
+        .send_thread_unsubscribe_request(ThreadUnsubscribeParams {
+            thread_id: thread_id.clone(),
+        })
+        .await?;
+    let unsubscribe_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(unsubscribe_id)),
+    )
+    .await??;
+    let unsubscribe = to_response::<ThreadUnsubscribeResponse>(unsubscribe_resp)?;
+    assert_eq!(unsubscribe.status, ThreadUnsubscribeStatus::Unsubscribed);
+
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/closed"),
+    )
+    .await??;
+    let params = notification
+        .params
+        .expect("thread/closed notification params");
+    let closed: codex_app_server_protocol::ThreadClosedNotification =
+        serde_json::from_value(params)?;
+    assert_eq!(closed.thread_id, thread_id);
+
+    let list_id = mcp
+        .send_thread_loaded_list_request(ThreadLoadedListParams::default())
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let ThreadLoadedListResponse { data, next_cursor } =
+        to_response::<ThreadLoadedListResponse>(list_resp)?;
+    assert_eq!(data, Vec::<String>::new());
+    assert_eq!(next_cursor, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_unsubscribe_during_turn_keeps_turn_running() -> Result<()> {
     let call_id = "deterministic-wait-call";
     let tool_name = "deterministic_wait";

@@ -1,7 +1,7 @@
 use super::*;
 use codex_protocol::config_types::MultiAgentMode;
 
-pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
+pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(super) struct ListenerTaskContext {
