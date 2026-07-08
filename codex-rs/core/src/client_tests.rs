@@ -286,13 +286,13 @@ fn test_session_telemetry() -> SessionTelemetry {
 }
 
 #[test]
-fn ultra_reasoning_uses_max_for_requests() {
+fn ultra_reasoning_uses_xhigh_for_requests() {
     assert_eq!(
         (
             super::reasoning_effort_for_request(ReasoningEffort::Ultra),
             super::reasoning_effort_for_request(ReasoningEffort::High),
         ),
-        (ReasoningEffort::Max, ReasoningEffort::High,)
+        (ReasoningEffort::XHigh, ReasoningEffort::High,)
     );
 }
 

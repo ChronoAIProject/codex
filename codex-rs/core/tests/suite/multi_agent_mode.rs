@@ -85,7 +85,7 @@ async fn submit_turn(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ultra_reasoning_uses_max_and_proactive_mode() -> Result<()> {
+async fn ultra_reasoning_uses_xhigh_and_proactive_mode() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -105,7 +105,7 @@ async fn ultra_reasoning_uses_max_and_proactive_mode() -> Result<()> {
     let request = response.single_request();
     assert_eq!(
         request.body_json()["reasoning"]["effort"].as_str(),
-        Some("max")
+        Some("xhigh")
     );
     let input = request.input();
     let texts = developer_texts(&input);
@@ -168,7 +168,7 @@ async fn leaving_ultra_after_cold_resume_emits_explicit_mode() -> Result<()> {
                 .as_str()
                 .map(str::to_string),
         ),
-        (Some("max".to_string()), Some("high".to_string()))
+        (Some("xhigh".to_string()), Some("high".to_string()))
     );
     let resumed_input = requests[1].input();
     let texts = developer_texts(&resumed_input);
@@ -185,7 +185,7 @@ async fn leaving_ultra_after_cold_resume_emits_explicit_mode() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ultra_on_multi_agent_v1_uses_max_without_mode_instructions() -> Result<()> {
+async fn ultra_on_multi_agent_v1_uses_xhigh_without_mode_instructions() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -207,7 +207,7 @@ async fn ultra_on_multi_agent_v1_uses_max_without_mode_instructions() -> Result<
     let request = response.single_request();
     assert_eq!(
         request.body_json()["reasoning"]["effort"].as_str(),
-        Some("max")
+        Some("xhigh")
     );
     let input = request.input();
     let texts = developer_texts(&input);
