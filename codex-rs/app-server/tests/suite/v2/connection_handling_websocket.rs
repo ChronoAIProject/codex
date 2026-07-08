@@ -132,15 +132,15 @@ async fn websocket_transport_serves_health_endpoints_on_same_listener() -> Resul
 }
 
 #[tokio::test]
-async fn websocket_transport_rejects_browser_origin_without_auth() -> Result<()> {
+async fn websocket_transport_accepts_vscode_webview_origin() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri(), "never")?;
 
     let (mut process, bind_addr) = spawn_websocket_server(codex_home.path()).await?;
 
-    let mut ws = connect_websocket(bind_addr).await?;
-    send_initialize_request(&mut ws, /*id*/ 1, "ws_loopback_client").await?;
+    let mut ws = connect_websocket_with_origin(bind_addr, Some("vscode-webview://codex")).await?;
+    send_initialize_request(&mut ws, /*id*/ 1, "ws_vscode_webview_client").await?;
     let init = read_response_for_id(&mut ws, /*id*/ 1).await?;
     assert_eq!(init.id, RequestId::Integer(1));
     drop(ws);
@@ -462,8 +462,23 @@ pub(super) async fn connect_websocket_with_bearer(
     bind_addr: SocketAddr,
     bearer_token: Option<&str>,
 ) -> Result<WsClient> {
+    connect_websocket_with_headers(bind_addr, bearer_token, /*origin*/ None).await
+}
+
+async fn connect_websocket_with_origin(
+    bind_addr: SocketAddr,
+    origin: Option<&str>,
+) -> Result<WsClient> {
+    connect_websocket_with_headers(bind_addr, /*bearer_token*/ None, origin).await
+}
+
+async fn connect_websocket_with_headers(
+    bind_addr: SocketAddr,
+    bearer_token: Option<&str>,
+    origin: Option<&str>,
+) -> Result<WsClient> {
     let url = format!("ws://{}", connectable_bind_addr(bind_addr));
-    let request = websocket_request(url.as_str(), bearer_token, /*origin*/ None)?;
+    let request = websocket_request(url.as_str(), bearer_token, origin)?;
     let deadline = Instant::now() + DEFAULT_READ_TIMEOUT;
     loop {
         match connect_async(request.clone()).await {

@@ -86,11 +86,18 @@ async fn health_check_handler() -> StatusCode {
     StatusCode::OK
 }
 
-async fn reject_requests_with_origin_header(
+fn is_trusted_origin(headers: &HeaderMap) -> bool {
+    headers
+        .get(ORIGIN)
+        .and_then(|origin| origin.to_str().ok())
+        .is_some_and(|origin| origin.starts_with("vscode-webview://"))
+}
+
+async fn reject_requests_with_untrusted_origin_header(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.headers().contains_key(ORIGIN) {
+    if request.headers().contains_key(ORIGIN) && !is_trusted_origin(request.headers()) {
         warn!(
             method = %request.method(),
             uri = %request.uri(),
@@ -149,7 +156,9 @@ pub async fn start_websocket_acceptor(
         .route("/readyz", get(health_check_handler))
         .route("/healthz", get(health_check_handler))
         .fallback(any(websocket_upgrade_handler))
-        .layer(middleware::from_fn(reject_requests_with_origin_header))
+        .layer(middleware::from_fn(
+            reject_requests_with_untrusted_origin_header,
+        ))
         .with_state(WebSocketListenerState {
             transport_event_tx,
             auth_policy: Arc::new(auth_policy),
