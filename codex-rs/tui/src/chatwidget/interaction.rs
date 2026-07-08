@@ -75,9 +75,7 @@ impl ChatWidget {
                 modifiers,
                 kind: KeyEventKind::Press,
                 ..
-            } if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                && c.eq_ignore_ascii_case(&'v') =>
-            {
+            } if is_image_paste_shortcut(c, modifiers) => {
                 match paste_image_to_temp_png() {
                     Ok((path, info)) => {
                         tracing::debug!(
@@ -505,3 +503,12 @@ impl ChatWidget {
         });
     }
 }
+
+fn is_image_paste_shortcut(c: char, modifiers: KeyModifiers) -> bool {
+    c.eq_ignore_ascii_case(&'v')
+        && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
+#[cfg(test)]
+#[path = "interaction_tests.rs"]
+mod tests;
