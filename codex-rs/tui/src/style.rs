@@ -7,6 +7,7 @@ use crate::terminal_palette::default_fg;
 use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 
@@ -29,7 +30,12 @@ pub(crate) fn table_separator_style() -> Style {
 
 /// Returns the shared accent style for active or selected TUI controls.
 pub(crate) fn accent_style() -> Style {
-    accent_style_for(default_bg())
+    let syntax_theme_style = if crate::render::highlight::has_configured_theme_override() {
+        syntax_theme_accent_style()
+    } else {
+        None
+    };
+    accent_style_for(default_bg(), syntax_theme_style)
 }
 
 /// Returns the style for a user-authored message using the provided terminal background.
@@ -48,12 +54,29 @@ pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 }
 
 /// Returns the shared accent style for the provided terminal background.
-pub(crate) fn accent_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
+pub(crate) fn accent_style_for(
+    terminal_bg: Option<(u8, u8, u8)>,
+    syntax_theme_style: Option<Style>,
+) -> Style {
+    if let Some(style) = syntax_theme_style.and_then(accent_style_from_syntax_theme_style) {
+        return style;
+    }
+
     if terminal_bg.is_some_and(is_light) {
         Style::default().fg(best_color(LIGHT_BG_ACCENT_RGB)).bold()
     } else {
         Style::default().fg(Color::Cyan).bold()
     }
+}
+
+fn syntax_theme_accent_style() -> Option<Style> {
+    crate::render::highlight::foreground_style_for_scopes(&["keyword.control", "keyword"])
+}
+
+fn accent_style_from_syntax_theme_style(mut style: Style) -> Option<Style> {
+    style.fg?;
+    style.add_modifier.insert(Modifier::BOLD);
+    Some(style)
 }
 
 fn table_separator_style_for(
@@ -95,7 +118,7 @@ mod tests {
 
     #[test]
     fn accent_style_uses_darker_cyan_on_light_backgrounds() {
-        let style = accent_style_for(Some((255, 255, 255)));
+        let style = accent_style_for(Some((255, 255, 255)), /*syntax_theme_style*/ None);
 
         assert_eq!(style.fg, Some(best_color(LIGHT_BG_ACCENT_RGB)));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -105,8 +128,34 @@ mod tests {
     fn accent_style_uses_cyan_on_dark_or_unknown_backgrounds() {
         let expected = Style::default().fg(Color::Cyan).bold();
 
-        assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
-        assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);
+        assert_eq!(
+            accent_style_for(Some((0, 0, 0)), /*syntax_theme_style*/ None),
+            expected
+        );
+        assert_eq!(
+            accent_style_for(/*terminal_bg*/ None, /*syntax_theme_style*/ None),
+            expected
+        );
+    }
+
+    #[test]
+    fn accent_style_uses_syntax_theme_foreground_when_available() {
+        let style = accent_style_for(
+            Some((255, 255, 255)),
+            Some(Style::default().fg(Color::Magenta)),
+        );
+
+        assert_eq!(style, Style::default().fg(Color::Magenta).bold());
+    }
+
+    #[test]
+    fn accent_style_ignores_syntax_theme_style_without_foreground() {
+        let expected = Style::default().fg(Color::Cyan).bold();
+
+        assert_eq!(
+            accent_style_for(Some((0, 0, 0)), Some(Style::default().italic())),
+            expected
+        );
     }
 
     #[test]

@@ -254,6 +254,10 @@ pub(crate) fn current_syntax_theme() -> Theme {
     }
 }
 
+pub(crate) fn has_configured_theme_override() -> bool {
+    matches!(THEME_OVERRIDE.get(), Some(Some(_)))
+}
+
 /// Raw RGB background colors extracted from syntax theme diff/markup scopes.
 ///
 /// These are theme-provided colors, not yet adapted for any particular color
