@@ -476,7 +476,7 @@ client_request_definitions! {
     ThreadStart => "thread/start" {
         params: v2::ThreadStartParams,
         inspect_params: true,
-        serialization: None,
+        serialization: global("thread-start"),
         response: v2::ThreadStartResponse,
     },
     ThreadResume => "thread/resume" {
@@ -2055,7 +2055,10 @@ mod tests {
             request_id: request_id(),
             params: v2::ThreadStartParams::default(),
         };
-        assert_eq!(thread_start.serialization_scope(), None);
+        assert_eq!(
+            thread_start.serialization_scope(),
+            Some(ClientRequestSerializationScope::Global("thread-start"))
+        );
 
         let command_exec = ClientRequest::OneOffCommandExec {
             request_id: request_id(),
