@@ -3,9 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::process::Command;
 
-const CODEX_WINDOWS_INSTALLER_URL: &str =
-    "https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi";
-const CODEX_MICROSOFT_STORE_WEB_URL: &str = "https://apps.microsoft.com/detail/9plm9xgg6vks";
+const CODEX_WINDOWS_DOWNLOAD_URL: &str = "https://developers.openai.com/codex/windows/windows-app";
 
 pub async fn run_windows_app_open_or_install(
     workspace: PathBuf,
@@ -19,13 +17,11 @@ pub async fn run_windows_app_open_or_install(
         return Ok(());
     }
 
-    eprintln!("Codex Desktop not found; opening Windows installer...");
+    eprintln!("Codex Desktop not found; opening Windows download page...");
     let download_url = download_url_override
         .as_deref()
-        .unwrap_or(CODEX_WINDOWS_INSTALLER_URL);
-    if open_url(download_url).await.is_err() && download_url_override.is_none() {
-        open_url(CODEX_MICROSOFT_STORE_WEB_URL).await?;
-    }
+        .unwrap_or(CODEX_WINDOWS_DOWNLOAD_URL);
+    open_url(download_url).await?;
     eprintln!("After installing Codex Desktop, open workspace {display_workspace}.");
     Ok(())
 }
@@ -83,6 +79,7 @@ fn display_workspace_path(workspace: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::CODEX_WINDOWS_DOWNLOAD_URL;
     use super::codex_new_thread_url;
     use super::display_workspace_path;
     use pretty_assertions::assert_eq;
@@ -126,5 +123,10 @@ mod tests {
             codex_new_thread_url(r"\\?\C:\Users\akuma\repos\koba"),
             r"codex://threads/new?path=%5C%5C%3F%5CC%3A%5CUsers%5Cakuma%5Crepos%5Ckoba"
         );
+    }
+
+    #[test]
+    fn default_windows_download_url_is_not_microsoft_store_backed() {
+        assert!(!CODEX_WINDOWS_DOWNLOAD_URL.contains("microsoft.com"));
     }
 }
