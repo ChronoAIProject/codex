@@ -119,7 +119,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = response_tool_name(namespace, name);
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,
@@ -152,7 +152,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => Ok(Some(ToolCall {
-                tool_name: ToolName::new(namespace, name),
+                tool_name: response_tool_name(namespace, name),
                 call_id,
                 payload: ToolPayload::Custom { input },
             })),
@@ -241,6 +241,13 @@ impl ToolRouter {
         self.registry
             .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
             .await
+    }
+}
+
+fn response_tool_name(namespace: Option<String>, name: String) -> ToolName {
+    match namespace {
+        Some(namespace) if namespace == name => ToolName::plain(name),
+        namespace => ToolName::new(namespace, name),
     }
 }
 
