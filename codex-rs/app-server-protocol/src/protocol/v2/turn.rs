@@ -329,11 +329,48 @@ impl UserInput {
                 image_url: url,
                 detail,
             },
-            UserInput::LocalImage { path, detail } => CoreUserInput::LocalImage { path, detail },
+            UserInput::LocalImage { path, detail } => CoreUserInput::LocalImage {
+                path: normalize_local_image_path(path),
+                detail,
+            },
             UserInput::Skill { name, path } => CoreUserInput::Skill { name, path },
             UserInput::Mention { name, path } => CoreUserInput::Mention { name, path },
         }
     }
+}
+
+fn normalize_local_image_path(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = convert_windows_drive_path_to_wsl(&path) {
+            return path;
+        }
+    }
+
+    path
+}
+
+#[cfg(target_os = "linux")]
+fn convert_windows_drive_path_to_wsl(path: &std::path::Path) -> Option<PathBuf> {
+    let path = path.to_str()?;
+    let bytes = path.as_bytes();
+    if bytes.len() < 3
+        || bytes[1] != b':'
+        || !bytes[0].is_ascii_alphabetic()
+        || !matches!(bytes[2], b'\\' | b'/')
+    {
+        return None;
+    }
+
+    let drive = char::from(bytes[0]).to_ascii_lowercase();
+    let mut converted = PathBuf::from(format!("/mnt/{drive}"));
+    for component in path[3..]
+        .split(['\\', '/'])
+        .filter(|component| !component.is_empty())
+    {
+        converted.push(component);
+    }
+    Some(converted)
 }
 
 impl From<CoreUserInput> for UserInput {

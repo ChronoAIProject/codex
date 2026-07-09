@@ -3019,6 +3019,22 @@ fn user_input_into_core_preserves_image_detail() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn user_input_into_core_maps_windows_local_image_paths_for_wsl() {
+    assert_eq!(
+        UserInput::LocalImage {
+            path: PathBuf::from(r"C:\Users\Alice\AppData\Local\Temp\codex.png"),
+            detail: None,
+        }
+        .into_core(),
+        CoreUserInput::LocalImage {
+            path: PathBuf::from("/mnt/c/Users/Alice/AppData/Local/Temp/codex.png"),
+            detail: None,
+        }
+    );
+}
+
 #[test]
 fn skills_list_params_serialization_uses_force_reload() {
     assert_eq!(
