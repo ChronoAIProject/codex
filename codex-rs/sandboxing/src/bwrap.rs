@@ -168,13 +168,22 @@ fn is_user_namespace_failure(output: &Output) -> bool {
 pub fn find_system_bwrap_in_path() -> Option<PathBuf> {
     let search_path = std::env::var_os("PATH")?;
     let cwd = std::env::current_dir().ok()?;
-    find_system_bwrap_in_search_paths(std::env::split_paths(&search_path), &cwd)
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+    find_system_bwrap_in_search_paths(
+        std::env::split_paths(&search_path),
+        &cwd,
+        home_dir.as_deref(),
+    )
 }
 
 fn find_system_bwrap_in_search_paths(
     search_paths: impl IntoIterator<Item = PathBuf>,
     cwd: &Path,
+    home_dir: Option<&Path>,
 ) -> Option<PathBuf> {
+    let search_paths = search_paths
+        .into_iter()
+        .map(|path| expand_home_relative_search_path(path, home_dir));
     let search_path = std::env::join_paths(search_paths).ok()?;
     let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let cwd_is_root = cwd.parent().is_none();
@@ -188,6 +197,22 @@ fn find_system_bwrap_in_search_paths(
                 Some(path)
             }
         })
+}
+
+fn expand_home_relative_search_path(path: PathBuf, home_dir: Option<&Path>) -> PathBuf {
+    let Some(home_dir) = home_dir else {
+        return path;
+    };
+    let Some(path_str) = path.to_str() else {
+        return path;
+    };
+    if path_str == "~" {
+        return home_dir.to_path_buf();
+    }
+    let Some(rest) = path_str.strip_prefix("~/") else {
+        return path;
+    };
+    home_dir.join(rest)
 }
 
 #[cfg(test)]

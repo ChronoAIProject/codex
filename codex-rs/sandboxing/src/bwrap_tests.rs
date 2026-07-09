@@ -127,7 +127,11 @@ fn finds_first_executable_bwrap_in_joined_search_path() {
     let search_path = std::env::join_paths([first_dir, second_dir]).expect("join search path");
 
     assert_eq!(
-        find_system_bwrap_in_search_paths(std::env::split_paths(&search_path), &cwd),
+        find_system_bwrap_in_search_paths(
+            std::env::split_paths(&search_path),
+            &cwd,
+            /*home_dir*/ None,
+        ),
         Some(expected_bwrap)
     );
 }
@@ -144,7 +148,11 @@ fn skips_workspace_local_bwrap_in_joined_search_path() {
     let search_path = std::env::join_paths([cwd.clone(), trusted_dir]).expect("join search path");
 
     assert_eq!(
-        find_system_bwrap_in_search_paths(std::env::split_paths(&search_path), &cwd),
+        find_system_bwrap_in_search_paths(
+            std::env::split_paths(&search_path),
+            &cwd,
+            /*home_dir*/ None,
+        ),
         Some(expected_bwrap)
     );
 }
@@ -158,7 +166,31 @@ fn root_cwd_does_not_hide_system_bwrap_candidates() {
     let search_path = std::env::join_paths([bin_dir]).expect("join search path");
 
     assert_eq!(
-        find_system_bwrap_in_search_paths(std::env::split_paths(&search_path), Path::new("/")),
+        find_system_bwrap_in_search_paths(
+            std::env::split_paths(&search_path),
+            Path::new("/"),
+            /*home_dir*/ None,
+        ),
+        Some(expected_bwrap)
+    );
+}
+
+#[test]
+fn expands_home_relative_bwrap_search_path_entries() {
+    let temp_dir = tempdir().expect("temp dir");
+    let cwd = temp_dir.path().join("cwd");
+    let home_dir = temp_dir.path().join("home");
+    let nix_profile_bin = home_dir.join(".nix-profile").join("bin");
+    std::fs::create_dir_all(&cwd).expect("create cwd");
+    std::fs::create_dir_all(&nix_profile_bin).expect("create nix profile bin dir");
+    let expected_bwrap = write_named_fake_bwrap_in(&nix_profile_bin);
+
+    assert_eq!(
+        find_system_bwrap_in_search_paths(
+            [PathBuf::from("~/.nix-profile/bin")],
+            &cwd,
+            Some(&home_dir),
+        ),
         Some(expected_bwrap)
     );
 }
