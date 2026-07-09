@@ -33,6 +33,8 @@ use codex_utils_path_uri::PathUri;
 use std::io;
 use std::sync::Arc;
 
+const MAX_READ_FILE_LINE_BYTES: usize = 512 * 1024;
+
 #[derive(Clone)]
 pub(crate) struct FsRequestProcessor {
     environment_manager: Arc<EnvironmentManager>,
@@ -71,6 +73,7 @@ impl FsRequestProcessor {
             .read_file(&path, /*sandbox*/ None)
             .await
             .map_err(map_fs_error)?;
+        reject_long_lines(&bytes)?;
         Ok(FsReadFileResponse {
             data_base64: STANDARD.encode(bytes),
         })
@@ -208,6 +211,19 @@ impl FsRequestProcessor {
         self.file_system()?;
         self.fs_watch_manager.unwatch(connection_id, params).await
     }
+}
+
+fn reject_long_lines(bytes: &[u8]) -> Result<(), JSONRPCErrorError> {
+    if bytes
+        .split(|byte| *byte == b'\n' || *byte == b'\r')
+        .any(|line| line.len() > MAX_READ_FILE_LINE_BYTES)
+    {
+        return Err(invalid_request(format!(
+            "fs/readFile cannot preview files with a line longer than {MAX_READ_FILE_LINE_BYTES} bytes; open the file outside Codex to view it"
+        )));
+    }
+
+    Ok(())
 }
 
 fn map_fs_error(err: io::Error) -> JSONRPCErrorError {

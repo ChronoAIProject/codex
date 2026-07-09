@@ -141,6 +141,29 @@ async fn fs_methods_return_error_when_local_environment_is_disabled() -> Result<
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_read_file_rejects_generated_single_line_files() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let file_path = codex_home.path().join("visual-runtime.js");
+    std::fs::write(&file_path, "x".repeat(600 * 1024))?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+    let request_id = mcp
+        .send_fs_read_file_request(codex_app_server_protocol::FsReadFileParams {
+            path: absolute_path(file_path),
+        })
+        .await?;
+
+    expect_error_message(
+        &mut mcp,
+        request_id,
+        "fs/readFile cannot preview files with a line longer than 524288 bytes; open the file outside Codex to view it",
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fs_get_metadata_reports_symlink() -> Result<()> {
