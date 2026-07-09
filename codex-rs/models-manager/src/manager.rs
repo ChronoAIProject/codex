@@ -10,6 +10,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -132,6 +133,37 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     ///
     /// Returns a static set of presets seeded with the configured model.
     fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask>;
+
+    /// List collaboration mode presets with configured reasoning efforts applied.
+    fn list_collaboration_modes_with_reasoning_effort(
+        &self,
+        model_reasoning_effort: Option<ReasoningEffort>,
+        plan_mode_reasoning_effort: Option<ReasoningEffort>,
+    ) -> Vec<CollaborationModeMask> {
+        self.list_collaboration_modes()
+            .into_iter()
+            .map(|mut preset| {
+                match preset.mode {
+                    Some(codex_protocol::config_types::ModeKind::Default) => {
+                        if let Some(effort) = model_reasoning_effort.clone() {
+                            preset.reasoning_effort = Some(Some(effort));
+                        }
+                    }
+                    Some(codex_protocol::config_types::ModeKind::Plan) => {
+                        if let Some(effort) = plan_mode_reasoning_effort.clone() {
+                            preset.reasoning_effort = Some(Some(effort));
+                        }
+                    }
+                    Some(
+                        codex_protocol::config_types::ModeKind::PairProgramming
+                        | codex_protocol::config_types::ModeKind::Execute,
+                    )
+                    | None => {}
+                }
+                preset
+            })
+            .collect()
+    }
 
     /// Attempt to list models without blocking, using the current cached state.
     ///

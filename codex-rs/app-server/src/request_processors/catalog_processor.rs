@@ -184,7 +184,7 @@ impl CatalogRequestProcessor {
         &self,
         params: CollaborationModeListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        Self::list_collaboration_modes(self.thread_manager.clone(), params)
+        Self::list_collaboration_modes(self.thread_manager.clone(), self.config.clone(), params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -294,11 +294,16 @@ impl CatalogRequestProcessor {
 
     async fn list_collaboration_modes(
         thread_manager: Arc<ThreadManager>,
+        config: Arc<Config>,
         params: CollaborationModeListParams,
     ) -> Result<CollaborationModeListResponse, JSONRPCErrorError> {
         let CollaborationModeListParams {} = params;
         let items = thread_manager
-            .list_collaboration_modes()
+            .get_models_manager()
+            .list_collaboration_modes_with_reasoning_effort(
+                config.model_reasoning_effort.clone(),
+                config.plan_mode_reasoning_effort.clone(),
+            )
             .into_iter()
             .map(Into::into)
             .collect();

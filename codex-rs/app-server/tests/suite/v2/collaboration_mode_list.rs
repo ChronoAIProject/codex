@@ -16,6 +16,7 @@ use codex_app_server_protocol::CollaborationModeMask;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_core::test_support::builtin_collaboration_mode_presets;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -28,6 +29,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 #[tokio::test]
 async fn list_collaboration_modes_returns_presets() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model_reasoning_effort = \"medium\"\nplan_mode_reasoning_effort = \"high\"\n",
+    )?;
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
 
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
@@ -47,11 +52,26 @@ async fn list_collaboration_modes_returns_presets() -> Result<()> {
 
     let expected: Vec<CollaborationModeMask> = builtin_collaboration_mode_presets()
         .into_iter()
-        .map(|preset| CollaborationModeMask {
-            name: preset.name,
-            mode: preset.mode,
-            model: preset.model,
-            reasoning_effort: preset.reasoning_effort,
+        .map(|mut preset| {
+            match preset.mode {
+                Some(codex_protocol::config_types::ModeKind::Default) => {
+                    preset.reasoning_effort = Some(Some(ReasoningEffort::Medium));
+                }
+                Some(codex_protocol::config_types::ModeKind::Plan) => {
+                    preset.reasoning_effort = Some(Some(ReasoningEffort::High));
+                }
+                Some(
+                    codex_protocol::config_types::ModeKind::PairProgramming
+                    | codex_protocol::config_types::ModeKind::Execute,
+                )
+                | None => {}
+            }
+            CollaborationModeMask {
+                name: preset.name,
+                mode: preset.mode,
+                model: preset.model,
+                reasoning_effort: preset.reasoning_effort,
+            }
         })
         .collect();
     assert_eq!(expected, items);
