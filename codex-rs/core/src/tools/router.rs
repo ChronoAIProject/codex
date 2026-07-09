@@ -119,7 +119,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = function_call_tool_name(namespace, name);
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,
@@ -241,6 +241,14 @@ impl ToolRouter {
         self.registry
             .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
             .await
+    }
+}
+
+fn function_call_tool_name(namespace: Option<String>, name: String) -> ToolName {
+    if namespace.as_deref() == Some(name.as_str()) {
+        ToolName::plain(name)
+    } else {
+        ToolName::new(namespace, name)
     }
 }
 
