@@ -166,4 +166,32 @@ mod tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    fn openai_docs_skill_routes_codex_self_knowledge() {
+        let skill = SYSTEM_SKILLS_DIR
+            .get_file("openai-docs/SKILL.md")
+            .expect("openai-docs SKILL.md should be bundled")
+            .contents_utf8()
+            .expect("openai-docs SKILL.md should be UTF-8");
+
+        assert!(
+            skill.contains("asks about Codex itself or choosing Codex surfaces"),
+            "openai-docs description should route Codex questions"
+        );
+        assert!(
+            skill.contains("use the Codex manual helper first for broad Codex self-knowledge"),
+            "openai-docs description should prefer the manual helper for Codex self-knowledge"
+        );
+        assert!(
+            skill.contains("## Codex self-knowledge"),
+            "openai-docs should document the Codex self-knowledge source route"
+        );
+        assert!(
+            SYSTEM_SKILLS_DIR
+                .get_file("openai-docs/scripts/fetch-codex-manual.mjs")
+                .is_some(),
+            "openai-docs should bundle the Codex manual helper fallback"
+        );
+    }
 }
