@@ -20,7 +20,16 @@ pub(crate) fn compute_allow_paths_for_permissions(
     let mut deny: HashSet<PathBuf> = HashSet::new();
 
     let mut add_allow_path = |p: PathBuf| {
-        if p.exists() {
+        let canonical = canonicalize(&p).ok().or_else(|| {
+            p.ancestors().skip(1).find_map(|ancestor| {
+                if ancestor.exists() {
+                    canonicalize(ancestor).ok()
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(p) = canonical {
             allow.insert(p);
         }
     };
@@ -30,11 +39,23 @@ pub(crate) fn compute_allow_paths_for_permissions(
         }
     };
 
-    for writable_root in permissions.writable_roots_for_cwd(command_cwd, env_map) {
-        let canonical = canonicalize(&writable_root.root).unwrap_or(writable_root.root);
+    let writable_roots = permissions.writable_roots_for_cwd(command_cwd, env_map);
+    for writable_root in &writable_roots {
+        let canonical =
+            canonicalize(&writable_root.root).unwrap_or_else(|_| writable_root.root.clone());
         add_allow_path(canonical);
+    }
+
+    for writable_root in writable_roots {
         for read_only_subpath in writable_root.read_only_subpaths {
-            add_deny_path(read_only_subpath);
+            let canonical_read_only_subpath =
+                canonicalize(&read_only_subpath).unwrap_or(read_only_subpath);
+            if !allow
+                .iter()
+                .any(|path| path.starts_with(&canonical_read_only_subpath))
+            {
+                add_deny_path(canonical_read_only_subpath);
+            }
         }
     }
 
@@ -44,7 +65,11 @@ pub(crate) fn compute_allow_paths_for_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::ManagedFileSystemPermissions;
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::permissions::FileSystemAccessMode;
+    use codex_protocol::permissions::FileSystemPath;
+    use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use std::fs;
@@ -376,5 +401,61 @@ mod tests {
             paths.deny.is_empty(),
             "no deny when protected dirs are absent"
         );
+    }
+
+    #[test]
+    fn explicit_missing_git_lock_write_allows_existing_parent() {
+        let tmp = TempDir::new().expect("tempdir");
+        let command_cwd = tmp.path().join("workspace");
+        let git_dir = command_cwd.join(".git");
+        let lock_path = git_dir.join("index.lock");
+        fs::create_dir_all(&git_dir).expect("create .git");
+        let permission_profile = PermissionProfile::Managed {
+            file_system: ManagedFileSystemPermissions::Restricted {
+                entries: vec![
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Path {
+                            path: AbsolutePathBuf::from_absolute_path(&command_cwd)
+                                .expect("absolute command cwd"),
+                        },
+                        access: FileSystemAccessMode::Write,
+                    },
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Path {
+                            path: AbsolutePathBuf::from_absolute_path(&git_dir)
+                                .expect("absolute git dir"),
+                        },
+                        access: FileSystemAccessMode::Read,
+                    },
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Path {
+                            path: AbsolutePathBuf::from_absolute_path(&lock_path)
+                                .expect("absolute lock path"),
+                        },
+                        access: FileSystemAccessMode::Write,
+                    },
+                ],
+                glob_scan_max_depth: None,
+            },
+            network: NetworkSandboxPolicy::Restricted,
+        };
+        let workspace_roots = workspace_roots_for(command_cwd.as_path());
+
+        let paths = compute_allow_paths(
+            &permission_profile,
+            workspace_roots.as_slice(),
+            &command_cwd,
+            &HashMap::new(),
+        );
+
+        let expected_allow: HashSet<PathBuf> = [
+            dunce::canonicalize(&command_cwd).unwrap(),
+            dunce::canonicalize(&git_dir).unwrap(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(expected_allow, paths.allow);
+        assert!(paths.deny.is_empty(), "explicit .git child write wins");
     }
 }

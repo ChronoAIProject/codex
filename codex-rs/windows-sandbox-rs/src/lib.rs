@@ -46,7 +46,7 @@ pub enum WindowsSandboxProxySettingsMode {
 
 #[cfg(target_os = "windows")]
 mod acl;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 mod allow;
 #[cfg(target_os = "windows")]
 mod audit;
@@ -74,7 +74,8 @@ mod logging;
 mod path_normalization;
 #[cfg(target_os = "windows")]
 mod process;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(test, allow(dead_code))]
 mod resolved_permissions;
 #[cfg(target_os = "windows")]
 mod token;
