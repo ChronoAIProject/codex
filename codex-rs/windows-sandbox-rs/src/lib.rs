@@ -6,6 +6,8 @@
 mod ssh_config_dependencies;
 
 use std::fmt;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Cancellation hook used by Windows sandbox capture backends.
@@ -32,6 +34,25 @@ impl fmt::Debug for WindowsSandboxCancellationToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowsSandboxCancellationToken")
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+fn setup_helper_manifest_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("codex-windows-sandbox-setup.manifest")
+}
+
+#[cfg(test)]
+mod setup_manifest_tests {
+    #[test]
+    fn setup_helper_manifest_disables_installer_detection_for_refresh_spawns() {
+        let manifest = std::fs::read_to_string(super::setup_helper_manifest_path())
+            .expect("read setup helper manifest");
+
+        assert!(manifest.contains(r#"<trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">"#));
+        assert!(
+            manifest.contains(r#"<requestedExecutionLevel level="asInvoker" uiAccess="false"/>"#)
+        );
     }
 }
 
