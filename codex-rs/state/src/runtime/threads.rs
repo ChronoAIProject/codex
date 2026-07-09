@@ -1160,13 +1160,27 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
     // SQLite may otherwise reorder these joins and scan the global timestamp index before
     // checking the relationship. CROSS JOIN keeps the selective edge/subtree traversal first.
     match relation_filter {
-        Some(crate::ThreadRelationFilter::DirectChildrenOf(_)) => builder.push(
-            ", listed_edge.parent_thread_id AS parent_thread_id\nFROM thread_spawn_edges AS listed_edge\nCROSS JOIN threads ON threads.id = listed_edge.child_thread_id",
-        ),
-        Some(crate::ThreadRelationFilter::DescendantsOf(_)) => builder.push(
-            ", subtree.parent_thread_id AS parent_thread_id\nFROM subtree\nCROSS JOIN threads ON threads.id = subtree.child_thread_id",
-        ),
-        None => builder.push(" FROM threads"),
+        Some(crate::ThreadRelationFilter::DirectChildrenOf(_)) => {
+            builder.push(
+                ", listed_edge.parent_thread_id AS parent_thread_id\nFROM thread_spawn_edges AS listed_edge\nCROSS JOIN threads ON threads.id = listed_edge.child_thread_id",
+            );
+        }
+        Some(crate::ThreadRelationFilter::DescendantsOf(_)) => {
+            builder.push(
+                ", subtree.parent_thread_id AS parent_thread_id\nFROM subtree\nCROSS JOIN threads ON threads.id = subtree.child_thread_id",
+            );
+        }
+        None => {
+            builder.push(" FROM threads");
+            if filters.cwd_filters.is_some() {
+                builder.push(" INDEXED BY ");
+                builder.push(match filters.sort_key {
+                    SortKey::CreatedAt => "idx_threads_archived_cwd_created_at_ms",
+                    SortKey::UpdatedAt => "idx_threads_archived_cwd_updated_at_ms",
+                    SortKey::RecencyAt => "idx_threads_archived_cwd_recency_at_ms",
+                });
+            }
+        }
     };
     let include_thread_id_tiebreaker =
         relation_filter.is_some() || filters.sort_key == SortKey::RecencyAt;
@@ -1312,12 +1326,31 @@ pub(super) fn push_thread_filters<'a>(
             builder.push(" AND 1 = 0");
         }
         Some(cwd_filters) => {
-            builder.push(" AND threads.cwd IN (");
+            builder.push(
+                r#" AND threads.cwd IN (
+                SELECT filtered_cwds.cwd
+                FROM threads AS filtered_cwds
+                WHERE filtered_cwds.cwd IN ("#,
+            );
             let mut separated = builder.separated(", ");
             for cwd in cwd_filters {
                 separated.push_bind(cwd.display().to_string());
             }
-            separated.push_unseparated(")");
+            builder.push(
+                r#") OR (
+                    filtered_cwds.git_origin_url <> ''
+                    AND instr(replace(filtered_cwds.cwd, '\', '/'), '/.codex/worktrees/') > 0
+                    AND filtered_cwds.git_origin_url IN (
+                        SELECT filtered_threads.git_origin_url
+                        FROM threads AS filtered_threads
+                        WHERE filtered_threads.git_origin_url <> ''
+                          AND filtered_threads.cwd IN ("#,
+            );
+            let mut separated = builder.separated(", ");
+            for cwd in cwd_filters {
+                separated.push_bind(cwd.display().to_string());
+            }
+            separated.push_unseparated("))))");
         }
         None => {}
     }
@@ -1862,6 +1895,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_threads_cwd_filter_includes_codex_worktrees_with_same_git_origin() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let project_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread id");
+        let worktree_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread id");
+        let unrelated_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000106").expect("valid thread id");
+        let project_cwd = codex_home.join("projects").join("repo");
+        let worktree_cwd = codex_home
+            .join(".codex")
+            .join("worktrees")
+            .join("abcd")
+            .join("repo");
+        let unrelated_cwd = codex_home
+            .join(".codex")
+            .join("worktrees")
+            .join("efgh")
+            .join("other");
+
+        for (thread_id, cwd, git_origin_url, updated_at) in [
+            (
+                project_id,
+                project_cwd.clone(),
+                "git@example.com:openai/codex.git",
+                1_700_000_100,
+            ),
+            (
+                worktree_id,
+                worktree_cwd,
+                "git@example.com:openai/codex.git",
+                1_700_000_300,
+            ),
+            (
+                unrelated_id,
+                unrelated_cwd,
+                "git@example.com:openai/other.git",
+                1_700_000_500,
+            ),
+        ] {
+            let mut metadata = test_thread_metadata(&codex_home, thread_id, cwd);
+            metadata.git_origin_url = Some(git_origin_url.to_string());
+            metadata.updated_at =
+                DateTime::<Utc>::from_timestamp(updated_at, 0).expect("valid timestamp");
+            runtime
+                .upsert_thread(&metadata)
+                .await
+                .expect("thread insert should succeed");
+        }
+
+        let cwd_filters = vec![project_cwd];
+        let page = runtime
+            .list_threads(
+                /*page_size*/ 10,
+                ThreadFilterOptions {
+                    archived_only: false,
+                    allowed_sources: &[],
+                    model_providers: None,
+                    cwd_filters: Some(cwd_filters.as_slice()),
+                    anchor: None,
+                    sort_key: SortKey::UpdatedAt,
+                    sort_direction: SortDirection::Desc,
+                    search_term: None,
+                },
+            )
+            .await
+            .expect("list should succeed");
+
+        let ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![worktree_id, project_id]);
+    }
+
+    #[tokio::test]
     async fn list_threads_uses_indexes_matching_cwd_filters() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
@@ -1896,7 +2005,7 @@ mod tests {
         ] {
             for (cwd_filters, anchor, expected_index, expect_temp_sort) in [
                 (None, None, visible_index, false),
-                (Some(&cwd_filters[..1]), None, cwd_index, false),
+                (Some(&cwd_filters[..1]), None, cwd_index, true),
                 (
                     Some(&cwd_filters[..]),
                     None,
