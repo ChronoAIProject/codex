@@ -155,3 +155,123 @@ async fn pipes_stdin_and_stdout_through_socket() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn exits_on_empty_stdin_without_waiting_for_socket_eof() -> anyhow::Result<()> {
+    let dir = tempfile::TempDir::new().context("failed to create temp dir")?;
+    let socket_path = dir.path().join("socket");
+    let listener = match UnixListener::bind(&socket_path).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: failed to bind unix socket: {err}");
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(err).context("failed to bind test unix socket");
+        }
+    };
+
+    let (release_connection_tx, release_connection_rx) = mpsc::channel();
+    let server_task = tokio::spawn(async move {
+        let mut listener = listener;
+        let mut connection = listener
+            .accept()
+            .await
+            .context("failed to accept test connection")?;
+        let mut received = Vec::new();
+        connection
+            .read_to_end(&mut received)
+            .await
+            .context("failed to read stdin EOF from client")?;
+        tokio::task::spawn_blocking(move || release_connection_rx.recv())
+            .await
+            .context("release connection task panicked")?
+            .context("release connection sender dropped")?;
+        anyhow::Ok(received)
+    });
+
+    struct ChildOutput {
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    }
+
+    let child_task = tokio::task::spawn_blocking(move || -> anyhow::Result<ChildOutput> {
+        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex-stdio-to-uds")?)
+            .arg(&socket_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn codex-stdio-to-uds")?;
+
+        let mut child_stdout = child.stdout.take().context("missing child stdout")?;
+        let mut child_stderr = child.stderr.take().context("missing child stderr")?;
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        let (stderr_tx, stderr_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut stdout = Vec::new();
+            let result = child_stdout.read_to_end(&mut stdout).map(|_| stdout);
+            let _ = stdout_tx.send(result);
+        });
+        thread::spawn(move || {
+            let mut stderr = Vec::new();
+            let result = child_stderr.read_to_end(&mut stderr).map(|_| stderr);
+            let _ = stderr_tx.send(result);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().context("failed to poll child status")? {
+                break status;
+            }
+
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let stderr = stderr_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .context("timed out waiting for child stderr after kill")?
+                    .context("failed to read child stderr")?;
+                anyhow::bail!(
+                    "codex-stdio-to-uds did not exit after empty stdin; stderr: {}",
+                    String::from_utf8_lossy(&stderr).trim_end()
+                );
+            }
+
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        let stdout = stdout_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("timed out waiting for child stdout")?
+            .context("failed to read child stdout")?;
+        let stderr = stderr_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("timed out waiting for child stderr")?
+            .context("failed to read child stderr")?;
+
+        Ok(ChildOutput {
+            status,
+            stdout,
+            stderr,
+        })
+    });
+
+    let child_output = child_task.await.context("child task panicked")??;
+    assert!(
+        child_output.status.success(),
+        "codex-stdio-to-uds exited with {status}; stderr: {}",
+        String::from_utf8_lossy(&child_output.stderr).trim_end(),
+        status = child_output.status
+    );
+    assert_eq!(child_output.stdout, b"");
+
+    release_connection_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("release connection receiver dropped"))?;
+    let received = server_task.await.context("server task panicked")??;
+    assert_eq!(received, b"");
+
+    Ok(())
+}

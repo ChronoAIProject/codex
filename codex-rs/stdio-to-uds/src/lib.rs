@@ -19,11 +19,11 @@ pub async fn run(socket_path: &Path) -> anyhow::Result<()> {
         let mut stdout = tokio::io::stdout();
         tokio::io::copy(&mut socket_reader, &mut stdout).await?;
         stdout.flush().await?;
-        Ok(())
+        anyhow::Ok(())
     };
     let copy_stdin_to_socket = async {
         let mut stdin = tokio::io::stdin();
-        tokio::io::copy(&mut stdin, &mut socket_writer)
+        let bytes_copied = tokio::io::copy(&mut stdin, &mut socket_writer)
             .await
             .context("failed to copy data from stdin to socket")?;
 
@@ -36,11 +36,32 @@ pub async fn run(socket_path: &Path) -> anyhow::Result<()> {
             return Err(err).context("failed to shutdown socket writer");
         }
 
-        anyhow::Ok(())
+        anyhow::Ok(bytes_copied)
     };
 
-    tokio::try_join!(copy_stdin_to_socket, copy_socket_to_stdout)
-        .context("failed to relay data between stdio and socket")?;
+    tokio::pin!(copy_socket_to_stdout);
+    tokio::pin!(copy_stdin_to_socket);
+
+    let mut socket_to_stdout_done = false;
+    let bytes_copied = tokio::select! {
+        result = &mut copy_stdin_to_socket => result,
+        result = &mut copy_socket_to_stdout => {
+            result.context("failed to relay data from socket to stdout")?;
+            socket_to_stdout_done = true;
+            copy_stdin_to_socket.await
+        }
+    }
+    .context("failed to relay data between stdin and socket")?;
+
+    if bytes_copied == 0 {
+        return Ok(());
+    }
+
+    if !socket_to_stdout_done {
+        copy_socket_to_stdout
+            .await
+            .context("failed to relay data from socket to stdout")?;
+    }
 
     Ok(())
 }
