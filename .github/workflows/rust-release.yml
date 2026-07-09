@@ -338,7 +338,7 @@ jobs:
             cp "target/${{ matrix.target }}/release/${binary}" "$dest/${binary}-${{ matrix.target }}"
             if [[ "${{ matrix.target }}" == *linux* ]]; then
               cp "target/${{ matrix.target }}/release/${binary}.sigstore" \
-                "$dest/${binary}-${{ matrix.target }}.sigstore"
+                "$dest/sigstore-${binary}-${{ matrix.target }}.sigstore"
             fi
           done
 
