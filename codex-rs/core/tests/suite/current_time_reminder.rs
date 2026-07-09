@@ -211,9 +211,6 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
         "command": "echo current time",
         "timeout_ms": 1_000,
     });
-    let mut continue_response = ev_completed("resp-2");
-    // Ask for another inference without recording a new user message or tool output.
-    continue_response["response"]["end_turn"] = json!(false);
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -229,9 +226,8 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
             sse(vec![
                 ev_response_created("resp-2"),
                 ev_assistant_message("msg-2", "continue"),
-                continue_response,
+                ev_completed("resp-2"),
             ]),
-            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
         ],
     )
     .await;
@@ -252,16 +248,36 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
         .await?;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
     assert_eq!(current_time_reminders(&requests[0]), vec![FIRST_REMINDER]);
     assert_eq!(
         current_time_reminders(&requests[1]),
         vec![FIRST_REMINDER, SECOND_REMINDER]
     );
-    assert_eq!(
-        current_time_reminders(&requests[2]),
-        vec![FIRST_REMINDER, SECOND_REMINDER]
-    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_assistant_message_ignores_false_end_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut completed = ev_completed("resp-1");
+    completed["response"]["end_turn"] = json!(false);
+    let responses = mount_sse_sequence(
+        &server,
+        vec![sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            completed,
+        ])],
+    )
+    .await;
+    let test = test_codex().build(&server).await?;
+
+    test.submit_turn("finish once").await?;
+
+    assert_eq!(responses.requests().len(), 1);
     Ok(())
 }
 

@@ -2229,7 +2229,9 @@ async fn try_run_sampling_request(
                 if let Err(err) = budget_result {
                     break Err(err);
                 }
-                if let Some(false) = end_turn {
+                if let Some(false) = end_turn
+                    && last_agent_message.is_none()
+                {
                     needs_follow_up = true;
                 }
                 break Ok(SamplingRequestResult {
