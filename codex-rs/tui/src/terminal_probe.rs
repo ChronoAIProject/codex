@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 /// Default wall-clock budget for each startup probe group.
-pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Default terminal foreground and background colors reported by OSC 10 and OSC 11.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -69,6 +69,15 @@ mod imp {
         reader: File,
         writer: File,
         original_flags: libc::c_int,
+    }
+
+    /// Minimal terminal I/O used by deadline-bound probe readers.
+    ///
+    /// Implementations should append any currently available bytes without blocking, then report
+    /// whether more bytes become readable before the supplied timeout expires.
+    trait ProbeIo {
+        fn read_available(&mut self, buffer: &mut Vec<u8>) -> io::Result<()>;
+        fn poll_readable(&self, timeout: Duration) -> io::Result<bool>;
     }
 
     impl Tty {
@@ -201,6 +210,16 @@ mod imp {
         }
     }
 
+    impl ProbeIo for Tty {
+        fn read_available(&mut self, buffer: &mut Vec<u8>) -> io::Result<()> {
+            self.read_available(buffer)
+        }
+
+        fn poll_readable(&self, timeout: Duration) -> io::Result<bool> {
+            self.poll_readable(timeout)
+        }
+    }
+
     impl Drop for Tty {
         fn drop(&mut self) {
             let _ =
@@ -269,7 +288,7 @@ mod imp {
     /// not try to replay those bytes, so callers must use it only during short, exclusive probe
     /// windows before normal crossterm input polling begins or while that polling is paused.
     fn read_until<T>(
-        tty: &mut Tty,
+        tty: &mut impl ProbeIo,
         timeout: Duration,
         mut parse: impl FnMut(&[u8]) -> Option<T>,
     ) -> io::Result<Option<T>> {
@@ -291,7 +310,7 @@ mod imp {
     }
 
     fn read_startup_probe(
-        tty: &mut Tty,
+        tty: &mut impl ProbeIo,
         timeout: Duration,
         keyboard_probe: StartupKeyboardEnhancementProbe,
     ) -> io::Result<StartupProbe> {
@@ -491,7 +510,32 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::terminal_probe::DEFAULT_TIMEOUT;
         use pretty_assertions::assert_eq;
+        use std::cell::Cell;
+
+        struct DelayedResponse {
+            response: &'static [u8],
+            available: Cell<bool>,
+        }
+
+        impl ProbeIo for DelayedResponse {
+            fn read_available(&mut self, buffer: &mut Vec<u8>) -> io::Result<()> {
+                if self.available.replace(false) {
+                    buffer.extend_from_slice(self.response);
+                }
+                Ok(())
+            }
+
+            fn poll_readable(&self, timeout: Duration) -> io::Result<bool> {
+                if timeout >= Duration::from_millis(150) {
+                    self.available.set(true);
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
 
         #[test]
         fn parses_cursor_position_as_zero_based() {
@@ -559,6 +603,32 @@ mod imp {
                 &probe,
                 StartupKeyboardEnhancementProbe::Query
             ));
+        }
+
+        #[test]
+        fn startup_probe_waits_long_enough_for_tmux_relayed_colors() {
+            let mut tty = DelayedResponse {
+                response:
+                    b"\x1B[20;10R\x1B]11;rgb:1111/1111/1111\x07\x1B]10;rgb:eeee/eeee/eeee\x1B\\",
+                available: Cell::new(false),
+            };
+
+            assert_eq!(
+                read_startup_probe(
+                    &mut tty,
+                    DEFAULT_TIMEOUT,
+                    StartupKeyboardEnhancementProbe::Skip,
+                )
+                .unwrap(),
+                StartupProbe {
+                    cursor_position: Some(Position { x: 9, y: 19 }),
+                    default_colors: Some(DefaultColors {
+                        fg: (238, 238, 238),
+                        bg: (17, 17, 17),
+                    }),
+                    keyboard_enhancement_supported: None,
+                }
+            );
         }
     }
 }
