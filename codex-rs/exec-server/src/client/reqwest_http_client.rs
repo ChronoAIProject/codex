@@ -15,6 +15,8 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use reqwest::Method;
+use reqwest::NoProxy;
+use reqwest::Proxy;
 use reqwest::Url;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
@@ -63,6 +65,7 @@ impl ReqwestHttpClient {
                 reqwest::Client::builder().timeout(Duration::from_millis(timeout_ms))
             }
         };
+        let builder = add_env_proxies_with_loopback_bypass(builder.no_proxy())?;
         let builder = match redirect_policy {
             HttpRedirectPolicy::Follow => builder,
             HttpRedirectPolicy::Stop => builder.redirect(reqwest::redirect::Policy::none()),
@@ -319,4 +322,38 @@ fn error_source_chain(error: &reqwest::Error) -> Option<String> {
         source = error.source();
     }
     (!sources.is_empty()).then(|| sources.join(": "))
+}
+
+fn add_env_proxies_with_loopback_bypass(
+    mut builder: reqwest::ClientBuilder,
+) -> Result<reqwest::ClientBuilder, ExecServerError> {
+    let no_proxy = NoProxy::from_string("localhost,127.0.0.1,::1");
+    for (keys, factory) in [
+        (
+            ["HTTP_PROXY", "http_proxy"],
+            Proxy::http as fn(String) -> reqwest::Result<Proxy>,
+        ),
+        (
+            ["HTTPS_PROXY", "https_proxy"],
+            Proxy::https as fn(String) -> reqwest::Result<Proxy>,
+        ),
+        (
+            ["ALL_PROXY", "all_proxy"],
+            Proxy::all as fn(String) -> reqwest::Result<Proxy>,
+        ),
+    ] {
+        if let Some(proxy_url) = first_non_empty_env(keys) {
+            let proxy = factory(proxy_url)
+                .map(|proxy| proxy.no_proxy(no_proxy.clone()))
+                .map_err(|error| ExecServerError::HttpRequest(error.to_string()))?;
+            builder = builder.proxy(proxy);
+        }
+    }
+    Ok(builder)
+}
+
+fn first_non_empty_env(keys: [&str; 2]) -> Option<String> {
+    keys.into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.trim().is_empty())
 }

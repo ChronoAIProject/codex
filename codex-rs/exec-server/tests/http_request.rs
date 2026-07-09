@@ -19,6 +19,7 @@ use codex_exec_server_protocol::JSONRPCResponse;
 use codex_exec_server_protocol::RequestId;
 use common::exec_server::ExecServerHarness;
 use common::exec_server::exec_server;
+use common::exec_server::exec_server_with_env;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -249,6 +250,60 @@ async fn exec_server_http_request_streams_response_body_notifications() -> anyho
     assert_eq!(
         (seqs, body, terminal),
         (expected_seqs, b"hello world".to_vec(), Some((true, None)))
+    );
+
+    server.shutdown().await?;
+    Ok(())
+}
+
+/// What this tests: local Streamable HTTP MCP traffic should connect directly
+/// to loopback servers even when the host shell has proxy environment variables
+/// configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(exec_server_http_proxy_env)]
+async fn exec_server_http_request_bypasses_proxy_for_loopback() -> anyhow::Result<()> {
+    let target_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy_url = format!("http://{}", proxy_listener.local_addr()?);
+    let mut server = exec_server_with_env([
+        ("HTTP_PROXY", proxy_url.as_str()),
+        ("http_proxy", proxy_url.as_str()),
+        ("NO_PROXY", ""),
+        ("no_proxy", ""),
+    ])
+    .await?;
+    initialize_exec_server(&mut server).await?;
+
+    let http_request_id = server
+        .send_request(
+            "http/request",
+            serde_json::to_value(HttpRequestParams {
+                method: "GET".to_string(),
+                url: format!("http://{}/mcp", target_listener.local_addr()?),
+                headers: Vec::new(),
+                body: None,
+                timeout_ms: Some(5_000),
+                redirect_policy: HttpRedirectPolicy::Follow,
+                request_id: "loopback-request".to_string(),
+                stream_response: false,
+            })?,
+        )
+        .await?;
+
+    let captured = accept_http_request(&target_listener).await?;
+    assert_eq!(captured.request_line, "GET /mcp HTTP/1.1");
+    respond_with_status_and_headers(captured.stream, "200 OK", &[], b"direct").await?;
+
+    let response: HttpRequestResponse = wait_for_response(&mut server, http_request_id).await?;
+    assert_eq!(
+        (response.status, response.body.into_inner()),
+        (200, b"direct".to_vec())
+    );
+    assert!(
+        timeout(Duration::from_millis(100), proxy_listener.accept())
+            .await
+            .is_err(),
+        "loopback request should not be sent to the proxy"
     );
 
     server.shutdown().await?;
