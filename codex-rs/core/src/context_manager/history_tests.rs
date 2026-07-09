@@ -1215,6 +1215,38 @@ fn record_items_truncates_custom_tool_call_output_content() {
 }
 
 #[test]
+fn record_items_truncates_function_call_arguments() {
+    let mut history = ContextManager::new();
+    let policy = TruncationPolicy::Tokens(1_000);
+    let long_arguments = format!(
+        r#"{{"cmd":"{}"}}"#,
+        "argument content that is very long ".repeat(2_500)
+    );
+    let item = ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: long_arguments.clone(),
+        call_id: "call-arguments".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    history.record_items([&item], policy);
+
+    assert_eq!(history.items.len(), 1);
+    match &history.items[0] {
+        ResponseItem::FunctionCall { arguments, .. } => {
+            assert_ne!(arguments, &long_arguments);
+            assert!(
+                arguments.contains("tokens truncated"),
+                "expected token-based truncation marker, got {arguments}"
+            );
+        }
+        other => panic!("unexpected history item: {other:?}"),
+    }
+}
+
+#[test]
 fn record_items_respects_custom_token_limit() {
     let mut history = ContextManager::new();
     let policy = TruncationPolicy::Tokens(10);

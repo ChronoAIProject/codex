@@ -394,12 +394,26 @@ impl ContextManager {
                 output: truncate_function_output_payload(output, policy_with_serialization_budget),
                 internal_chat_message_metadata_passthrough: metadata.clone(),
             },
+            ResponseItem::FunctionCall {
+                id,
+                name,
+                namespace,
+                arguments,
+                call_id,
+                internal_chat_message_metadata_passthrough: metadata,
+            } => ResponseItem::FunctionCall {
+                id: id.clone(),
+                name: name.clone(),
+                namespace: namespace.clone(),
+                arguments: truncate_text(arguments, policy_with_serialization_budget),
+                call_id: call_id.clone(),
+                internal_chat_message_metadata_passthrough: metadata.clone(),
+            },
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Message { .. }
             | ResponseItem::AgentMessage { .. }
             | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
-            | ResponseItem::FunctionCall { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
