@@ -58,14 +58,17 @@ pub fn shell_command_backend_for_features(features: &Features) -> ShellCommandBa
 /// session inputs such as platform, user shell, and zsh-fork binary paths are
 /// resolved.
 ///
+/// `unified_exec` is independent from the legacy `shell_tool` feature gate, so
+/// disabling the legacy shell command does not remove the unified exec tool.
+///
 /// `unified_exec_zsh_fork` is only a composition gate. It does not enable
-/// either underlying shell mode on its own, so disabling `unified_exec` or
+/// either underlying exec mode on its own, so disabling `unified_exec` or
 /// `shell_zsh_fork` keeps those features independently off. This lets
 /// enterprise deployments opt into, or out of, unified exec and zsh-fork
 /// behavior separately; otherwise enabling the composition flag would silently
 /// activate a shell backend that the configured feature set left disabled.
 pub fn unified_exec_feature_mode_for_features(features: &Features) -> UnifiedExecFeatureMode {
-    if !features.enabled(Feature::ShellTool) || !features.enabled(Feature::UnifiedExec) {
+    if !features.enabled(Feature::UnifiedExec) {
         UnifiedExecFeatureMode::Disabled
     } else if features.enabled(Feature::ShellZshFork) {
         if features.enabled(Feature::UnifiedExecZshFork) {
@@ -99,7 +102,7 @@ pub fn shell_type_for_model_and_features(
         ShellCommandBackendConfig::ZshFork => ConfigShellToolType::ShellCommand,
     };
 
-    if !features.enabled(Feature::ShellTool) {
+    if !features.enabled(Feature::ShellTool) && unified_exec_disabled {
         ConfigShellToolType::Disabled
     } else {
         match unified_exec_feature_mode {
@@ -107,8 +110,10 @@ pub fn shell_type_for_model_and_features(
             UnifiedExecFeatureMode::Direct | UnifiedExecFeatureMode::ZshFork => {
                 if codex_utils_pty::conpty_supported() {
                     ConfigShellToolType::UnifiedExec
-                } else {
+                } else if features.enabled(Feature::ShellTool) {
                     ConfigShellToolType::ShellCommand
+                } else {
+                    ConfigShellToolType::Disabled
                 }
             }
         }

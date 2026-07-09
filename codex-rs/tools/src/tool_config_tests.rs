@@ -97,6 +97,12 @@ fn shell_type_is_derived_from_model_and_feature_gates() {
     features.disable(Feature::ShellTool);
     assert_eq!(
         shell_type_for_model_and_features(&model, &features),
+        expected_unified_exec
+    );
+
+    features.disable(Feature::UnifiedExec);
+    assert_eq!(
+        shell_type_for_model_and_features(&model, &features),
         ConfigShellToolType::Disabled
     );
 }
@@ -155,10 +161,31 @@ fn unified_exec_feature_mode_follows_composition_dependencies() {
         UnifiedExecFeatureMode::ZshFork
     );
 
-    features.disable(Feature::ShellTool);
+    features.disable(Feature::UnifiedExec);
     assert_eq!(
         unified_exec_feature_mode_for_features(&features),
         UnifiedExecFeatureMode::Disabled
+    );
+}
+
+#[test]
+fn unified_exec_does_not_require_legacy_shell_tool() {
+    let model = model_with_shell_type(ConfigShellToolType::UnifiedExec);
+    let mut features = shell_features();
+    features.disable(Feature::ShellTool);
+    features.enable(Feature::UnifiedExec);
+
+    assert_eq!(
+        unified_exec_feature_mode_for_features(&features),
+        UnifiedExecFeatureMode::Direct
+    );
+    assert_eq!(
+        shell_type_for_model_and_features(&model, &features),
+        if codex_utils_pty::conpty_supported() {
+            ConfigShellToolType::UnifiedExec
+        } else {
+            ConfigShellToolType::Disabled
+        }
     );
 }
 
