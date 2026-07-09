@@ -519,8 +519,12 @@ impl OauthLoginFlow {
         };
 
         let redirect_uri = resolve_redirect_uri(&server, callback_url)?;
-        let callback_id = callback_id_from_server_url(server_url)?;
-        let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+        let redirect_uri = if callback_url.is_some() {
+            redirect_uri
+        } else {
+            let callback_id = callback_id_from_server_url(server_url)?;
+            append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?
+        };
         let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
 
         let (tx, rx) = oneshot::channel();
@@ -714,6 +718,8 @@ mod tests {
     use axum::Json;
     use axum::Router;
     use axum::routing::get;
+    use codex_config::types::AuthKeyringBackendKind;
+    use codex_config::types::OAuthCredentialsStoreMode;
     use codex_exec_server::ReqwestHttpClient;
     use pretty_assertions::assert_eq;
     use reqwest::Url;
@@ -723,7 +729,9 @@ mod tests {
 
     use super::CallbackOutcome;
     use super::OAuthHttpClientAdapter;
+    use super::OAuthHttpContext;
     use super::OAuthProviderError;
+    use super::OauthLoginFlow;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
     use super::callback_id_from_server_url;
@@ -795,6 +803,42 @@ mod tests {
             .map(|(_, value)| value.into_owned());
 
         assert_eq!(client_id.as_deref(), Some("eci-prd-pub-codex-123"));
+    }
+
+    #[tokio::test]
+    async fn configured_callback_url_is_used_as_exact_redirect_uri() {
+        let base_url = spawn_oauth_metadata_server().await;
+        let callback_url = "https://callbacks.example.com/oauth/callback";
+        let http_context = OAuthHttpContext {
+            http_headers: None,
+            env_http_headers: None,
+            http_client: Arc::new(ReqwestHttpClient),
+        };
+
+        let flow = OauthLoginFlow::new(
+            "test",
+            &format!("{base_url}/mcp"),
+            OAuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+            http_context,
+            &[],
+            Some("https://example.com/codex-client-metadata"),
+            None,
+            /*launch_browser*/ false,
+            None,
+            Some(callback_url),
+            Some(1),
+        )
+        .await
+        .expect("start oauth login flow");
+
+        let auth_url = Url::parse(&flow.authorization_url()).expect("authorization url parses");
+        let redirect_uri = auth_url
+            .query_pairs()
+            .find(|(key, _)| key == "redirect_uri")
+            .map(|(_, value)| value.into_owned());
+
+        assert_eq!(redirect_uri.as_deref(), Some(callback_url));
     }
 
     #[test]
