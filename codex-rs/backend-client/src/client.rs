@@ -598,7 +598,7 @@ impl Client {
     ) -> Option<RateLimitWindow> {
         let snapshot = window.flatten().map(|details| *details)?;
 
-        let used_percent = f64::from(snapshot.used_percent);
+        let used_percent = f64::from(Self::used_percent_from_window_snapshot(&snapshot));
         let window_minutes = Self::window_minutes_from_seconds(snapshot.limit_window_seconds);
         let resets_at = Some(i64::from(snapshot.reset_at));
         Some(RateLimitWindow {
@@ -606,6 +606,14 @@ impl Client {
             window_minutes,
             resets_at,
         })
+    }
+
+    fn used_percent_from_window_snapshot(snapshot: &crate::types::RateLimitWindowSnapshot) -> i32 {
+        if snapshot.reset_after_seconds >= snapshot.limit_window_seconds {
+            0
+        } else {
+            snapshot.used_percent
+        }
     }
 
     fn map_credits(credits: Option<crate::types::CreditStatusDetails>) -> Option<CreditsSnapshot> {
@@ -815,6 +823,42 @@ mod tests {
         assert_eq!(snapshots[0].primary, None);
         assert_eq!(snapshots[1].limit_id.as_deref(), Some("codex_other"));
         assert_eq!(snapshots[1].limit_name.as_deref(), Some("codex_other"));
+    }
+
+    #[test]
+    fn usage_payload_treats_full_window_reset_as_unused() {
+        let payload = RateLimitStatusPayload {
+            plan_type: crate::types::PlanType::Team,
+            rate_limit: Some(Some(Box::new(crate::types::RateLimitStatusDetails {
+                primary_window: Some(Some(Box::new(crate::types::RateLimitWindowSnapshot {
+                    used_percent: 1,
+                    limit_window_seconds: 18_000,
+                    reset_after_seconds: 18_000,
+                    reset_at: 123,
+                }))),
+                secondary_window: Some(Some(Box::new(crate::types::RateLimitWindowSnapshot {
+                    used_percent: 2,
+                    limit_window_seconds: 604_800,
+                    reset_after_seconds: 604_799,
+                    reset_at: 456,
+                }))),
+                ..Default::default()
+            }))),
+            additional_rate_limits: None,
+            credits: None,
+            spend_control: None,
+            rate_limit_reached_type: None,
+        };
+
+        let snapshots = Client::rate_limit_snapshots_from_payload(payload);
+        assert_eq!(
+            snapshots[0].primary.as_ref().map(|w| w.used_percent),
+            Some(0.0)
+        );
+        assert_eq!(
+            snapshots[0].secondary.as_ref().map(|w| w.used_percent),
+            Some(2.0)
+        );
     }
 
     #[test]
