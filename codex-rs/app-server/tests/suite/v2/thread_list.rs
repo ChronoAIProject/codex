@@ -372,6 +372,71 @@ stream_max_retries = 0
     )
 }
 
+fn create_multi_provider_config(codex_home: &std::path::Path) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        r#"
+model = "mock-model"
+approval_policy = "never"
+suppress_unstable_features_warning = true
+
+model_provider = "provider_b"
+
+[model_providers.provider_a]
+name = "Provider A"
+base_url = "http://127.0.0.1:65531/v1"
+wire_api = "responses"
+
+[model_providers.provider_b]
+name = "Provider B"
+base_url = "http://127.0.0.1:65532/v1"
+wire_api = "responses"
+"#,
+    )
+}
+
+#[tokio::test]
+async fn thread_list_without_provider_filter_includes_all_providers() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_multi_provider_config(codex_home.path())?;
+
+    let provider_a_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T10-00-00",
+        "2025-01-02T10:00:00Z",
+        "Provider A thread",
+        Some("provider_a"),
+        /*git_info*/ None,
+    )?;
+    let provider_b_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-00-00",
+        "2025-01-02T11:00:00Z",
+        "Provider B thread",
+        Some("provider_b"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*providers*/ None,
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+
+    let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
+    assert_eq!(ids, vec![provider_b_id.as_str(), provider_a_id.as_str()]);
+    assert_eq!(data[0].model_provider, "provider_b");
+    assert_eq!(data[1].model_provider, "provider_a");
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_list_pagination_next_cursor_none_on_last_page() -> Result<()> {
     let codex_home = TempDir::new()?;
