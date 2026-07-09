@@ -108,9 +108,15 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         }
                     }
 
-                    CodexErr::RetryLimit(RetryLimitReachedError {
+                    CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
-                        request_id: extract_request_tracking_id(headers.as_ref()),
+                        user_message: Some(rate_limited_user_message(headers.as_ref())),
+                        body: body_text,
+                        url,
+                        cf_ray: extract_header(headers.as_ref(), CF_RAY_HEADER),
+                        request_id: extract_request_id(headers.as_ref()),
+                        identity_authorization_error: None,
+                        identity_error_code: None,
                     })
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
@@ -145,6 +151,7 @@ const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";
 const CF_RAY_HEADER: &str = "cf-ray";
+const RETRY_AFTER_HEADER: &str = "retry-after";
 const X_OPENAI_AUTHORIZATION_ERROR_HEADER: &str = "x-openai-authorization-error";
 const X_ERROR_JSON_HEADER: &str = "x-error-json";
 const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
@@ -157,10 +164,6 @@ const CLOUDFLARE_BLOCKED_MESSAGE: &str =
 #[path = "api_bridge_tests.rs"]
 mod tests;
 
-fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
-    extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))
-}
-
 fn api_error_user_message(status: http::StatusCode, body: &str) -> Option<String> {
     if status == http::StatusCode::FORBIDDEN
         && body.contains("Cloudflare")
@@ -170,6 +173,14 @@ fn api_error_user_message(status: http::StatusCode, body: &str) -> Option<String
     } else {
         None
     }
+}
+
+fn rate_limited_user_message(headers: Option<&HeaderMap>) -> String {
+    let mut message = "rate limited: HTTP 429 Too Many Requests".to_string();
+    if let Some(retry_after) = extract_header(headers, RETRY_AFTER_HEADER) {
+        message.push_str(&format!(", retry-after: {retry_after}"));
+    }
+    message
 }
 
 fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {

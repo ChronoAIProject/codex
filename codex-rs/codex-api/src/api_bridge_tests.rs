@@ -190,6 +190,28 @@ fn map_api_error_maps_usage_limit_limit_name_header() {
 }
 
 #[test]
+fn map_api_error_maps_plain_429_without_retry_limit_wording() {
+    let mut headers = HeaderMap::new();
+    headers.insert(REQUEST_ID_HEADER, http::HeaderValue::from_static("req-429"));
+    headers.insert(RETRY_AFTER_HEADER, http::HeaderValue::from_static("30"));
+
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(r#"{"error":{"message":"please slow down"}}"#.to_string()),
+    }));
+
+    let CodexErr::UnexpectedStatus(err) = err else {
+        panic!("expected CodexErr::UnexpectedStatus, got {err:?}");
+    };
+    assert_eq!(
+        err.to_string(),
+        "rate limited: HTTP 429 Too Many Requests, retry-after: 30, url: http://example.com/v1/responses, request id: req-429"
+    );
+}
+
+#[test]
 fn map_api_error_does_not_fallback_limit_name_to_limit_id() {
     let mut headers = HeaderMap::new();
     headers.insert(
