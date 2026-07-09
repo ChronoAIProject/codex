@@ -134,12 +134,14 @@ impl ThreadScopedOutgoingMessageSender {
         &self,
         payload: ServerRequestPayload,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        let connection_ids =
+            if self.connection_ids.is_empty() && should_broadcast_without_subscribers(&payload) {
+                None
+            } else {
+                Some(self.connection_ids.as_slice())
+            };
         self.outgoing
-            .send_request_to_connections(
-                Some(self.connection_ids.as_slice()),
-                payload,
-                Some(self.thread_id),
-            )
+            .send_request_to_connections(connection_ids, payload, Some(self.thread_id))
             .await
     }
 
@@ -717,6 +719,16 @@ impl OutgoingMessageSender {
             warn!("failed to send {message_kind} to client: {err:?}");
         }
     }
+}
+
+fn should_broadcast_without_subscribers(payload: &ServerRequestPayload) -> bool {
+    matches!(
+        payload,
+        ServerRequestPayload::CommandExecutionRequestApproval(_)
+            | ServerRequestPayload::FileChangeRequestApproval(_)
+            | ServerRequestPayload::McpServerElicitationRequest(_)
+            | ServerRequestPayload::PermissionsRequestApproval(_)
+    )
 }
 
 fn now_unix_timestamp_ms() -> u64 {
@@ -1324,6 +1336,55 @@ mod tests {
                 &second_request_id
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_approval_request_without_subscribers_is_broadcast() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(outgoing, vec![], thread_id);
+
+        let (request_id, _waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
+                CommandExecutionRequestApprovalParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-1".to_string(),
+                    started_at_ms: 0,
+                    approval_id: None,
+                    environment_id: None,
+                    reason: None,
+                    network_approval_context: None,
+                    command: Some("echo hi".to_string()),
+                    cwd: None,
+                    command_actions: None,
+                    additional_permissions: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    available_decisions: None,
+                },
+            ))
+            .await;
+
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive envelope before timeout")
+            .expect("channel should contain one message");
+        let OutgoingEnvelope::Broadcast {
+            message:
+                OutgoingMessage::Request(ServerRequest::CommandExecutionRequestApproval {
+                    request_id: sent_request_id,
+                    ..
+                }),
+        } = envelope
+        else {
+            panic!("expected unsubscribed approval request to be broadcast");
+        };
+        assert_eq!(sent_request_id, request_id);
     }
 
     #[tokio::test]
