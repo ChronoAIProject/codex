@@ -90,16 +90,16 @@ pub(crate) fn normalize_key_parts(
     let KeyCode::Char(ch) = key else {
         return (key, modifiers);
     };
-    if modifiers.is_empty()
-        && let Some(ctrl_char) = c0_control_char_to_ctrl_char(ch)
+    if let Some(ctrl_char) = c0_control_char_to_ctrl_char(ch) {
+        modifiers.insert(KeyModifiers::CONTROL);
+        return (KeyCode::Char(ctrl_char), modifiers);
+    }
+    if ch.is_ascii_uppercase()
+        && (!modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT))
     {
-        return (KeyCode::Char(ctrl_char), KeyModifiers::CONTROL | modifiers);
-    }
-    if ch.is_ascii_uppercase() {
         modifiers.insert(KeyModifiers::SHIFT);
-        return (KeyCode::Char(ch.to_ascii_lowercase()), modifiers);
     }
-    (key, modifiers)
+    (KeyCode::Char(ch.to_ascii_lowercase()), modifiers)
 }
 
 fn c0_control_char_to_ctrl_char(ch: char) -> Option<char> {
@@ -263,7 +263,17 @@ mod tests {
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         );
 
-        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::CONTROL)));
+        assert!(binding.is_press(KeyEvent::new(
+            KeyCode::Char('I'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+    }
+
+    #[test]
+    fn ctrl_letter_binding_matches_uppercase_modified_char_events() {
+        let binding = ctrl(KeyCode::Char('j'));
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::CONTROL)));
     }
 
     #[test]
@@ -279,6 +289,10 @@ mod tests {
         let binding = ctrl(KeyCode::Char('p'));
 
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('\u{0010}'), KeyModifiers::NONE)));
+        assert!(binding.is_press(KeyEvent::new(
+            KeyCode::Char('\u{0010}'),
+            KeyModifiers::CONTROL
+        )));
         assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('\u{0010}'), KeyModifiers::ALT)));
     }
 
