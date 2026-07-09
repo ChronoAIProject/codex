@@ -50,6 +50,8 @@ use crate::tui::event_stream::EventBroker;
 use crate::tui::event_stream::TuiEventStream;
 #[cfg(unix)]
 use crate::tui::job_control::SuspendContext;
+use crate::wrapping::line_contains_url_like;
+use crate::wrapping::line_has_mixed_url_and_non_url_tokens;
 use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
 
@@ -98,13 +100,18 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    use super::PendingHistoryLines;
+    use super::Tui;
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
+    use crate::insert_history::HistoryLineWrapPolicy;
+    use crate::terminal_hyperlinks::HyperlinkLine;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -168,6 +175,57 @@ mod tests {
         assert!(
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn flush_routes_zellij_pre_wrap_url_batch_through_raw_insert() {
+        let width = 20;
+        let height = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ width, /*height*/ 2,
+        ));
+
+        let url_line = HyperlinkLine::new(Line::from(format!(
+            "https://example.test/{}tail-must-remain",
+            "a".repeat(130)
+        )));
+        let mut pending_history_lines = vec![PendingHistoryLines {
+            lines: vec![url_line],
+            wrap_policy: HistoryLineWrapPolicy::PreWrap,
+        }];
+
+        Tui::flush_pending_history_lines(
+            &mut terminal,
+            &mut pending_history_lines,
+            /*is_zellij*/ true,
+        )
+        .expect("flush pending history");
+
+        assert!(
+            pending_history_lines.is_empty(),
+            "flushing should consume pending history"
+        );
+        let rows: Vec<String> = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .rows(/*start*/ 0, width)
+            .collect();
+        let history_rows = rows[..usize::from(terminal.viewport_area.y)]
+            .iter()
+            .map(|row| row.trim_end())
+            .collect::<String>();
+        let viewport_rows = rows[usize::from(terminal.viewport_area.y)..].join("\n");
+        assert!(
+            history_rows.contains("tail-must-remain"),
+            "expected overflowing URL tail above the viewport, rows: {rows:?}"
+        );
+        assert!(
+            !viewport_rows.contains("tail-must-remain"),
+            "overflowing URL tail must not be written through the viewport, rows: {rows:?}"
         );
     }
 }
@@ -555,6 +613,19 @@ struct PendingHistoryLines {
     wrap_policy: HistoryLineWrapPolicy,
 }
 
+impl PendingHistoryLines {
+    fn zellij_needs_raw_insert(&self, wrap_width: usize) -> bool {
+        match self.wrap_policy {
+            HistoryLineWrapPolicy::Terminal => true,
+            HistoryLineWrapPolicy::PreWrap => self.lines.iter().any(|line| {
+                line.width() > wrap_width.max(1)
+                    && line_contains_url_like(&line.line)
+                    && !line_has_mixed_url_and_non_url_tokens(&line.line)
+            }),
+        }
+    }
+}
+
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
 where
     B: Backend + Write,
@@ -851,17 +922,21 @@ impl Tui {
     }
 
     /// Write any buffered history lines above the viewport and clear the buffer.
-    fn flush_pending_history_lines(
-        terminal: &mut Terminal,
+    fn flush_pending_history_lines<B>(
+        terminal: &mut CustomTerminal<B>,
         pending_history_lines: &mut Vec<PendingHistoryLines>,
         is_zellij: bool,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        B: Backend + Write,
+    {
         if pending_history_lines.is_empty() {
             return Ok(());
         }
 
         for batch in pending_history_lines.iter() {
-            let mode = if is_zellij && batch.wrap_policy == HistoryLineWrapPolicy::Terminal {
+            let wrap_width = terminal.viewport_area.width.max(1) as usize;
+            let mode = if is_zellij && batch.zellij_needs_raw_insert(wrap_width) {
                 InsertHistoryMode::ZellijRaw
             } else {
                 InsertHistoryMode::Standard
