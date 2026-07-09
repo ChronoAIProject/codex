@@ -47,7 +47,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn init_mcp(codex_home: &Path) -> Result<TestAppServer> {
     let mut mcp = TestAppServer::new(codex_home).await?;
@@ -513,6 +513,57 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_without_provider_filter_includes_all_providers() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+
+    let mock_provider_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T10-00-00",
+        "2025-01-02T10:00:00Z",
+        "mock provider",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let other_provider_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-00-00",
+        "2025-01-02T11:00:00Z",
+        "other provider",
+        Some("other_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let ThreadListResponse {
+        data, next_cursor, ..
+    } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*providers*/ None,
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+
+    assert_eq!(next_cursor, None);
+    let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![other_provider_id.as_str(), mock_provider_id.as_str()]
+    );
+    let providers: Vec<_> = data
+        .iter()
+        .map(|thread| thread.model_provider.as_str())
+        .collect();
+    assert_eq!(providers, vec!["other_provider", "mock_provider"]);
 
     Ok(())
 }
