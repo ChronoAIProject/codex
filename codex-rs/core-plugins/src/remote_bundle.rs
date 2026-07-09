@@ -407,7 +407,7 @@ fn install_remote_plugin_bundle(
     let store = PluginStore::try_new(codex_home)?;
     let remote_plugin_id = bundle.remote_plugin_id;
     let result = store
-        .install_with_version(plugin_root, bundle.plugin_id, bundle.plugin_version)
+        .install_remote_bundle_with_version(plugin_root, bundle.plugin_id, bundle.plugin_version)
         .map_err(RemotePluginBundleInstallError::from)?;
     store.write_remote_plugin_id(&result.plugin_id, &remote_plugin_id)?;
     Ok(result)
@@ -783,6 +783,57 @@ mod tests {
             serde_json::json!({
                 "schema_version": 1,
                 "remote_plugin_id": REMOTE_PLUGIN_ID,
+            })
+        );
+    }
+
+    #[test]
+    fn install_allows_remote_bundle_manifest_name_to_differ_from_slug() {
+        let codex_home = tempdir().expect("tempdir");
+        let bundle = validate_remote_plugin_bundle(
+            REMOTE_PLUGIN_ID,
+            "openai-curated-remote",
+            "stripe",
+            Some("1.2.3"),
+            Some("https://example.com/stripe.tar.gz"),
+            /*app_manifest*/ None,
+        )
+        .expect("valid install plan");
+
+        let result = install_remote_plugin_bundle(
+            codex_home.path().to_path_buf(),
+            bundle,
+            tar_gz_bytes(&[(
+                ".codex-plugin/plugin.json",
+                br#"{"name":"app-6983c208e5f8819196b7511519f97993"}"#,
+                /*mode*/ 0o644,
+            )]),
+        )
+        .expect("install bundle");
+
+        assert_eq!(result.plugin_id.as_key(), "stripe@openai-curated-remote");
+        assert_eq!(result.plugin_version, "1.2.3");
+        assert_eq!(
+            result.installed_path.as_path(),
+            codex_home
+                .path()
+                .join("plugins/cache/openai-curated-remote/stripe/1.2.3")
+        );
+        let installed_manifest: JsonValue = serde_json::from_str(
+            &std::fs::read_to_string(
+                result
+                    .installed_path
+                    .join(".codex-plugin/plugin.json")
+                    .as_path(),
+            )
+            .expect("read installed plugin manifest"),
+        )
+        .expect("parse installed plugin manifest");
+        assert_eq!(
+            installed_manifest,
+            serde_json::json!({
+                "name": "app-6983c208e5f8819196b7511519f97993",
+                "version": "1.2.3",
             })
         );
     }

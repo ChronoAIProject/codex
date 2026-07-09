@@ -48,6 +48,12 @@ enum InstallManifest<'a> {
     Fallback(&'a str),
 }
 
+#[derive(Clone, Copy)]
+enum ManifestNamePolicy {
+    RequireMatch,
+    AllowMismatch,
+}
+
 impl PluginStore {
     pub fn new(codex_home: PathBuf) -> Self {
         Self::try_new(codex_home)
@@ -255,6 +261,22 @@ impl PluginStore {
             plugin_id,
             plugin_version,
             InstallManifest::OnDisk,
+            ManifestNamePolicy::RequireMatch,
+        )
+    }
+
+    pub(crate) fn install_remote_bundle_with_version(
+        &self,
+        source_path: AbsolutePathBuf,
+        plugin_id: PluginId,
+        plugin_version: String,
+    ) -> Result<PluginInstallResult, PluginStoreError> {
+        self.install_with_version_and_manifest(
+            source_path,
+            plugin_id,
+            plugin_version,
+            InstallManifest::OnDisk,
+            ManifestNamePolicy::AllowMismatch,
         )
     }
 
@@ -270,6 +292,7 @@ impl PluginStore {
             plugin_id,
             plugin_version,
             InstallManifest::Fallback(manifest_contents),
+            ManifestNamePolicy::RequireMatch,
         )
     }
 
@@ -281,7 +304,13 @@ impl PluginStore {
     ) -> Result<PluginInstallResult, PluginStoreError> {
         let manifest = resolve_install_manifest(source_path.as_path(), manifest);
         let plugin_version = plugin_version_for_install_manifest(source_path.as_path(), manifest)?;
-        self.install_with_version_and_manifest(source_path, plugin_id, plugin_version, manifest)
+        self.install_with_version_and_manifest(
+            source_path,
+            plugin_id,
+            plugin_version,
+            manifest,
+            ManifestNamePolicy::RequireMatch,
+        )
     }
 
     fn install_with_version_and_manifest(
@@ -290,6 +319,7 @@ impl PluginStore {
         plugin_id: PluginId,
         plugin_version: String,
         manifest: InstallManifest<'_>,
+        manifest_name_policy: ManifestNamePolicy,
     ) -> Result<PluginInstallResult, PluginStoreError> {
         if !source_path.as_path().is_dir() {
             return Err(PluginStoreError::Invalid(format!(
@@ -300,7 +330,9 @@ impl PluginStore {
 
         let manifest = resolve_install_manifest(source_path.as_path(), manifest);
         let plugin_name = plugin_name_for_source(source_path.as_path(), manifest)?;
-        if plugin_name != plugin_id.plugin_name {
+        if matches!(manifest_name_policy, ManifestNamePolicy::RequireMatch)
+            && plugin_name != plugin_id.plugin_name
+        {
             return Err(PluginStoreError::Invalid(format!(
                 "plugin.json name `{plugin_name}` does not match marketplace plugin name `{}`",
                 plugin_id.plugin_name
