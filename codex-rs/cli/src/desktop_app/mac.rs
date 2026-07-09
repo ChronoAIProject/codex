@@ -6,8 +6,8 @@ use tempfile::Builder;
 use tokio::process::Command;
 
 const CODEX_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
-const CODEX_DMG_URL_X64: &str =
-    "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg";
+const INTEL_MAC_UNSUPPORTED_MESSAGE: &str =
+    "Codex Desktop for Intel Macs is currently unsupported.";
 
 pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
@@ -22,14 +22,8 @@ pub async fn run_mac_app_open_or_install(
         return Ok(());
     }
     eprintln!("Codex Desktop not found; downloading installer...");
-    let download_url = download_url_override.unwrap_or_else(|| {
-        let default_url = if is_apple_silicon_mac() {
-            CODEX_DMG_URL_ARM64
-        } else {
-            CODEX_DMG_URL_X64
-        };
-        default_url.to_string()
-    });
+    let download_url =
+        download_url_or_default_for_mac(download_url_override, is_apple_silicon_mac())?;
     let installed_app = download_and_install_codex_to_user_applications(&download_url)
         .await
         .context("failed to download/install Codex Desktop")?;
@@ -39,6 +33,21 @@ pub async fn run_mac_app_open_or_install(
     );
     open_codex_app(&installed_app, &workspace).await?;
     Ok(())
+}
+
+fn download_url_or_default_for_mac(
+    download_url_override: Option<String>,
+    is_apple_silicon: bool,
+) -> anyhow::Result<String> {
+    if let Some(download_url) = download_url_override {
+        return Ok(download_url);
+    }
+
+    if !is_apple_silicon {
+        anyhow::bail!("{INTEL_MAC_UNSUPPORTED_MESSAGE}");
+    }
+
+    Ok(CODEX_DMG_URL_ARM64.to_string())
 }
 
 fn is_apple_silicon_mac() -> bool {
@@ -302,7 +311,9 @@ fn parse_hdiutil_attach_mount_point(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::CODEX_DMG_URL_ARM64;
     use super::codex_new_thread_url;
+    use super::download_url_or_default_for_mac;
     use super::parse_hdiutil_attach_mount_point;
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -343,6 +354,38 @@ mod tests {
                 "/new".to_string(),
                 vec![("path".to_string(), "/tmp/codex workspace/#1".to_string())],
             )
+        );
+    }
+
+    #[test]
+    fn default_download_url_uses_arm64_dmg_on_apple_silicon() {
+        assert_eq!(
+            download_url_or_default_for_mac(None, /*is_apple_silicon*/ true)
+                .expect("apple silicon default should resolve"),
+            CODEX_DMG_URL_ARM64
+        );
+    }
+
+    #[test]
+    fn default_download_url_rejects_unsupported_intel_mac() {
+        let err = download_url_or_default_for_mac(None, /*is_apple_silicon*/ false)
+            .expect_err("intel mac default should be unsupported");
+
+        assert_eq!(
+            err.to_string(),
+            "Codex Desktop for Intel Macs is currently unsupported."
+        );
+    }
+
+    #[test]
+    fn download_url_override_is_honored_on_intel_mac() {
+        assert_eq!(
+            download_url_or_default_for_mac(
+                Some("https://example.com/private-codex.dmg".to_string()),
+                /*is_apple_silicon*/ false,
+            )
+            .expect("override should bypass default platform support"),
+            "https://example.com/private-codex.dmg"
         );
     }
 }
