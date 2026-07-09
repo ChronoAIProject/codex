@@ -6,12 +6,33 @@ use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::Submission;
+use uuid::Uuid;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+
+fn new_turn_id() -> String {
+    Uuid::now_v7().to_string()
+}
+
+fn turn_start_response(turn_id: String) -> TurnStartResponse {
+    TurnStartResponse {
+        turn: Turn {
+            id: turn_id,
+            items: vec![],
+            items_view: TurnItemsView::NotLoaded,
+            error: None,
+            status: TurnStatus::InProgress,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        },
+    }
+}
 
 fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
     if input.iter().any(|item| {
@@ -491,6 +512,20 @@ impl TurnRequestProcessor {
             .map(V2UserInput::into_core)
             .collect();
         let client_user_message_id = params.client_user_message_id;
+        let turn_id = new_turn_id();
+        if let Some(existing_turn_id) = self
+            .reserve_turn_start_client_message_id(
+                thread_id,
+                client_user_message_id.as_deref(),
+                &turn_id,
+            )
+            .await
+        {
+            self.outgoing
+                .record_request_turn_id(&request_id, &existing_turn_id)
+                .await;
+            return Ok(turn_start_response(existing_turn_id));
+        }
         let additional_context = map_additional_context(params.additional_context);
         let turn_has_input = !mapped_items.is_empty();
         let cwd = resolve_request_cwd(params.cwd)?;
@@ -526,18 +561,25 @@ impl TurnRequestProcessor {
             additional_context,
             thread_settings,
         };
-        let turn_id = thread
-            .submit_user_input_with_client_user_message_id(
-                turn_op,
-                self.request_trace_context(&request_id).await,
-                client_user_message_id,
+        let submission = Submission {
+            id: turn_id.clone(),
+            op: turn_op,
+            client_user_message_id: client_user_message_id.clone(),
+            trace: self.request_trace_context(&request_id).await,
+        };
+        if let Err(err) = thread.submit_with_id(submission).await {
+            self.clear_turn_start_client_message_id(
+                thread_id,
+                client_user_message_id.as_deref(),
+                &turn_id,
             )
-            .await
-            .map_err(|err| {
+            .await;
+            return Err({
                 let error = internal_error(format!("failed to start turn: {err}"));
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 error
-            })?;
+            });
+        }
 
         if turn_has_input {
             let config_snapshot = thread.config_snapshot().await;
@@ -554,18 +596,52 @@ impl TurnRequestProcessor {
         self.outgoing
             .record_request_turn_id(&request_id, &turn_id)
             .await;
-        let turn = Turn {
-            id: turn_id,
-            items: vec![],
-            items_view: TurnItemsView::NotLoaded,
-            error: None,
-            status: TurnStatus::InProgress,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        };
+        Ok(turn_start_response(turn_id))
+    }
 
-        Ok(TurnStartResponse { turn })
+    async fn reserve_turn_start_client_message_id(
+        &self,
+        thread_id: ThreadId,
+        client_user_message_id: Option<&str>,
+        turn_id: &str,
+    ) -> Option<String> {
+        let client_user_message_id = client_user_message_id?;
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let mut state = thread_state.lock().await;
+        match state
+            .pending_turn_start_client_message_ids
+            .get(client_user_message_id)
+        {
+            Some(existing_turn_id) => Some(existing_turn_id.clone()),
+            None => {
+                state
+                    .pending_turn_start_client_message_ids
+                    .insert(client_user_message_id.to_string(), turn_id.to_string());
+                None
+            }
+        }
+    }
+
+    async fn clear_turn_start_client_message_id(
+        &self,
+        thread_id: ThreadId,
+        client_user_message_id: Option<&str>,
+        turn_id: &str,
+    ) {
+        let Some(client_user_message_id) = client_user_message_id else {
+            return;
+        };
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let mut state = thread_state.lock().await;
+        if state
+            .pending_turn_start_client_message_ids
+            .get(client_user_message_id)
+            .is_some_and(|pending_turn_id| pending_turn_id == turn_id)
+        {
+            state
+                .pending_turn_start_client_message_ids
+                .remove(client_user_message_id);
+        }
     }
 
     async fn build_environment_override(

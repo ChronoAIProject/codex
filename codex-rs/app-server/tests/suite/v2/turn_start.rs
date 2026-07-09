@@ -1506,6 +1506,104 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
 }
 
 #[tokio::test]
+async fn duplicate_turn_start_client_user_message_id_reuses_pending_turn() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+    )?;
+
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let params = TurnStartParams {
+        thread_id: thread.id.clone(),
+        client_user_message_id: Some("client-message-1".to_string()),
+        input: vec![V2UserInput::Text {
+            text: "Hello".to_string(),
+            text_elements: Vec::new(),
+        }],
+        ..Default::default()
+    };
+    let first_req = mcp.send_turn_start_request(params.clone()).await?;
+    let second_req = mcp.send_turn_start_request(params).await?;
+
+    let first_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(first_req)),
+    )
+    .await??;
+    let second_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(second_req)),
+    )
+    .await??;
+    let first_turn = to_response::<TurnStartResponse>(first_resp)?.turn;
+    let second_turn = to_response::<TurnStartResponse>(second_resp)?.turn;
+    assert_eq!(second_turn, first_turn);
+
+    let notif: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await??;
+    let started: TurnStartedNotification =
+        serde_json::from_value(notif.params.expect("params must be present"))?;
+    assert_eq!(started.thread_id, thread.id);
+    assert_eq!(started.turn.id, first_turn.id);
+
+    let completed_notif: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    let completed: TurnCompletedNotification = serde_json::from_value(
+        completed_notif
+            .params
+            .expect("turn/completed params must be present"),
+    )?;
+    assert_eq!(completed.thread_id, thread.id);
+    assert_eq!(completed.turn.id, first_turn.id);
+
+    let maybe_started = timeout(
+        std::time::Duration::from_millis(200),
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await;
+    assert!(maybe_started.is_err(), "duplicate turn should not start");
+
+    let requests = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?;
+    let response_request_count = requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .count();
+    assert_eq!(response_request_count, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_start_accepts_collaboration_mode_override_v2() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

@@ -80,6 +80,7 @@ pub(crate) struct ThreadState {
     pub(crate) pending_rollbacks: Option<ConnectionRequestId>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
+    pub(crate) pending_turn_start_client_message_ids: HashMap<String, String>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
@@ -150,6 +151,8 @@ impl ThreadState {
             && !self.current_turn_history.has_active_turn()
         {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
+            self.pending_turn_start_client_message_ids
+                .retain(|_, turn_id| turn_id != event_turn_id);
             self.current_turn_history.reset();
         }
     }
