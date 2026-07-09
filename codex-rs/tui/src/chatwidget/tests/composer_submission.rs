@@ -1468,32 +1468,46 @@ async fn interrupt_restores_queued_messages_into_composer() {
 }
 
 #[tokio::test]
-async fn interrupt_prepends_queued_messages_before_existing_composer_text() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn interrupt_submits_queued_message_without_merging_existing_composer_text() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
+    chat.thread_id = Some(ThreadId::new());
     chat.bottom_pane.set_task_running(/*running*/ true);
-    chat.bottom_pane
-        .set_composer_text("current draft".to_string(), Vec::new(), Vec::new());
+    let draft_placeholder = "[Image #1]";
+    let draft_text = format!("{draft_placeholder} current draft");
+    let draft_elements = vec![TextElement::new(
+        (0..draft_placeholder.len()).into(),
+        Some(draft_placeholder.to_string()),
+    )];
+    let draft_image = PathBuf::from("/tmp/current-draft.png");
+    chat.bottom_pane.set_composer_text(
+        draft_text.clone(),
+        draft_elements.clone(),
+        vec![draft_image],
+    );
 
     chat.input_queue
         .queued_user_messages
-        .push_back(UserMessage::from("first queued".to_string()).into());
-    chat.input_queue
-        .queued_user_messages
-        .push_back(UserMessage::from("second queued".to_string()).into());
+        .push_back(UserMessage::from("queued follow-up".to_string()).into());
     chat.refresh_pending_input_preview();
 
     handle_turn_interrupted(&mut chat, "turn-1");
 
+    assert_eq!(chat.bottom_pane.composer_text(), draft_text);
+    assert_eq!(chat.bottom_pane.composer_text_elements(), draft_elements);
     assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "first queued\nsecond queued\ncurrent draft"
+        chat.bottom_pane.composer_local_image_paths(),
+        vec![PathBuf::from("/tmp/current-draft.png")]
     );
     assert!(chat.input_queue.queued_user_messages.is_empty());
-    assert!(
-        op_rx.try_recv().is_err(),
-        "unexpected outbound op after interrupt"
-    );
-
-    let _ = drain_insert_history(&mut rx);
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued follow-up".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
 }

@@ -185,8 +185,28 @@ impl ChatWidget {
             } else if let Some(combined) = self.drain_pending_messages_for_restore() {
                 self.restore_composer_state(combined);
             }
-        } else if let Some(combined) = self.drain_pending_messages_for_restore() {
-            self.restore_composer_state(combined);
+        } else {
+            let composer = self.bottom_pane.composer_draft_snapshot();
+            let has_composer_draft = ThreadComposerState {
+                text: composer.text,
+                text_elements: composer.text_elements,
+                local_images: composer.local_images,
+                remote_image_urls: composer.remote_image_urls,
+                mention_bindings: composer.mention_bindings,
+                pending_pastes: composer.pending_pastes,
+            }
+            .has_content();
+            let should_resume_queued_follow_up = reason == TurnAbortReason::Interrupted
+                && self.is_session_configured()
+                && has_composer_draft
+                && self.input_queue.pending_steers.is_empty()
+                && self.input_queue.rejected_steers_queue.is_empty()
+                && !self.input_queue.queued_user_messages.is_empty();
+            if should_resume_queued_follow_up {
+                self.maybe_send_next_queued_input();
+            } else if let Some(combined) = self.drain_pending_messages_for_restore() {
+                self.restore_composer_state(combined);
+            }
         }
         self.refresh_pending_input_preview();
         if let Some(prompt) = cancelled_prompt {
