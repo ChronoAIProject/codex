@@ -304,12 +304,15 @@ impl StateRuntime {
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
             thread_recency_at_millis: Arc::new(AtomicI64::new(thread_recency_at_millis)),
         });
-        if let Err(err) = runtime.run_logs_startup_maintenance().await {
-            warn!(
-                "failed to run startup maintenance for logs db at {}: {err}",
-                logs_path.display(),
-            );
-        }
+        let runtime_for_maintenance = runtime.clone();
+        tokio::spawn(async move {
+            if let Err(err) = runtime_for_maintenance.run_logs_startup_maintenance().await {
+                warn!(
+                    "failed to run startup maintenance for logs db at {}: {err}",
+                    logs_path.display(),
+                );
+            }
+        });
         Ok(runtime)
     }
 
@@ -555,6 +558,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     #[derive(Default)]
     struct TestTelemetry {
@@ -736,6 +740,25 @@ mod tests {
 
         runtime.pool.close().await;
         runtime.logs_pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn init_does_not_wait_for_blocked_logs_startup_maintenance() {
+        let codex_home = unique_temp_dir();
+        let pause_guard = super::logs::pause_logs_startup_maintenance_for_tests(codex_home.clone());
+
+        let initialized = tokio::time::timeout(
+            Duration::from_millis(200),
+            StateRuntime::init(codex_home.clone(), "test-provider".to_string()),
+        )
+        .await
+        .expect("state runtime init should not wait for logs cleanup")
+        .expect("state runtime should initialize while logs cleanup is blocked");
+
+        drop(pause_guard);
+        initialized.close().await;
+        drop(initialized);
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

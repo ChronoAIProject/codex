@@ -2,6 +2,69 @@ use super::*;
 
 const LOG_RETENTION_DAYS: i64 = 10;
 
+#[cfg(test)]
+static LOGS_STARTUP_MAINTENANCE_PAUSE: std::sync::Mutex<
+    Option<(std::path::PathBuf, tokio::sync::oneshot::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) struct LogsStartupMaintenancePauseGuard {
+    codex_home: std::path::PathBuf,
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+impl Drop for LogsStartupMaintenancePauseGuard {
+    fn drop(&mut self) {
+        let mut pause = LOGS_STARTUP_MAINTENANCE_PAUSE
+            .lock()
+            .expect("logs startup maintenance pause lock");
+        if pause
+            .as_ref()
+            .is_some_and(|(codex_home, _)| codex_home == &self.codex_home)
+        {
+            pause.take();
+        }
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn pause_logs_startup_maintenance_for_tests(
+    codex_home: std::path::PathBuf,
+) -> LogsStartupMaintenancePauseGuard {
+    let (release, wait) = tokio::sync::oneshot::channel();
+    *LOGS_STARTUP_MAINTENANCE_PAUSE
+        .lock()
+        .expect("logs startup maintenance pause lock") = Some((codex_home.clone(), wait));
+    LogsStartupMaintenancePauseGuard {
+        codex_home,
+        release: Some(release),
+    }
+}
+
+#[cfg(test)]
+async fn pause_logs_startup_maintenance_if_requested_for_tests(codex_home: &std::path::Path) {
+    let wait = {
+        let mut pause = LOGS_STARTUP_MAINTENANCE_PAUSE
+            .lock()
+            .expect("logs startup maintenance pause lock");
+        if pause
+            .as_ref()
+            .is_some_and(|(paused_codex_home, _)| paused_codex_home == codex_home)
+        {
+            pause.take().map(|(_, wait)| wait)
+        } else {
+            None
+        }
+    };
+    if let Some(wait) = wait {
+        let _ = wait.await;
+    }
+}
+
 impl StateRuntime {
     pub async fn insert_log(&self, entry: &LogEntry) -> anyhow::Result<()> {
         self.insert_logs(std::slice::from_ref(entry)).await
@@ -294,6 +357,9 @@ WHERE id IN (
     }
 
     pub(crate) async fn run_logs_startup_maintenance(&self) -> anyhow::Result<()> {
+        #[cfg(test)]
+        pause_logs_startup_maintenance_if_requested_for_tests(self.codex_home.as_path()).await;
+
         let Some(cutoff) =
             Utc::now().checked_sub_signed(chrono::Duration::days(LOG_RETENTION_DAYS))
         else {
