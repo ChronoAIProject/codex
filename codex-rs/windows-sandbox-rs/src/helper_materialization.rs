@@ -16,8 +16,10 @@ use crate::logging::log_note;
 use crate::sandbox_bin_dir;
 
 const DEV_BUILD_VERSION_SENTINEL: &str = "0.0.0";
+const APP_DIRNAME: &str = "app";
 pub(crate) const BIN_DIRNAME: &str = "bin";
 pub(crate) const RESOURCES_DIRNAME: &str = "codex-resources";
+const MSIX_RESOURCES_DIRNAME: &str = "resources";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum HelperExecutable {
@@ -205,6 +207,14 @@ pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Op
         if package_resource_candidate.is_file() {
             return Some(package_resource_candidate);
         }
+    }
+
+    let app_resource_candidate = dir
+        .join(APP_DIRNAME)
+        .join(MSIX_RESOURCES_DIRNAME)
+        .join(file_name);
+    if app_resource_candidate.is_file() {
+        return Some(app_resource_candidate);
     }
 
     let resource_candidate = dir.join(RESOURCES_DIRNAME).join(file_name);
@@ -489,6 +499,24 @@ mod tests {
         fs::create_dir_all(&bin_dir).expect("create bin dir");
         fs::create_dir_all(&resources_dir).expect("create resources dir");
         let exe = bin_dir.join("codex.exe");
+        let helper = resources_dir.join("codex-command-runner.exe");
+        fs::write(&exe, b"codex").expect("write exe");
+        fs::write(&helper, b"runner").expect("write helper");
+
+        let resolved =
+            bundled_executable_path_for_exe(&exe, /*file_name*/ "codex-command-runner.exe")
+                .expect("helper path");
+
+        assert_eq!(resolved, helper);
+    }
+
+    #[test]
+    fn helper_source_lookup_checks_msix_app_resources_dir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let package_dir = tmp.path().join("package");
+        let resources_dir = package_dir.join("app").join("resources");
+        fs::create_dir_all(&resources_dir).expect("create resources dir");
+        let exe = package_dir.join("codex.exe");
         let helper = resources_dir.join("codex-command-runner.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&helper, b"runner").expect("write helper");
