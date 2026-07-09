@@ -60,6 +60,7 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use codex_api::is_azure_responses_provider;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
@@ -378,6 +379,10 @@ fn agent_jobs_worker_tools_enabled(turn_context: &TurnContext) -> bool {
 
 fn image_generation_tool_enabled(turn_context: &TurnContext) -> bool {
     image_generation_runtime_enabled(turn_context)
+        && !is_azure_responses_provider(
+            &turn_context.provider.info().name,
+            turn_context.provider.info().base_url.as_deref(),
+        )
         && turn_context
             .config
             .features

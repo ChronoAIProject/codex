@@ -1582,6 +1582,25 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     .await;
     unsupported_image_generation_provider.assert_visible_lacks(&["image_generation"]);
 
+    let azure_provider = probe(|turn| {
+        set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_chatgpt_auth(turn);
+        let provider_info = ModelProviderInfo {
+            name: "azure".to_string(),
+            base_url: Some("https://example.openai.azure.com/openai/v1".to_string()),
+            ..turn.config.model_provider.clone()
+        };
+        update_config(turn, |config| {
+            config.model_provider = provider_info.clone();
+        });
+        turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+        turn.model_info.input_modalities = vec![InputModality::Image];
+    })
+    .await;
+    azure_provider.assert_visible_contains(&["web_search"]);
+    azure_provider.assert_visible_lacks(&["image_generation"]);
+
     let image_generation = probe(|turn| {
         use_chatgpt_auth(turn);
         set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
