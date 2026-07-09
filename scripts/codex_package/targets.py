@@ -35,6 +35,11 @@ class PackageVariant:
     def entrypoint_name(self, spec: TargetSpec) -> str:
         return f"{self.executable_stem}{spec.exe_suffix}"
 
+    def wsl_entrypoint_resource_name(self, spec: TargetSpec) -> str | None:
+        if spec.is_windows and self.name == "codex":
+            return self.executable_stem
+        return None
+
 
 @dataclass(frozen=True)
 class PackageInputs:

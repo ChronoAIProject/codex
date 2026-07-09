@@ -51,6 +51,14 @@ def build_package_dir(
         bin_dir / entrypoint_name,
         is_windows=spec.is_windows,
     )
+    wsl_entrypoint_resource_name = variant.wsl_entrypoint_resource_name(spec)
+    if wsl_entrypoint_resource_name is not None:
+        wsl_entrypoint_bin = inputs.entrypoint_bin.with_name(wsl_entrypoint_resource_name)
+        copy_executable(
+            wsl_entrypoint_bin,
+            resources_dir / wsl_entrypoint_resource_name,
+            is_windows=False,
+        )
     copy_executable(inputs.rg_bin, path_dir / spec.rg_name, is_windows=spec.is_windows)
 
     if inputs.zsh_bin is not None:
@@ -133,6 +141,7 @@ def validate_package_dir(
         Path("codex-path") / spec.rg_name,
     ]
     executable_files = list(required_files)
+    windows_executable_files = []
 
     if include_zsh:
         zsh_path = Path("codex-resources") / ZSH_RESOURCE_PATH
@@ -144,6 +153,11 @@ def validate_package_dir(
         executable_files.append(Path("codex-resources") / "bwrap")
 
     if spec.is_windows:
+        wsl_entrypoint_resource_name = variant.wsl_entrypoint_resource_name(spec)
+        if wsl_entrypoint_resource_name is not None:
+            wsl_entrypoint_path = Path("codex-resources") / wsl_entrypoint_resource_name
+            required_files.append(wsl_entrypoint_path)
+            windows_executable_files.append(wsl_entrypoint_path)
         required_files.extend(
             [
                 Path("codex-resources") / "codex-command-runner.exe",
@@ -158,6 +172,11 @@ def validate_package_dir(
 
     if not spec.is_windows:
         for relative_file in executable_files:
+            path = package_dir / relative_file
+            if not is_executable(path):
+                raise RuntimeError(f"Package file is not executable: {relative_file}")
+    else:
+        for relative_file in windows_executable_files:
             path = package_dir / relative_file
             if not is_executable(path):
                 raise RuntimeError(f"Package file is not executable: {relative_file}")
