@@ -349,6 +349,23 @@ approval_policy = "never"
     )
 }
 
+fn create_minimal_config_with_provider(
+    codex_home: &std::path::Path,
+    model_provider: &str,
+) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        format!(
+            r#"
+model = "mock-model"
+model_provider = "{model_provider}"
+approval_policy = "never"
+"#
+        ),
+    )
+}
+
 fn create_runtime_config(codex_home: &std::path::Path, server_uri: &str) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
     std::fs::write(
@@ -513,6 +530,57 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_without_provider_filter_includes_all_providers() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config_with_provider(codex_home.path(), "amazon-bedrock")?;
+
+    let mock_provider_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T10-00-00",
+        "2025-01-02T10:00:00Z",
+        "mock provider thread",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let bedrock_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-00-00",
+        "2025-01-02T11:00:00Z",
+        "bedrock thread",
+        Some("amazon-bedrock"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*providers*/ None,
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+    let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
+    assert_eq!(ids, vec![bedrock_id.as_str(), mock_provider_id.as_str()]);
+
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["amazon-bedrock".to_string()]),
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+    let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
+    assert_eq!(ids, vec![bedrock_id.as_str()]);
 
     Ok(())
 }
