@@ -190,6 +190,12 @@ pub(crate) enum ThreadParamsMode {
     Remote,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForkResponseTurns {
+    Include,
+    Exclude,
+}
+
 impl ThreadParamsMode {
     fn model_provider_from_config(self, config: &Config) -> Option<String> {
         match self {
@@ -517,6 +523,25 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        self.fork_thread_with_response_turns(config, thread_id, ForkResponseTurns::Include)
+            .await
+    }
+
+    pub(crate) async fn fork_thread_without_turns(
+        &mut self,
+        config: Config,
+        thread_id: ThreadId,
+    ) -> Result<AppServerStartedThread> {
+        self.fork_thread_with_response_turns(config, thread_id, ForkResponseTurns::Exclude)
+            .await
+    }
+
+    async fn fork_thread_with_response_turns(
+        &mut self,
+        config: Config,
+        thread_id: ThreadId,
+        response_turns: ForkResponseTurns,
+    ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(&config);
         let response: ThreadForkResponse = self
@@ -528,6 +553,7 @@ impl AppServerSession {
                     thread_id,
                     self.thread_params_mode(),
                     self.remote_cwd_override.as_deref(),
+                    response_turns,
                 ),
             })
             .await
@@ -1472,6 +1498,7 @@ fn thread_fork_params_from_config(
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
+    response_turns: ForkResponseTurns,
 ) -> ThreadForkParams {
     let permissions = permissions_selection_from_config(&config, thread_params_mode);
     let sandbox = permissions
@@ -1501,6 +1528,7 @@ fn thread_fork_params_from_config(
             config.developer_instructions.clone(),
         ),
         ephemeral: config.ephemeral,
+        exclude_turns: response_turns == ForkResponseTurns::Exclude,
         thread_source: Some(ThreadSource::User),
         ..ThreadForkParams::default()
     }
@@ -2029,6 +2057,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
+            ForkResponseTurns::Include,
         );
 
         assert_eq!(start.cwd, None);
@@ -2146,6 +2175,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
+            ForkResponseTurns::Include,
         );
 
         assert_eq!(start.cwd.as_deref(), Some("repo/on/server"));
@@ -2197,6 +2227,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ForkResponseTurns::Include,
         );
 
         let expected_service_tier = Some(Some(ServiceTier::Fast.request_value().to_string()));
@@ -2251,6 +2282,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ForkResponseTurns::Include,
         );
 
         assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
@@ -2258,6 +2290,23 @@ mod tests {
             params.developer_instructions.as_deref(),
             Some("Developer override.")
         );
+    }
+
+    #[tokio::test]
+    async fn thread_fork_params_can_exclude_turns_from_response() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+
+        let params = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ForkResponseTurns::Exclude,
+        );
+
+        assert!(params.exclude_turns);
     }
 
     #[tokio::test]
@@ -2284,6 +2333,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ForkResponseTurns::Include,
         );
 
         assert_eq!(control_start.developer_instructions, None);
@@ -2313,6 +2363,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ForkResponseTurns::Include,
         );
         let expected = format!(
             "Developer override.\n\n{}",
