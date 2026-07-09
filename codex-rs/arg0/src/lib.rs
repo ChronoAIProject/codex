@@ -245,17 +245,11 @@ where
     F: FnOnce(Arg0DispatchPaths) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    let paths = Arg0DispatchPaths {
-        codex_self_exe: current_exe.clone(),
-        codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
-            linux_sandbox_exe_path(path_entry_guard.as_ref(), current_exe)
-        } else {
-            None
-        },
-        main_execve_wrapper_exe: path_entry_guard
-            .as_ref()
-            .and_then(|path_entry| path_entry.paths().main_execve_wrapper_exe.clone()),
-    };
+    let paths = dispatch_paths_for_main(
+        path_entry_guard.as_ref(),
+        current_exe,
+        std::env::var_os("PATH").as_ref(),
+    );
 
     let result = main_fn(paths).await;
     // Keep the arg0 tempdir guard alive until the async entry point finishes;
@@ -266,6 +260,7 @@ where
 
 fn linux_sandbox_exe_path(
     path_entry_guard: Option<&Arg0PathEntryGuard>,
+    path_alias: Option<PathBuf>,
     current_exe: Option<PathBuf>,
 ) -> Option<PathBuf> {
     // Prefer the `codex-linux-sandbox` alias when available so callers can
@@ -273,7 +268,67 @@ fn linux_sandbox_exe_path(
     // bubblewrap builds that do not support `--argv0`.
     path_entry_guard
         .and_then(|path_entry| path_entry.paths().codex_linux_sandbox_exe.clone())
+        .or(path_alias)
         .or(current_exe)
+}
+
+fn dispatch_paths_for_main(
+    path_entry_guard: Option<&Arg0PathEntryGuard>,
+    current_exe: Option<PathBuf>,
+    path_env: Option<&OsString>,
+) -> Arg0DispatchPaths {
+    let path_aliases = arg0_dispatch_paths_from_path(path_env);
+    Arg0DispatchPaths {
+        codex_self_exe: current_exe.clone(),
+        codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
+            linux_sandbox_exe_path(
+                path_entry_guard,
+                path_aliases.codex_linux_sandbox_exe,
+                current_exe,
+            )
+        } else {
+            None
+        },
+        main_execve_wrapper_exe: path_entry_guard
+            .and_then(|path_entry| path_entry.paths().main_execve_wrapper_exe.clone())
+            .or(path_aliases.main_execve_wrapper_exe),
+    }
+}
+
+fn arg0_dispatch_paths_from_path(path_env: Option<&OsString>) -> Arg0DispatchPaths {
+    Arg0DispatchPaths {
+        codex_self_exe: None,
+        codex_linux_sandbox_exe: {
+            #[cfg(target_os = "linux")]
+            {
+                executable_from_path(path_env, CODEX_LINUX_SANDBOX_ARG0)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        },
+        main_execve_wrapper_exe: {
+            #[cfg(unix)]
+            {
+                executable_from_path(path_env, EXECVE_WRAPPER_ARG0)
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        },
+    }
+}
+
+fn executable_from_path(path_env: Option<&OsString>, filename: &str) -> Option<PathBuf> {
+    let path_env = path_env?;
+    if path_env.as_os_str().is_empty() {
+        return None;
+    }
+    std::env::split_paths(path_env)
+        .map(|path_entry| path_entry.join(filename))
+        .find(|path| path.is_file())
 }
 
 fn build_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
@@ -516,6 +571,7 @@ mod tests {
     use super::Arg0DispatchPaths;
     use super::Arg0PathEntryGuard;
     use super::LOCK_FILENAME;
+    use super::dispatch_paths_for_main;
     use super::janitor_cleanup;
     use super::linux_sandbox_exe_path;
     #[cfg(unix)]
@@ -598,8 +654,53 @@ mod tests {
         );
 
         assert_eq!(
-            linux_sandbox_exe_path(Some(&path_entry), Some(PathBuf::from("/usr/bin/codex"))),
+            linux_sandbox_exe_path(
+                Some(&path_entry),
+                None,
+                Some(PathBuf::from("/usr/bin/codex"))
+            ),
             Some(alias_path),
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dispatch_paths_fall_back_to_existing_arg0_aliases_on_path() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let alias_dir = temp_dir.path();
+        let execve_wrapper_path = alias_dir.join(super::EXECVE_WRAPPER_ARG0);
+        fs::write(&execve_wrapper_path, b"")?;
+
+        #[cfg(target_os = "linux")]
+        let linux_sandbox_path = {
+            let path = alias_dir.join(codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0);
+            fs::write(&path, b"")?;
+            Some(path)
+        };
+
+        let paths = dispatch_paths_for_main(
+            None,
+            Some(PathBuf::from("/usr/bin/codex")),
+            Some(&alias_dir.as_os_str().to_owned()),
+        );
+
+        assert_eq!(
+            paths,
+            Arg0DispatchPaths {
+                codex_self_exe: Some(PathBuf::from("/usr/bin/codex")),
+                codex_linux_sandbox_exe: {
+                    #[cfg(target_os = "linux")]
+                    {
+                        linux_sandbox_path
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        None
+                    }
+                },
+                main_execve_wrapper_exe: Some(execve_wrapper_path),
+            }
         );
         Ok(())
     }
