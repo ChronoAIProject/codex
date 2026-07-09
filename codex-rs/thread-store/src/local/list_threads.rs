@@ -150,7 +150,7 @@ pub(super) async fn list_rollout_threads(
 
     let page = if params.use_state_db_only && params.archived {
         RolloutRecorder::list_archived_threads_from_state_db(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -165,7 +165,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else if params.use_state_db_only {
         RolloutRecorder::list_threads_from_state_db(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -180,7 +180,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else if params.archived {
         RolloutRecorder::list_archived_threads(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -195,7 +195,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else {
         RolloutRecorder::list_threads(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -209,9 +209,49 @@ pub(super) async fn list_rollout_threads(
         )
         .await
     };
-    page.map_err(|err| ThreadStoreError::Internal {
+    let page = page.map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to list threads: {err}"),
-    })
+    })?;
+    if params.use_state_db_only && cursor.is_none() && page.items.is_empty() {
+        let repaired_page = if params.archived {
+            RolloutRecorder::list_archived_threads(
+                state_db,
+                config,
+                params.page_size,
+                cursor,
+                sort_key,
+                sort_direction,
+                params.allowed_sources.as_slice(),
+                params.model_providers.as_deref(),
+                params.cwd_filters.as_deref(),
+                default_model_provider_id,
+                params.search_term.as_deref(),
+            )
+            .await
+        } else {
+            RolloutRecorder::list_threads(
+                state_db,
+                config,
+                params.page_size,
+                cursor,
+                sort_key,
+                sort_direction,
+                params.allowed_sources.as_slice(),
+                params.model_providers.as_deref(),
+                params.cwd_filters.as_deref(),
+                default_model_provider_id,
+                params.search_term.as_deref(),
+            )
+            .await
+        }
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to list threads: {err}"),
+        })?;
+        if !repaired_page.items.is_empty() {
+            return Ok(repaired_page);
+        }
+    }
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -334,6 +374,59 @@ mod tests {
         assert_eq!(
             page.items[0].first_user_message.as_deref(),
             Some("plain preview")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_threads_state_db_only_recovers_missing_sqlite_row_from_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        runtime
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await
+            .expect("backfill should be complete");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+        let uuid = Uuid::from_u128(104);
+        let path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        let page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: vec![SessionSource::Cli],
+                model_providers: Some(vec!["test-provider".to_string()]),
+                cwd_filters: Some(vec![home.path().to_path_buf()]),
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect("thread listing");
+
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let ids = page
+            .items
+            .iter()
+            .map(|item| item.thread_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![thread_id]);
+        assert_eq!(page.items[0].rollout_path, Some(path));
+        assert!(
+            runtime
+                .get_thread(thread_id)
+                .await
+                .expect("state db lookup should succeed")
+                .is_some()
         );
     }
 
