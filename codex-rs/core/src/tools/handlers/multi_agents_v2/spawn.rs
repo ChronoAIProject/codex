@@ -65,11 +65,13 @@ async fn handle_spawn_agent(
         config.service_tier = Some(service_tier.clone());
     }
     if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
-        reject_full_fork_spawn_overrides(
-            role_name,
+        reject_full_fork_spawn_model_overrides(
             args.model.as_deref(),
             args.reasoning_effort.clone(),
         )?;
+        apply_role_to_config(&mut config, role_name)
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
     } else {
         apply_requested_spawn_agent_model_overrides(
             &session,

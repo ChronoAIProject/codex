@@ -246,6 +246,18 @@ pub(crate) fn reject_full_fork_spawn_overrides(
     Ok(())
 }
 
+pub(crate) fn reject_full_fork_spawn_model_overrides(
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    if model.is_some() || reasoning_effort.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "Full-history forked agents do not support direct model and reasoning effort overrides; omit model and reasoning_effort, or spawn without a full-history fork.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
 ///
 /// These values are chosen by the live turn rather than persisted config, so leaving them stale
