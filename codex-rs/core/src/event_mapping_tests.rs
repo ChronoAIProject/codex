@@ -452,6 +452,37 @@ fn parses_reasoning_summary_and_raw_content() {
 }
 
 #[test]
+fn strips_empty_html_comment_placeholders_from_reasoning_summary() {
+    let item = ResponseItem::Reasoning {
+        id: Some("reasoning_1".to_string()),
+        summary: vec![
+            ReasoningItemReasoningSummary::SummaryText {
+                text: "**Planning parallel execution**\n\n<!-- -->".to_string(),
+            },
+            ReasoningItemReasoningSummary::SummaryText {
+                text: "<!-- -->\n\n**Preparing commands**\n\n<!-- -->".to_string(),
+            },
+        ],
+        content: None,
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let turn_item = parse_turn_item(&item).expect("expected reasoning turn item");
+
+    match turn_item {
+        TurnItem::Reasoning(reasoning) => assert_eq!(
+            reasoning.summary_text,
+            vec![
+                "**Planning parallel execution**".to_string(),
+                "**Preparing commands**".to_string(),
+            ]
+        ),
+        other => panic!("expected TurnItem::Reasoning, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_reasoning_including_raw_content() {
     let item = ResponseItem::Reasoning {
         id: Some("reasoning_2".to_string()),

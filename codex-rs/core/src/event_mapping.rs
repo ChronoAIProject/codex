@@ -42,6 +42,7 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     CONTEXT_WINDOW_GUIDANCE_OPEN_TAG,
     "<rollout_budget>",
 ];
+const EMPTY_HTML_COMMENT_PLACEHOLDER: &str = "<!-- -->";
 
 pub(crate) fn is_contextual_user_message_content(message: &[ContentItem]) -> bool {
     message.iter().any(is_contextual_user_fragment)
@@ -144,6 +145,15 @@ fn parse_agent_message(
     }
 }
 
+fn normalize_reasoning_summary(text: &str) -> String {
+    text.lines()
+        .filter(|line| line.trim() != EMPTY_HTML_COMMENT_PLACEHOLDER)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
     match item {
         ResponseItem::Message {
@@ -173,7 +183,9 @@ pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
             let summary_text = summary
                 .iter()
                 .map(|entry| match entry {
-                    ReasoningItemReasoningSummary::SummaryText { text } => text.clone(),
+                    ReasoningItemReasoningSummary::SummaryText { text } => {
+                        normalize_reasoning_summary(text)
+                    }
                 })
                 .collect();
             let raw_content = content
