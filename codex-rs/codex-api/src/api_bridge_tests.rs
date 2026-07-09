@@ -9,7 +9,7 @@ fn map_api_error_maps_server_overloaded() {
 }
 
 #[test]
-fn map_api_error_maps_server_overloaded_from_503_body() {
+fn map_api_error_maps_503_overload_body_to_internal_server_error() {
     let body = serde_json::json!({
         "error": {
             "code": "server_is_overloaded"
@@ -23,7 +23,7 @@ fn map_api_error_maps_server_overloaded_from_503_body() {
         body: Some(body),
     }));
 
-    assert!(matches!(err, CodexErr::ServerOverloaded));
+    assert!(matches!(err, CodexErr::InternalServerError));
 }
 
 #[test]

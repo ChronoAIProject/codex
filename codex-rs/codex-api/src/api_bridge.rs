@@ -57,7 +57,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         Some("server_is_overloaded" | "slow_down")
                     )
                 {
-                    return CodexErr::ServerOverloaded;
+                    return CodexErr::InternalServerError;
                 }
 
                 if status == http::StatusCode::BAD_REQUEST {
