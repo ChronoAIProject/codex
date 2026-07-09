@@ -3275,6 +3275,13 @@ impl Session {
                 developer_sections.push(skills_instructions.render());
             }
         }
+        if turn_context
+            .config
+            .features
+            .enabled(Feature::CodexGitCommit)
+        {
+            developer_sections.push(commit_attribution_instructions());
+        }
         let loaded_plugins = self
             .services
             .plugins_manager
@@ -4033,6 +4040,10 @@ async fn build_hooks_for_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     })
+}
+
+fn commit_attribution_instructions() -> String {
+    "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:\nCo-authored-by: Codex <noreply@openai.com>\n\nRules:\n- Keep existing trailers and append this trailer at the end if missing.\n- Do not duplicate this trailer if it already exists.\n- Keep one blank line between the commit body and trailer block.".to_string()
 }
 
 #[cfg(test)]

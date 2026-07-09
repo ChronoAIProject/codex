@@ -2171,6 +2171,53 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_git_commit_feature_adds_commit_attribution_instructions() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+    let codex = test_codex()
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodexGitCommit);
+        })
+        .build(&server)
+        .await
+        .expect("create new conversation")
+        .codex;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "commit the changes".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit user input");
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let developer_messages = resp_mock.single_request().message_input_texts("developer");
+    let developer_text = developer_messages.join("\n\n");
+    assert!(
+        developer_text.contains("Co-authored-by: Codex <noreply@openai.com>"),
+        "expected commit attribution instructions: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains("exactly once"),
+        "expected commit attribution dedupe guidance: {developer_messages:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn includes_configured_max_effort_in_request() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = MockServer::start().await;
