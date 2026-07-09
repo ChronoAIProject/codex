@@ -69,6 +69,57 @@ async fn add_and_remove_server_updates_global_config() -> Result<()> {
 }
 
 #[tokio::test]
+async fn remove_plugin_provided_server_reports_plugin_guidance() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let plugin_root = codex_home.path().join("plugins/cache/test/slack/local");
+    std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
+    std::fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"slack"}"#,
+    )?;
+    std::fs::write(
+        plugin_root.join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "slack": {
+      "type": "http",
+      "url": "https://mcp.slack.com/mcp"
+    }
+  }
+}"#,
+    )?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"[features]
+plugins = true
+
+[plugins."slack@test"]
+enabled = true
+"#,
+    )?;
+
+    let mut get_cmd = codex_command(codex_home.path())?;
+    get_cmd
+        .args(["mcp", "get", "slack"])
+        .assert()
+        .success()
+        .stdout(contains("remove: codex mcp remove slack"));
+
+    let mut remove_cmd = codex_command(codex_home.path())?;
+    remove_cmd
+        .args(["mcp", "remove", "slack"])
+        .assert()
+        .failure()
+        .stderr(contains("MCP server 'slack' is provided by a plugin"))
+        .stderr(contains("codex plugin remove <plugin>@<marketplace>"));
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    assert!(servers.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn profile_mcp_reports_legacy_profile_migration() -> Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(

@@ -439,6 +439,24 @@ async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveAr
     if removed {
         println!("Removed global MCP server '{name}'.");
     } else {
+        let overrides = config_overrides
+            .parse_overrides()
+            .map_err(anyhow::Error::msg)?;
+        let config = Config::load_with_cli_overrides(overrides)
+            .await
+            .context("failed to load configuration")?;
+        let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+            config.codex_home.to_path_buf(),
+        )));
+        if mcp_manager
+            .configured_servers(&config)
+            .await
+            .contains_key(&name)
+        {
+            bail!(
+                "MCP server '{name}' is provided by a plugin. Remove the plugin with `codex plugin remove <plugin>@<marketplace>` or disable it in config.toml."
+            );
+        }
         println!("No MCP server named '{name}' found.");
     }
 
