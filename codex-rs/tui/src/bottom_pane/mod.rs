@@ -532,6 +532,10 @@ impl BottomPane {
         })
     }
 
+    fn should_delay_approval_prompt(&self, now: Instant) -> bool {
+        !self.composer_is_empty() || self.approval_prompt_delay_remaining(now).is_some()
+    }
+
     fn record_composer_activity_at(&mut self, now: Instant) {
         self.last_composer_activity_at = Some(now);
         if !self.delayed_approval_requests.is_empty()
@@ -543,6 +547,9 @@ impl BottomPane {
 
     fn maybe_show_delayed_approval_requests_at(&mut self, now: Instant) {
         if self.delayed_approval_requests.is_empty() || !self.view_stack.is_empty() {
+            return;
+        }
+        if !self.composer_is_empty() {
             return;
         }
         if let Some(delay) = self.approval_prompt_delay_remaining(now) {
@@ -649,6 +656,9 @@ impl BottomPane {
             }
             if self.composer.is_in_paste_burst() {
                 self.request_redraw_in(ChatComposer::recommended_paste_flush_delay());
+            }
+            if self.composer_is_empty() {
+                self.maybe_show_delayed_approval_requests_at(Instant::now());
             }
             input_result
         }
@@ -1374,9 +1384,7 @@ impl BottomPane {
         };
 
         let now = Instant::now();
-        if !self.delayed_approval_requests.is_empty()
-            || self.approval_prompt_delay_remaining(now).is_some()
-        {
+        if !self.delayed_approval_requests.is_empty() || self.should_delay_approval_prompt(now) {
             self.delayed_approval_requests
                 .push_back(DelayedApprovalRequest {
                     request,
@@ -2132,6 +2140,32 @@ mod tests {
     }
 
     #[test]
+    fn non_empty_composer_keeps_delayed_approval_hidden_after_idle_deadline() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let features = Features::with_defaults();
+        let mut pane = test_pane_with_disable_paste_burst(tx, /*disable_paste_burst*/ true);
+        let now = Instant::now();
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        pane.last_composer_activity_at = Some(now);
+        pane.push_approval_request(exec_request(), &features);
+
+        pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+
+        assert_eq!(pane.composer_text(), "ya");
+        assert!(pane.view_stack.is_empty());
+        assert_eq!(pane.delayed_approval_requests.len(), 1);
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, AppEvent::SubmitThreadOp { .. }),
+                "delayed approval shortcut should not submit an approval: {event:?}"
+            );
+        }
+    }
+
+    #[test]
     fn typed_approval_shortcuts_during_delay_stay_in_composer() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
@@ -2164,6 +2198,7 @@ mod tests {
         pane.last_composer_activity_at = Some(now);
         pane.push_approval_request(exec_request(), &features);
 
+        pane.clear_composer_for_ctrl_c();
         pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
         pane.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
 
