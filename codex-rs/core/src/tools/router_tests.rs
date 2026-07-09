@@ -180,6 +180,32 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
 }
 
 #[tokio::test]
+async fn build_tool_call_deduplicates_plain_tool_namespace() -> anyhow::Result<()> {
+    let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "shell_command".to_string(),
+        namespace: Some("shell_command".to_string()),
+        arguments: "{}".to_string(),
+        call_id: "call-shell".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("function_call should produce a tool call");
+
+    assert_eq!(
+        call,
+        ToolCall {
+            tool_name: ToolName::plain("shell_command"),
+            call_id: "call-shell".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()> {
     let tool_name = "exec".to_string();
 

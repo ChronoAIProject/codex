@@ -119,7 +119,11 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = if namespace.as_deref() == Some(name.as_str()) {
+                    ToolName::plain(name)
+                } else {
+                    ToolName::new(namespace, name)
+                };
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,
