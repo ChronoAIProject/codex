@@ -47,6 +47,11 @@ use tokio::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use toml::Value as TomlValue;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 async fn test_config_with_cli_overrides(
     cli_overrides: Vec<(String, TomlValue)>,
@@ -476,6 +481,44 @@ async fn subscribe_status_updates_on_shutdown() {
 
     let _ = status_rx.changed().await;
     assert_eq!(status_rx.borrow().clone(), AgentStatus::Shutdown);
+}
+
+#[tokio::test]
+async fn shutdown_live_agent_does_not_wait_forever_for_stuck_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_delay(Duration::from_secs(60))
+                .set_body_string(""),
+        )
+        .mount(&server)
+        .await;
+
+    let (home, mut config) = test_config().await;
+    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (thread_id, _thread) = harness.start_thread().await;
+    let _ = harness
+        .control
+        .send_input(thread_id, text_input("start a stuck turn"))
+        .await
+        .expect("turn should submit");
+
+    let _ = timeout(
+        Duration::from_secs(1),
+        harness.control.shutdown_live_agent(thread_id),
+    )
+    .await
+    .expect("shutdown_live_agent should stop waiting")
+    .expect("shutdown should submit");
+
+    assert_eq!(
+        harness.control.get_status(thread_id).await,
+        AgentStatus::NotFound
+    );
 }
 
 #[tokio::test]

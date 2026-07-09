@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(not(test))]
+const LIVE_AGENT_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const LIVE_AGENT_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl AgentControl {
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
     /// persisted spawn-edge state.
@@ -13,7 +18,12 @@ impl AgentControl {
             } else {
                 state.send_op(agent_id, Op::Shutdown {}).await
             };
-            thread.wait_until_terminated().await;
+            if tokio::time::timeout(LIVE_AGENT_SHUTDOWN_TIMEOUT, thread.wait_until_terminated())
+                .await
+                .is_err()
+            {
+                warn!("timed out waiting for agent {agent_id} to terminate after shutdown");
+            }
             result
         } else {
             state.send_op(agent_id, Op::Shutdown {}).await
