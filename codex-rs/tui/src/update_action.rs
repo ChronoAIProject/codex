@@ -14,7 +14,7 @@ pub enum UpdateAction {
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh -o "$installer" && CODEX_NON_INTERACTIVE=1 sh "$installer"`.
     StandaloneUnix,
     /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
@@ -45,7 +45,7 @@ impl UpdateAction {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+                    "installer=$(mktemp) || exit 1; trap 'rm -f \"$installer\"' EXIT; curl -fsSL https://chatgpt.com/codex/install.sh -o \"$installer\" && CODEX_NON_INTERACTIVE=1 sh \"$installer\"",
                 ],
             ),
             UpdateAction::StandaloneWindows => (
@@ -139,15 +139,15 @@ mod tests {
 
     #[test]
     fn standalone_update_commands_rerun_latest_installer() {
+        let unix_command = "installer=$(mktemp) || exit 1; trap 'rm -f \"$installer\"' EXIT; curl -fsSL https://chatgpt.com/codex/install.sh -o \"$installer\" && CODEX_NON_INTERACTIVE=1 sh \"$installer\"";
+
         assert_eq!(
             UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
-            )
+            ("sh", &["-c", unix_command][..],)
+        );
+        assert!(
+            !unix_command.contains(" | "),
+            "curl failures must not be hidden by a shell pipeline"
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
