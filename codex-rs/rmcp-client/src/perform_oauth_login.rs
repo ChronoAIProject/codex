@@ -543,7 +543,7 @@ impl OauthLoginFlow {
             oauth_client_id,
         )
         .await?;
-        let auth_url = append_query_param(
+        let auth_url = set_query_param(
             &oauth_state.get_authorization_url().await?,
             "resource",
             oauth_resource,
@@ -690,7 +690,7 @@ async fn start_authorization(
     ))
 }
 
-fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
+fn set_query_param(url: &str, key: &str, value: Option<&str>) -> String {
     let Some(value) = value else {
         return url.to_string();
     };
@@ -699,7 +699,19 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
         return url.to_string();
     }
     if let Ok(mut parsed) = Url::parse(url) {
-        parsed.query_pairs_mut().append_pair(key, value);
+        let query_pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(existing_key, _)| existing_key != key)
+            .map(|(existing_key, existing_value)| {
+                (existing_key.into_owned(), existing_value.into_owned())
+            })
+            .collect();
+        {
+            let mut pairs = parsed.query_pairs_mut();
+            pairs.clear();
+            pairs.extend_pairs(query_pairs);
+            pairs.append_pair(key, value);
+        }
         return parsed.to_string();
     }
     let encoded = urlencoding::encode(value);
@@ -725,10 +737,10 @@ mod tests {
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
     use super::append_callback_id_to_redirect_uri;
-    use super::append_query_param;
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
+    use super::set_query_param;
     use super::start_authorization;
 
     async fn spawn_oauth_metadata_server() -> String {
@@ -901,8 +913,8 @@ mod tests {
     }
 
     #[test]
-    fn append_query_param_adds_resource_to_absolute_url() {
-        let url = append_query_param(
+    fn set_query_param_adds_resource_to_absolute_url() {
+        let url = set_query_param(
             "https://example.com/authorize?scope=read",
             "resource",
             Some("https://api.example.com"),
@@ -915,8 +927,25 @@ mod tests {
     }
 
     #[test]
-    fn append_query_param_ignores_empty_values() {
-        let url = append_query_param(
+    fn set_query_param_replaces_existing_resource() {
+        let url = set_query_param(
+            "https://example.com/authorize?scope=read&resource=https%3A%2F%2Fmcp.example.com",
+            "resource",
+            Some("api://client-id"),
+        );
+        let parsed = Url::parse(&url).expect("url should parse");
+        let resources: Vec<String> = parsed
+            .query_pairs()
+            .filter(|(key, _)| key == "resource")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+
+        assert_eq!(resources, vec!["api://client-id"]);
+    }
+
+    #[test]
+    fn set_query_param_ignores_empty_values() {
+        let url = set_query_param(
             "https://example.com/authorize?scope=read",
             "resource",
             Some("   "),
@@ -926,8 +955,8 @@ mod tests {
     }
 
     #[test]
-    fn append_query_param_handles_unparseable_url() {
-        let url = append_query_param("not a url", "resource", Some("api/resource"));
+    fn set_query_param_handles_unparseable_url() {
+        let url = set_query_param("not a url", "resource", Some("api/resource"));
 
         assert_eq!(url, "not a url?resource=api%2Fresource");
     }
