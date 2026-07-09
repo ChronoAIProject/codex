@@ -2832,6 +2832,7 @@ impl ThreadRequestProcessor {
                 self.thread_watch_manager
                     .upsert_thread(thread.clone())
                     .await;
+                self.touch_thread_recency_at(thread_id).await;
 
                 let thread_status = self
                     .thread_watch_manager
@@ -3132,6 +3133,16 @@ impl ThreadRequestProcessor {
             return Ok(RunningThreadResumeResult::Handled);
         }
         Ok(RunningThreadResumeResult::NotRunning(None))
+    }
+
+    async fn touch_thread_recency_at(&self, thread_id: ThreadId) {
+        if let Some(state_db) = self.state_db.as_ref()
+            && let Err(err) = state_db
+                .touch_thread_recency_at(thread_id, chrono::Utc::now())
+                .await
+        {
+            warn!("failed to touch thread recency for resumed thread {thread_id}: {err}");
+        }
     }
 
     #[tracing::instrument(level = "trace", skip_all)]

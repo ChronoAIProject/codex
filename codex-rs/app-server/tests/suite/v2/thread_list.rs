@@ -18,6 +18,8 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSearchResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
@@ -1841,6 +1843,93 @@ async fn thread_list_sort_recency_at_uses_state_db_order_with_provider_filter() 
         vec![id_new.as_str(), id_old.as_str()]
     );
     assert!(data.iter().all(|thread| thread.recency_at.is_some()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_promotes_thread_in_recency_order() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_runtime_config(codex_home.path(), "http://127.0.0.1:9")?;
+
+    let id_old = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-01T10-00-00",
+        "2025-01-01T10:00:00Z",
+        "Older VS Code thread",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        CoreSessionSource::VSCode,
+    )?;
+    let id_new = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-01T11-00-00",
+        "2025-01-01T11:00:00Z",
+        "Newer VS Code thread",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        CoreSessionSource::VSCode,
+    )?;
+
+    let state_db =
+        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
+            .await?;
+    state_db
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await?;
+    let rollout_config = codex_rollout::RolloutConfig {
+        codex_home: codex_home.path().to_path_buf(),
+        sqlite_home: codex_home.path().to_path_buf(),
+        cwd: codex_home.path().to_path_buf(),
+        model_provider_id: "mock_provider".to_string(),
+        generate_memories: false,
+    };
+    codex_core::RolloutRecorder::list_threads(
+        Some(state_db),
+        &rollout_config,
+        /*page_size*/ 10,
+        /*cursor*/ None,
+        codex_core::ThreadSortKey::CreatedAt,
+        codex_core::SortDirection::Desc,
+        codex_core::INTERACTIVE_SESSION_SOURCES.as_slice(),
+        /*model_providers*/ None,
+        /*cwd_filters*/ None,
+        "mock_provider",
+        /*search_term*/ None,
+    )
+    .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: id_old.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let _: ThreadResumeResponse = to_response(resume_resp)?;
+
+    let ThreadListResponse { data, .. } = list_threads_with_sort(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        Some(vec![ThreadSourceKind::VsCode]),
+        Some(ThreadSortKey::RecencyAt),
+        /*archived*/ None,
+    )
+    .await?;
+
+    assert_eq!(
+        data.iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![id_old.as_str(), id_new.as_str()]
+    );
 
     Ok(())
 }
