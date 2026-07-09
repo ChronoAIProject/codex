@@ -119,7 +119,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = function_call_tool_name(namespace, name);
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,
@@ -242,6 +242,25 @@ impl ToolRouter {
             .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
             .await
     }
+}
+
+fn function_call_tool_name(namespace: Option<String>, name: String) -> ToolName {
+    if is_builtin_function_namespace(namespace.as_deref()) && is_builtin_function_tool(&name) {
+        ToolName::plain(name)
+    } else {
+        ToolName::new(namespace, name)
+    }
+}
+
+fn is_builtin_function_namespace(namespace: Option<&str>) -> bool {
+    matches!(namespace, Some("functions" | "functions."))
+}
+
+fn is_builtin_function_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "apply_patch" | "exec_command" | "shell_command" | "view_image" | "write_stdin"
+    )
 }
 
 #[instrument(level = "trace", skip_all)]
