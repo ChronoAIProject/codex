@@ -19,6 +19,18 @@ fn desktop_thread_open_error_history_snapshot() {
     insta::assert_snapshot!("desktop_thread_open_error_history", render_cell(&cell));
 }
 
+#[test]
+fn windows_desktop_app_launch_uses_protocol_handler() {
+    let script = windows_desktop_app_launch_script("codex://threads/thread'with-quote");
+
+    assert!(script.contains("Get-StartApps -Name 'Codex'"));
+    assert!(script.contains("Start-Process -FilePath $url"));
+    assert!(script.contains("$url = 'codex://threads/thread''with-quote'"));
+    assert!(!script.contains("Get-AppxPackage"));
+    assert!(!script.contains("Codex.exe"));
+    assert!(!script.contains("resources\\app.asar"));
+}
+
 fn render_cell(cell: &impl HistoryCell) -> String {
     let lines = cell.display_lines(/*width*/ 80);
     lines
