@@ -293,6 +293,47 @@ async fn responses_lite_exposes_standalone_tools_for_actor_authorized_provider()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_model_uses_standard_responses_for_custom_provider() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let base_url = format!("{}/v1", server.uri());
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(move |config| {
+            config.model_provider.name = "azure".to_string();
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.requires_openai_auth = false;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("hello").await?;
+
+    let request = response_mock.single_request();
+    assert_eq!(request.header(RESPONSES_LITE_HEADER), None);
+    let body = request.body_json();
+    assert!(body.get("instructions").is_some());
+    assert!(body.get("tools").is_some());
+    let input = body["input"]
+        .as_array()
+        .context("Responses request input should be an array")?;
+    assert_ne!(input[0]["type"], "additional_tools");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_compact_request_uses_lite_transport_contract() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

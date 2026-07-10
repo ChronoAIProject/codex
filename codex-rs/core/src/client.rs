@@ -61,6 +61,7 @@ use codex_api::WebsocketTelemetry;
 use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
+use codex_api::is_azure_responses_provider;
 use codex_api::response_create_client_metadata;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -595,7 +596,10 @@ impl ModelClient {
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
-        add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
+        add_responses_lite_header(
+            &mut extra_headers,
+            self.use_responses_lite_for_request(model_info),
+        );
         let compact_request_timeout = client_setup
             .api_provider
             .stream_idle_timeout
@@ -819,14 +823,15 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
+        let use_responses_lite = self.use_responses_lite_for_request(model_info);
+        let mut input = prompt.get_formatted_input_for_request(use_responses_lite);
         if !self.state.provider.info().is_openai() {
             input
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
         let tools = create_tools_json_for_responses_api(&prompt.tools)?;
-        let (instructions, tools) = if model_info.use_responses_lite {
+        let (instructions, tools) = if use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
                 role: "developer".to_string(),
@@ -878,7 +883,7 @@ impl ModelClient {
             input,
             tools,
             tool_choice: "auto".to_string(),
-            parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
+            parallel_tool_calls: prompt.parallel_tool_calls && !use_responses_lite,
             reasoning,
             store: provider.is_azure_responses_endpoint(),
             stream: true,
@@ -889,6 +894,12 @@ impl ModelClient {
             client_metadata: Some(responses_metadata.client_metadata()),
         };
         Ok(request)
+    }
+
+    fn use_responses_lite_for_request(&self, model_info: &ModelInfo) -> bool {
+        let provider_info = self.state.provider.info();
+        model_info.use_responses_lite
+            && !is_azure_responses_provider(&provider_info.name, provider_info.base_url.as_deref())
     }
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
@@ -1380,12 +1391,9 @@ impl ModelClientSession {
                 self.client.state.auth_env_telemetry.clone(),
             );
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
+            let use_responses_lite = self.client.use_responses_lite_for_request(model_info);
             let mut options = self
-                .build_responses_options(
-                    responses_metadata,
-                    compression,
-                    model_info.use_responses_lite,
-                )
+                .build_responses_options(responses_metadata, compression, use_responses_lite)
                 .await;
 
             let mut request = self.client.build_responses_request(
@@ -1516,9 +1524,10 @@ impl ModelClientSession {
             } else {
                 session_telemetry_for_request(session_telemetry, &request)
             };
-            let mut client_metadata = self
-                .client
-                .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
+            let mut client_metadata = self.client.build_ws_client_metadata(
+                responses_metadata,
+                self.client.use_responses_lite_for_request(model_info),
+            );
             if let Some(turn_state) = self.turn_state.get() {
                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
             }
