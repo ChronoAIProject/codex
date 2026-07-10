@@ -61,6 +61,7 @@ use codex_api::WebsocketTelemetry;
 use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
+use codex_api::is_azure_responses_provider;
 use codex_api::response_create_client_metadata;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -595,7 +596,10 @@ impl ModelClient {
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
-        add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
+        add_responses_lite_header(
+            &mut extra_headers,
+            self.use_responses_lite_for_provider(model_info),
+        );
         let compact_request_timeout = client_setup
             .api_provider
             .stream_idle_timeout
@@ -719,6 +723,15 @@ impl ModelClient {
         extra_headers
     }
 
+    fn use_responses_lite_for_provider(&self, model_info: &ModelInfo) -> bool {
+        model_info.use_responses_lite && !self.is_azure_responses_provider()
+    }
+
+    fn is_azure_responses_provider(&self) -> bool {
+        let provider_info = self.state.provider.info();
+        is_azure_responses_provider(&provider_info.name, provider_info.base_url.as_deref())
+    }
+
     fn build_responses_compatibility_headers(
         &self,
         responses_metadata: &CodexResponsesMetadata,
@@ -784,6 +797,7 @@ impl ModelClient {
 
     fn build_reasoning(
         model_info: &ModelInfo,
+        use_responses_lite: bool,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
     ) -> Option<Reasoning> {
@@ -799,9 +813,7 @@ impl ModelClient {
                 },
                 // When Responses Lite is disabled, omit context so Responses uses the default,
                 // which is currently `current_turn`.
-                context: model_info
-                    .use_responses_lite
-                    .then_some(ReasoningContext::AllTurns),
+                context: use_responses_lite.then_some(ReasoningContext::AllTurns),
             })
         } else {
             None
@@ -819,14 +831,15 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
+        let use_responses_lite = self.use_responses_lite_for_provider(model_info);
+        let mut input = prompt.get_formatted_input_for_request(use_responses_lite);
         if !self.state.provider.info().is_openai() {
             input
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
         let tools = create_tools_json_for_responses_api(&prompt.tools)?;
-        let (instructions, tools) = if model_info.use_responses_lite {
+        let (instructions, tools) = if use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
                 role: "developer".to_string(),
@@ -848,7 +861,7 @@ impl ModelClient {
         } else {
             (prompt.base_instructions.text.clone(), Some(tools))
         };
-        let reasoning = Self::build_reasoning(model_info, effort, summary);
+        let reasoning = Self::build_reasoning(model_info, use_responses_lite, effort, summary);
         let include = if reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
@@ -878,7 +891,7 @@ impl ModelClient {
             input,
             tools,
             tool_choice: "auto".to_string(),
-            parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
+            parallel_tool_calls: prompt.parallel_tool_calls && !use_responses_lite,
             reasoning,
             store: provider.is_azure_responses_endpoint(),
             stream: true,
@@ -1115,7 +1128,10 @@ impl ModelClientSession {
                 if let Some(header_value) = self.client.generate_attestation_header_for().await {
                     headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
                 }
-                add_responses_lite_header(&mut headers, use_responses_lite);
+                add_responses_lite_header(
+                    &mut headers,
+                    use_responses_lite && !self.client.is_azure_responses_provider(),
+                );
                 headers
             },
             compression,
@@ -1384,7 +1400,7 @@ impl ModelClientSession {
                 .build_responses_options(
                     responses_metadata,
                     compression,
-                    model_info.use_responses_lite,
+                    self.client.use_responses_lite_for_provider(model_info),
                 )
                 .await;
 
@@ -1516,9 +1532,10 @@ impl ModelClientSession {
             } else {
                 session_telemetry_for_request(session_telemetry, &request)
             };
-            let mut client_metadata = self
-                .client
-                .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
+            let mut client_metadata = self.client.build_ws_client_metadata(
+                responses_metadata,
+                self.client.use_responses_lite_for_provider(model_info),
+            );
             if let Some(turn_state) = self.turn_state.get() {
                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
             }

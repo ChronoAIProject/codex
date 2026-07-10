@@ -69,6 +69,13 @@ fn has_namespaced_tool(tools: &[Value], namespace: &str, tool_name: &str) -> boo
     })
 }
 
+fn has_function_tool(tools: &[Value], tool_name: &str) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("type").and_then(Value::as_str) == Some("function")
+            && tool.get("name").and_then(Value::as_str) == Some(tool_name)
+    })
+}
+
 fn additional_tools(body: &Value) -> Result<&[Value]> {
     body["input"]
         .as_array()
@@ -244,6 +251,71 @@ async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Res
     assert!(has_namespaced_tool(tools, "image_gen", "imagegen"));
     assert!(!has_hosted_tool(tools, "web_search"));
     assert!(!has_hosted_tool(tools, "image_generation"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn azure_responses_ignores_model_responses_lite_and_namespace_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let auth = CodexAuth::from_api_key("dummy");
+    let extensions = responses_extensions(&auth);
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_extensions(extensions)
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+            model_info.supports_parallel_tool_calls = true;
+            model_info.multi_agent_version = Some(codex_protocol::protocol::MultiAgentVersion::V2);
+            configure_image_capable_model(model_info);
+        })
+        .with_config(|config| {
+            configure_responses_tools(config);
+            config.model_provider.name = "azure".to_string();
+            config.model_provider.base_url = config
+                .model_provider
+                .base_url
+                .as_deref()
+                .map(|base_url| base_url.replace("/v1", "/openai"));
+            config.model_provider.requires_openai_auth = false;
+            config.model_provider.supports_websockets = false;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("Use standalone and collaboration tools")
+        .await?;
+
+    let request = response_mock.single_request();
+    assert_eq!(request.header(RESPONSES_LITE_HEADER), None);
+    let body = request.body_json();
+    assert_eq!(
+        body.get("reasoning")
+            .and_then(|reasoning| reasoning.get("context")),
+        None
+    );
+    assert_eq!(body.get("parallel_tool_calls"), Some(&Value::Bool(true)));
+    assert!(!matches!(
+        body["input"].as_array().and_then(|input| input.first()),
+        Some(item) if item.get("type").and_then(Value::as_str) == Some("additional_tools")
+    ));
+
+    let tools = body["tools"]
+        .as_array()
+        .context("Responses request should include standard tools array")?;
+    assert!(has_function_tool(tools, "spawn_agent"));
+    assert!(!has_namespaced_tool(tools, "collaboration", "spawn_agent"));
+    assert!(!has_namespaced_tool(tools, "web", "run"));
 
     Ok(())
 }

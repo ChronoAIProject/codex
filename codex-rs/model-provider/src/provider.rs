@@ -7,6 +7,7 @@ use std::sync::Arc;
 use codex_api::ApiError;
 use codex_api::Provider;
 use codex_api::SharedAuthProvider;
+use codex_api::is_azure_responses_provider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -246,6 +247,16 @@ impl ConfiguredModelProvider {
 impl ModelProvider for ConfiguredModelProvider {
     fn info(&self) -> &ModelProviderInfo {
         &self.info
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            namespace_tools: !is_azure_responses_provider(
+                &self.info.name,
+                self.info.base_url.as_deref(),
+            ),
+            ..ProviderCapabilities::default()
+        }
     }
 
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
