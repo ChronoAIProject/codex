@@ -66,6 +66,7 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
 use tokio::time::Instant as TokioInstant;
@@ -568,22 +569,35 @@ pub(crate) async fn list_tools_for_client_uncached(
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
-    let resp = client
-        .list_tools_with_connector_ids(/*params*/ None, timeout)
-        .await?;
-    let tools = resp
-        .tools
-        .into_iter()
-        .map(|tool| {
+    let mut collected = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let params = cursor
+            .as_ref()
+            .map(|next| PaginatedRequestParams::default().with_cursor(Some(next.clone())));
+        let resp = client
+            .list_tools_with_connector_ids(params, timeout)
+            .await?;
+        collected.extend(resp.tools.into_iter().map(|tool| {
             tool_info_from_listed_tool(
                 server_name,
                 is_codex_apps_mcp_server,
                 server_instructions,
                 tool,
             )
-        })
-        .collect();
-    Ok(tools)
+        }));
+
+        match resp.next_cursor {
+            Some(next) => {
+                if cursor.as_ref() == Some(&next) {
+                    return Err(anyhow!("tools/list returned duplicate cursor"));
+                }
+                cursor = Some(next);
+            }
+            None => return Ok(collected),
+        }
+    }
 }
 
 /// Presents declared Codex Apps file parameters to the model as local-path inputs and adds plugin
@@ -1008,9 +1022,17 @@ async fn make_rmcp_client(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use rmcp::ErrorData as McpError;
+    use rmcp::ServiceExt;
+    use rmcp::handler::server::ServerHandler;
     use rmcp::model::JsonObject;
+    use rmcp::model::ListToolsResult;
     use rmcp::model::Meta;
+    use rmcp::model::PaginatedRequestParams;
+    use rmcp::model::ServerCapabilities;
+    use rmcp::model::ServerInfo;
     use rmcp::transport::auth::AuthError;
+    use tokio::io::DuplexStream;
 
     #[test]
     fn startup_outcome_error_identifies_authentication_required() {
@@ -1020,6 +1042,94 @@ mod tests {
         let error = StartupOutcomeError::from(error);
 
         assert!(error.is_authentication_required());
+    }
+
+    struct PaginatedToolsTransportFactory;
+
+    impl codex_rmcp_client::InProcessTransportFactory for PaginatedToolsTransportFactory {
+        fn open(&self) -> BoxFuture<'static, std::io::Result<DuplexStream>> {
+            async {
+                let (client_stream, server_stream) = tokio::io::duplex(4096);
+                tokio::spawn(async move {
+                    if let Ok(running) = PaginatedToolsServer.serve(server_stream).await {
+                        let _ = running.waiting().await;
+                    }
+                });
+                Ok(client_stream)
+            }
+            .boxed()
+        }
+    }
+
+    #[derive(Clone)]
+    struct PaginatedToolsServer;
+
+    impl ServerHandler for PaginatedToolsServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        fn list_tools(
+            &self,
+            request: Option<PaginatedRequestParams>,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_
+        {
+            async move {
+                let (tool_name, next_cursor) =
+                    if request.as_ref().and_then(|params| params.cursor.as_deref())
+                        == Some("page-2")
+                    {
+                        ("page2_tool", None)
+                    } else {
+                        ("page1_tool", Some("page-2".to_string()))
+                    };
+                Ok(ListToolsResult {
+                    tools: vec![RmcpTool::new(
+                        tool_name,
+                        "test tool",
+                        Arc::new(JsonObject::default()),
+                    )],
+                    next_cursor,
+                    meta: None,
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tools_for_client_uncached_follows_next_cursor() {
+        let client = Arc::new(
+            RmcpClient::new_in_process_client(Arc::new(PaginatedToolsTransportFactory))
+                .await
+                .expect("create in-process RMCP client"),
+        );
+        client
+            .initialize(
+                mcp_initialize_request_params(
+                    ElicitationCapability::default(),
+                    /*supports_openai_form_elicitation*/ false,
+                ),
+                /*timeout*/ None,
+                Box::new(|_, _| futures::future::pending().boxed()),
+            )
+            .await
+            .expect("initialize MCP client");
+
+        let tools = list_tools_for_client_uncached(
+            "server", /*is_codex_apps_mcp_server*/ false, &client, /*timeout*/ None,
+            /*server_instructions*/ None,
+        )
+        .await
+        .expect("list tools");
+
+        assert_eq!(
+            tools
+                .into_iter()
+                .map(|tool| tool.callable_name)
+                .collect::<Vec<_>>(),
+            vec!["page1_tool".to_string(), "page2_tool".to_string()]
+        );
     }
 
     #[test]
