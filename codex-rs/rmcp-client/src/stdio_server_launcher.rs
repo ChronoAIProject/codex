@@ -267,7 +267,13 @@ impl LocalStdioServerLauncher {
 
         let (transport, stderr) = TokioChildProcess::builder(command)
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("failed to spawn MCP server `{program_name}`: {error}"),
+                )
+            })?;
         let process = StdioServerProcessHandle::local(
             program_name.clone(),
             transport.id().map(LocalProcessTerminator::new),

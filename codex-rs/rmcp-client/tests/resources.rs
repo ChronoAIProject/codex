@@ -136,3 +136,29 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stdio_startup_error_names_missing_command() -> anyhow::Result<()> {
+    let missing_program = OsString::from("codex-test-missing-mcp-runtime");
+    let result = RmcpClient::new_stdio_client(
+        missing_program.clone(),
+        Vec::<OsString>::new(),
+        Some(Default::default()),
+        &[],
+        /*cwd*/ None,
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await;
+
+    let err = match result {
+        Ok(_) => panic!("missing MCP runtime should fail to start"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains(missing_program.to_string_lossy().as_ref()),
+        "startup error should identify the missing command: {err}"
+    );
+
+    Ok(())
+}
