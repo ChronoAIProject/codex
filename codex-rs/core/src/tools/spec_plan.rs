@@ -898,7 +898,14 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
     if let Some(deferred_mcp_tools) = context.deferred_mcp_tools {
         for tool in deferred_mcp_tools {
             match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add_with_exposure(handler, ToolExposure::Deferred),
+                Ok(handler) => {
+                    let exposure = if search_tool_enabled(context.step_context.turn.as_ref()) {
+                        ToolExposure::Deferred
+                    } else {
+                        ToolExposure::Direct
+                    };
+                    planned_tools.add_with_exposure(handler, exposure);
+                }
                 Err(err) => warn!(
                     "Skipping deferred MCP tool `{}`: failed to build tool spec: {err}",
                     tool.canonical_tool_name()

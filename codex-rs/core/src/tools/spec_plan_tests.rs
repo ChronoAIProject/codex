@@ -826,6 +826,30 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
 }
 
 #[tokio::test]
+async fn deferred_mcp_tools_are_direct_when_tool_search_is_unavailable() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = false;
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["mcp__searchable"]);
+    plan.assert_visible_lacks(&["tool_search"]);
+    plan.assert_registered_contains(&[
+        &ToolName::namespaced("mcp__searchable", "lookup").to_string()
+    ]);
+    assert_eq!(
+        plan.exposure(&ToolName::namespaced("mcp__searchable", "lookup").to_string()),
+        ToolExposure::Direct
+    );
+}
+
+#[tokio::test]
 async fn deferred_extension_tools_are_discoverable_with_tool_search() {
     let plan = probe_with(
         |turn| {
