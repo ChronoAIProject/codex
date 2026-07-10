@@ -493,7 +493,7 @@ fn resolve_host_program(
         "codex-code-mode-host"
     };
     if let Ok(current_exe) = current_exe
-        && let Some(parent) = current_exe.parent()
+        && let Some(parent) = current_exe.canonicalize().unwrap_or(current_exe).parent()
     {
         return parent.join(executable_name);
     }

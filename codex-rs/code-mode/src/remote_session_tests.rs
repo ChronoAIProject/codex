@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_code_mode_protocol::CodeModeSessionProvider;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 
 use super::ProcessOwnedCodeModeSession;
 use super::ProcessOwnedCodeModeSessionProvider;
@@ -45,6 +47,39 @@ fn host_program_is_next_to_the_main_executable_even_when_missing() {
         ),
         PathBuf::from("/opt/codex/bin").join(executable_name)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn host_program_follows_main_executable_symlink() -> io::Result<()> {
+    let executable_name = "codex-code-mode-host";
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "codex-code-mode-host-symlink-{}-{unique_suffix}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let release_bin_dir = temp_dir.join("release/bin");
+    let visible_bin_dir = temp_dir.join("visible/bin");
+    std::fs::create_dir_all(&release_bin_dir)?;
+    std::fs::create_dir_all(&visible_bin_dir)?;
+    let release_codex = release_bin_dir.join("codex");
+    std::fs::write(&release_codex, "")?;
+    let visible_codex = visible_bin_dir.join("codex");
+    symlink(&release_codex, &visible_codex)?;
+    let expected_host = release_bin_dir.canonicalize()?.join(executable_name);
+
+    assert_eq!(
+        resolve_host_program(/*override_path*/ None, Ok(visible_codex)),
+        expected_host
+    );
+
+    std::fs::remove_dir_all(&temp_dir)?;
+
+    Ok(())
 }
 
 #[test]
