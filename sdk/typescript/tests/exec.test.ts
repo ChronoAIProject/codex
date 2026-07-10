@@ -146,6 +146,29 @@ describe("CodexExec", () => {
     }
   });
 
+  it("passes max reasoning effort to the Codex CLI", async () => {
+    const { CodexExec } = await import("../src/exec");
+    spawnMock.mockClear();
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child as unknown as child_process.ChildProcess);
+
+    setImmediate(() => {
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("exit", 0, null);
+    });
+
+    const exec = new CodexExec("codex");
+    for await (const _ of exec.run({ input: "hi", modelReasoningEffort: "max" })) {
+      // no-op
+    }
+
+    const commandArgs = spawnMock.mock.calls[0]?.[1] as string[] | undefined;
+    expect(commandArgs).toBeDefined();
+    expect(commandArgs).toContain("--config");
+    expect(commandArgs).toContain('model_reasoning_effort="max"');
+  });
+
   it("resolves the package-layout binary and PATH directory", async () => {
     const { resolveNativePackage } = await import("../src/exec");
     const vendorRoot = mkdtempSync(path.join(tmpdir(), "codex-sdk-vendor-"));
