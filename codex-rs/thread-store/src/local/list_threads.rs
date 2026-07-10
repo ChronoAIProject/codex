@@ -148,9 +148,26 @@ pub(super) async fn list_rollout_threads(
         return Ok(page.into());
     }
 
+    let state_db_backfill_complete = if params.use_state_db_only {
+        match state_db.as_deref() {
+            Some(state_db) => match state_db.get_backfill_state().await {
+                Ok(state) => state.status == codex_state::BackfillStatus::Complete,
+                Err(err) => {
+                    tracing::warn!(
+                        "state db backfill status unavailable at {}: {err}",
+                        config.codex_home.display()
+                    );
+                    false
+                }
+            },
+            None => false,
+        }
+    } else {
+        true
+    };
     let page = if params.use_state_db_only && params.archived {
         RolloutRecorder::list_archived_threads_from_state_db(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -165,7 +182,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else if params.use_state_db_only {
         RolloutRecorder::list_threads_from_state_db(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -180,7 +197,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else if params.archived {
         RolloutRecorder::list_archived_threads(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -195,7 +212,7 @@ pub(super) async fn list_rollout_threads(
         .await
     } else {
         RolloutRecorder::list_threads(
-            state_db,
+            state_db.clone(),
             config,
             params.page_size,
             cursor,
@@ -208,6 +225,44 @@ pub(super) async fn list_rollout_threads(
             params.search_term.as_deref(),
         )
         .await
+    };
+    let page = if params.use_state_db_only
+        && !state_db_backfill_complete
+        && matches!(&page, Ok(page) if page.items.is_empty())
+    {
+        if params.archived {
+            RolloutRecorder::list_archived_threads(
+                state_db,
+                config,
+                params.page_size,
+                cursor,
+                sort_key,
+                sort_direction,
+                params.allowed_sources.as_slice(),
+                params.model_providers.as_deref(),
+                params.cwd_filters.as_deref(),
+                default_model_provider_id,
+                params.search_term.as_deref(),
+            )
+            .await
+        } else {
+            RolloutRecorder::list_threads(
+                state_db,
+                config,
+                params.page_size,
+                cursor,
+                sort_key,
+                sort_direction,
+                params.allowed_sources.as_slice(),
+                params.model_providers.as_deref(),
+                params.cwd_filters.as_deref(),
+                default_model_provider_id,
+                params.search_term.as_deref(),
+            )
+            .await
+        }
+    } else {
+        page
     };
     page.map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to list threads: {err}"),
@@ -232,6 +287,45 @@ mod tests {
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with;
+
+    #[tokio::test]
+    async fn list_threads_state_db_only_falls_back_until_backfill_complete() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config, Some(runtime));
+        let uuid = Uuid::from_u128(107);
+        let path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        let page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect("thread listing");
+
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        assert_eq!(page.next_cursor, None);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].thread_id, thread_id);
+        assert_eq!(page.items[0].rollout_path, Some(path));
+    }
 
     #[tokio::test]
     async fn list_threads_uses_default_provider_when_rollout_omits_provider() {
