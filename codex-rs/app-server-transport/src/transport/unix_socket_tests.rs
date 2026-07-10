@@ -53,6 +53,40 @@ fn listen_unix_socket_accepts_relative_custom_path() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn default_control_socket_path_uses_hashed_temp_path_when_codex_home_is_too_long() {
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let codex_home = temp_dir
+        .path()
+        .join("a".repeat(80))
+        .join("b".repeat(80))
+        .join("codex-home");
+    fs::create_dir_all(&codex_home).expect("deep codex home should create");
+    let codex_home = codex_home
+        .canonicalize()
+        .expect("deep codex home should canonicalize");
+    let original_socket_path = codex_home
+        .join(super::APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        .join(super::APP_SERVER_CONTROL_SOCKET_FILE_NAME);
+    assert!(original_socket_path.as_os_str().as_bytes().len() > super::UNIX_SOCKET_PATH_MAX_BYTES);
+
+    let socket_path =
+        app_server_control_socket_path(&codex_home).expect("control socket path should resolve");
+
+    assert!(!socket_path.as_path().starts_with(&codex_home));
+    assert!(
+        socket_path.as_path().as_os_str().as_bytes().len() <= super::UNIX_SOCKET_PATH_MAX_BYTES
+    );
+    assert_eq!(
+        socket_path,
+        app_server_control_socket_path(&codex_home).expect("control socket path should be stable")
+    );
+}
+
 #[tokio::test]
 async fn control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_and_pings() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");

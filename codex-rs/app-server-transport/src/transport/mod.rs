@@ -8,6 +8,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_core::config::find_codex_home;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use sha2::Digest;
+use sha2::Sha256;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
@@ -53,12 +55,42 @@ const APP_SERVER_CONTROL_SOCKET_DIR_NAME: &str = "app-server-control";
 const APP_SERVER_CONTROL_SOCKET_FILE_NAME: &str = "app-server-control.sock";
 const APP_SERVER_STARTUP_LOCK_FILE_NAME: &str = "app-server-startup.lock";
 
+#[cfg(unix)]
+const UNIX_SOCKET_PATH_MAX_BYTES: usize = 103;
+
 pub fn app_server_control_socket_path(codex_home: &Path) -> std::io::Result<AbsolutePathBuf> {
-    AbsolutePathBuf::from_absolute_path(
-        codex_home
-            .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
-            .join(APP_SERVER_CONTROL_SOCKET_FILE_NAME),
-    )
+    let socket_path = codex_home
+        .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        .join(APP_SERVER_CONTROL_SOCKET_FILE_NAME);
+    #[cfg(unix)]
+    let socket_path_is_too_long = {
+        use std::os::unix::ffi::OsStrExt;
+
+        socket_path.as_os_str().as_bytes().len() > UNIX_SOCKET_PATH_MAX_BYTES
+    };
+    #[cfg(not(unix))]
+    let socket_path_is_too_long = false;
+
+    if !socket_path_is_too_long {
+        AbsolutePathBuf::from_absolute_path(socket_path)
+    } else {
+        #[cfg(unix)]
+        let digest = {
+            use std::os::unix::ffi::OsStrExt;
+
+            Sha256::digest(codex_home.as_os_str().as_bytes())
+        };
+        #[cfg(not(unix))]
+        let digest = Sha256::digest(codex_home.as_os_str().to_string_lossy().as_bytes());
+
+        let mut short_hash = format!("{digest:x}");
+        short_hash.truncate(16);
+        AbsolutePathBuf::from_absolute_path(
+            std::env::temp_dir()
+                .join(format!("codex-{short_hash}"))
+                .join(APP_SERVER_CONTROL_SOCKET_FILE_NAME),
+        )
+    }
 }
 
 pub fn app_server_startup_lock_path(codex_home: &Path) -> std::io::Result<AbsolutePathBuf> {
