@@ -388,6 +388,21 @@ async fn get_model_info_uses_custom_catalog() {
 }
 
 #[tokio::test]
+async fn get_model_info_does_not_match_distinct_suffix_slug() {
+    let config = ModelsManagerConfig::default();
+    let remote = remote_model("gpt-5.3-codex", "Codex", /*priority*/ 0);
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![remote],
+    });
+
+    let model_info = manager.get_model_info("gpt-5.3-codex-spark", &config).await;
+
+    assert_eq!(model_info.slug, "gpt-5.3-codex-spark");
+    assert!(!model_info.supports_reasoning_summaries);
+    assert!(model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
 async fn get_model_info_matches_namespaced_suffix() {
     let config = ModelsManagerConfig::default();
     let mut remote = remote_model("gpt-image", "Image", /*priority*/ 0);

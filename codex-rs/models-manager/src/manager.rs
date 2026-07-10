@@ -503,7 +503,7 @@ fn requested_model_is_available(
 fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
     let mut best: Option<ModelInfo> = None;
     for candidate in candidates {
-        if !model.starts_with(&candidate.slug) {
+        if !is_model_metadata_match(model, &candidate.slug) {
             continue;
         }
         let is_better_match = if let Some(current) = best.as_ref() {
@@ -516,6 +516,10 @@ fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option
         }
     }
     best
+}
+
+fn is_model_metadata_match(model: &str, candidate_slug: &str) -> bool {
+    model == candidate_slug || model.strip_prefix(candidate_slug) == Some("-experiment")
 }
 
 fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
