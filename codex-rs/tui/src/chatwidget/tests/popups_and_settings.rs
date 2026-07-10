@@ -3149,6 +3149,56 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
 }
 
 #[tokio::test]
+async fn model_picker_includes_current_model_even_when_hidden_from_cache() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("test-current-hidden-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let preset = |slug: &str, show_in_picker: bool| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_model_popup_with_presets(vec![
+        preset("test-current-hidden-model", false),
+        preset("test-other-hidden-model", false),
+        preset("test-visible-model", true),
+    ]);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("test-current-hidden-model"),
+        "expected current hidden model to appear in picker:\n{popup}"
+    );
+    assert!(
+        popup.contains("(current)"),
+        "expected current hidden model to be marked current:\n{popup}"
+    );
+    assert!(
+        !popup.contains("test-other-hidden-model"),
+        "expected non-current hidden model to be excluded from picker:\n{popup}"
+    );
+    assert!(
+        popup.contains("test-visible-model"),
+        "expected visible model to appear in picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn server_overloaded_error_does_not_switch_models() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.set_model("gpt-5.3-codex");
