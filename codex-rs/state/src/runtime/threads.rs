@@ -645,6 +645,15 @@ ON CONFLICT(id) DO NOTHING
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn update_thread_cwd(&self, thread_id: ThreadId, cwd: &Path) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET cwd = ? WHERE id = ?")
+            .bind(cwd.display().to_string())
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn touch_thread_updated_at(
         &self,
         thread_id: ThreadId,

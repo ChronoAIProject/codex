@@ -92,7 +92,7 @@ pub(super) async fn resume_thread(
     let config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
         sqlite_home: store.config.sqlite_home.clone(),
-        cwd,
+        cwd: cwd.clone(),
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
     };
@@ -103,7 +103,18 @@ pub(super) async fn resume_thread(
         })?;
     store
         .insert_live_recorder(params.thread_id, recorder, history_mode)
-        .await
+        .await?;
+    if let Some(state_db) = store.state_db().await
+        && let Err(err) = state_db
+            .update_thread_cwd(params.thread_id, cwd.as_path())
+            .await
+    {
+        warn!(
+            "failed to update resumed thread cwd for {}: {err}",
+            params.thread_id
+        );
+    }
+    Ok(())
 }
 
 #[tracing::instrument(

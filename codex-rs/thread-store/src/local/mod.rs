@@ -343,7 +343,9 @@ mod tests {
 
     use super::*;
     use crate::LiveThread;
+    use crate::SortDirection;
     use crate::ThreadPersistenceMetadata;
+    use crate::ThreadSortKey;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
@@ -728,6 +730,78 @@ mod tests {
             metadata.first_user_message.as_deref(),
             Some("Hello from user")
         );
+    }
+
+    #[tokio::test]
+    async fn resume_thread_updates_state_db_cwd_for_moved_project() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+        let uuid = uuid::Uuid::from_u128(404);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path =
+            write_session_file(home.path(), "2025-01-03T17-15-00", uuid).expect("session file");
+        let old_cwd = home.path().join("old-project");
+        let new_cwd = home.path().join("new-project");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            rollout_path.clone(),
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
+                .expect("valid timestamp"),
+            SessionSource::Cli,
+        );
+        builder.cwd = old_cwd;
+        let mut metadata = builder.build("test-provider");
+        metadata.preview = Some("moved project thread".to_string());
+        metadata.first_user_message = metadata.preview.clone();
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("stale cwd upsert should succeed");
+
+        store
+            .resume_thread(ResumeThreadParams {
+                thread_id,
+                rollout_path: Some(rollout_path),
+                history: None,
+                include_archived: false,
+                metadata: ThreadPersistenceMetadata {
+                    cwd: Some(new_cwd.clone()),
+                    model_provider: "different-provider".to_string(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .expect("resume should update state db cwd");
+
+        let page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::UpdatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: Some(vec![new_cwd]),
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect("list threads by moved cwd");
+        let ids = page
+            .items
+            .iter()
+            .map(|thread| thread.thread_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![thread_id]);
     }
 
     #[tokio::test]
