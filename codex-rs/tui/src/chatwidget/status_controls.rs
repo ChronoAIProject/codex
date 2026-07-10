@@ -6,6 +6,8 @@
 
 use super::*;
 
+const RATE_LIMIT_STATUS_LABEL_MAX_CHARS: usize = 18;
+
 impl ChatWidget {
     /// Update the status indicator header and details.
     ///
@@ -390,6 +392,9 @@ impl ChatWidget {
     ) -> Option<String> {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
+        if label.chars().count() > RATE_LIMIT_STATUS_LABEL_MAX_CHARS {
+            return Some(format!("{remaining:.0}% left"));
+        }
         Some(format!("{label} {remaining:.0}% left"))
     }
 

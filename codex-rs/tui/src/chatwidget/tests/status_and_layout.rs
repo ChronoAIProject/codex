@@ -603,6 +603,21 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
 }
 
 #[tokio::test]
+async fn status_line_omits_long_rate_limit_label_so_percent_stays_visible() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let window = crate::status::RateLimitWindowDisplay {
+        used_percent: 83.0,
+        resets_at: None,
+        window_minutes: None,
+    };
+
+    assert_eq!(
+        chat.status_line_limit_display(Some(&window), "Current usage label"),
+        Some("17% left".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_legacy_limit_items_prefer_matching_windows() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
