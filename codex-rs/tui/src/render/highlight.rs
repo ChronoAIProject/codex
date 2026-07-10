@@ -166,6 +166,9 @@ fn parse_theme_name(name: &str) -> Option<EmbeddedThemeName> {
         "solarized-light" => Some(EmbeddedThemeName::SolarizedLight),
         "sublime-snazzy" => Some(EmbeddedThemeName::SublimeSnazzy),
         "two-dark" => Some(EmbeddedThemeName::TwoDark),
+        // Legacy app setting. two-face does not ship an Xcode theme, but
+        // accepting the saved dark-theme name avoids falling back to default.
+        "xcode" | "xcode-dark" => Some(EmbeddedThemeName::TwoDark),
         "zenburn" => Some(EmbeddedThemeName::Zenburn),
         _ => None,
     }
@@ -401,7 +404,7 @@ pub(crate) fn list_available_themes(codex_home: Option<&Path>) -> Vec<ThemeEntry
     entries
 }
 
-/// All 32 bundled theme names in kebab-case, ordered alphabetically.
+/// Bundled theme names in kebab-case, ordered alphabetically.
 const BUILTIN_THEME_NAMES: &[&str] = &[
     "1337",
     "ansi",
@@ -434,6 +437,7 @@ const BUILTIN_THEME_NAMES: &[&str] = &[
     "solarized-light",
     "sublime-snazzy",
     "two-dark",
+    "xcode",
     "zenburn",
 ];
 
@@ -1404,6 +1408,25 @@ mod tests {
         // Bundled themes should never produce a warning.
         assert!(validate_theme_name(Some("dracula"), /*codex_home*/ None).is_none());
         assert!(validate_theme_name(Some("nord"), Some(Path::new("/nonexistent"))).is_none());
+    }
+
+    #[test]
+    fn xcode_legacy_theme_name_resolves() {
+        assert_eq!(
+            resolve_theme_by_name("xcode", /*codex_home*/ None),
+            resolve_theme_by_name("two-dark", /*codex_home*/ None)
+        );
+        assert_eq!(
+            resolve_theme_by_name("xcode-dark", /*codex_home*/ None),
+            resolve_theme_by_name("two-dark", /*codex_home*/ None)
+        );
+        assert!(validate_theme_name(Some("xcode"), /*codex_home*/ None).is_none());
+        assert!(
+            list_available_themes(/*codex_home*/ None)
+                .iter()
+                .any(|entry| entry.name == "xcode" && !entry.is_custom),
+            "legacy Xcode setting should remain selectable"
+        );
     }
 
     #[test]
