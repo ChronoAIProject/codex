@@ -139,7 +139,7 @@ pub(crate) fn find_slash_command(
         .then(|| {
             service_tier_commands
                 .iter()
-                .find(|command| command.name == name)
+                .find(|command| command.name.eq_ignore_ascii_case(name))
                 .cloned()
                 .map(SlashCommandItem::ServiceTier)
         })
@@ -225,6 +225,20 @@ mod tests {
         }];
 
         assert_eq!(find_slash_command("fast", flags, &commands), None);
+    }
+
+    #[test]
+    fn service_tier_command_lookup_matches_case_insensitively() {
+        let command = ServiceTierCommand {
+            id: "priority".to_string(),
+            name: "Fast".to_string(),
+            description: "fastest inference".to_string(),
+        };
+
+        assert_eq!(
+            find_slash_command("fast", all_enabled_flags(), from_ref(&command)),
+            Some(SlashCommandItem::ServiceTier(command))
+        );
     }
 
     #[test]
