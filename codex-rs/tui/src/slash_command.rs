@@ -19,7 +19,7 @@ pub enum SlashCommand {
     Vim,
     #[strum(serialize = "setup-default-sandbox")]
     ElevateSandbox,
-    #[strum(serialize = "sandbox-add-read-dir")]
+    #[strum(to_string = "add-dir", serialize = "sandbox-add-read-dir")]
     SandboxReadRoot,
     Experimental,
     #[strum(to_string = "approve")]
@@ -129,7 +129,7 @@ impl SlashCommand {
             SlashCommand::Vim => "toggle Vim mode for the composer",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
             SlashCommand::SandboxReadRoot => {
-                "let sandbox read a directory: /sandbox-add-read-dir <absolute_path>"
+                "let sandbox read a directory: /add-dir <absolute_path>"
             }
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
@@ -283,6 +283,19 @@ mod tests {
     fn pet_alias_parses_to_pets_command() {
         assert_eq!(SlashCommand::Pets.command(), "pets");
         assert_eq!(SlashCommand::from_str("pet"), Ok(SlashCommand::Pets));
+    }
+
+    #[test]
+    fn add_dir_command_is_canonical_name() {
+        assert_eq!(SlashCommand::SandboxReadRoot.command(), "add-dir");
+        assert_eq!(
+            SlashCommand::from_str("add-dir"),
+            Ok(SlashCommand::SandboxReadRoot)
+        );
+        assert_eq!(
+            SlashCommand::from_str("sandbox-add-read-dir"),
+            Ok(SlashCommand::SandboxReadRoot)
+        );
     }
 
     #[test]
