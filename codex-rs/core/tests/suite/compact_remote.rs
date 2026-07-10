@@ -950,7 +950,21 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
     wait_for_turn_complete(&codex).await;
 
     let response_requests = responses_mock.requests();
+    let first_response_request = response_requests.first().expect("initial request missing");
     let compact_request = &response_requests[1];
+    assert!(
+        first_response_request
+            .body_json()
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| !tools.is_empty()),
+        "expected normal turn request to advertise model-visible tools"
+    );
+    assert_eq!(
+        compact_request.body_json()["tools"],
+        json!([]),
+        "v2 compaction requests should not advertise callable tools"
+    );
     assert!(
         compact_request
             .header("x-codex-beta-features")

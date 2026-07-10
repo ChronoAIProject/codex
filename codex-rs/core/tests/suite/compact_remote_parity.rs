@@ -891,7 +891,6 @@ fn selected_request_fields(body: &Value, mode: SelectedFieldsMode) -> Value {
             "service_tier",
             "prompt_cache_key",
             "text",
-            "tools",
             "previous_response_id",
         ],
         SelectedFieldsMode::FollowUp => &[

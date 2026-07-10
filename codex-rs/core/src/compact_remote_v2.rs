@@ -22,7 +22,6 @@ use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::session::turn::built_tools;
 use crate::session::turn_context::TurnContext;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -44,7 +43,6 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 // Mirror the current /responses/compact retained-message default while the
@@ -232,17 +230,11 @@ async fn run_remote_compact_task_inner_impl(
 
     let trace_input_history = history.raw_items().to_vec();
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
-    let tool_router = built_tools(
-        sess.as_ref(),
-        step_context.as_ref(),
-        &CancellationToken::new(),
-    )
-    .await?;
     let mut input = prompt_input.clone();
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
         input,
-        tools: tool_router.model_visible_specs(),
+        tools: Vec::new(),
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         output_schema: None,
