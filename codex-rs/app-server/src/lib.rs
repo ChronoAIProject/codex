@@ -681,8 +681,8 @@ pub async fn run_main_with_transport_options(
         .try_init();
     for warning in &config_warnings {
         match &warning.details {
-            Some(details) => error!("{} {}", warning.summary, details),
-            None => error!("{}", warning.summary),
+            Some(details) => warn!("{} {}", warning.summary, details),
+            None => warn!("{}", warning.summary),
         }
     }
     let remote_control_policy = if config
