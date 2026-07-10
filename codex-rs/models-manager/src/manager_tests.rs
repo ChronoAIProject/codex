@@ -388,6 +388,22 @@ async fn get_model_info_uses_custom_catalog() {
 }
 
 #[tokio::test]
+async fn get_model_info_does_not_inherit_codex_spark_capabilities() {
+    let config = ModelsManagerConfig::default();
+    let mut codex = remote_model("gpt-5.3-codex", "Codex", /*priority*/ 0);
+    codex.supports_reasoning_summaries = true;
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![codex],
+    });
+
+    let model_info = manager.get_model_info("gpt-5.3-codex-spark", &config).await;
+
+    assert_eq!(model_info.slug, "gpt-5.3-codex-spark");
+    assert!(model_info.used_fallback_model_metadata);
+    assert!(!model_info.supports_reasoning_summaries);
+}
+
+#[tokio::test]
 async fn get_model_info_matches_namespaced_suffix() {
     let config = ModelsManagerConfig::default();
     let mut remote = remote_model("gpt-image", "Image", /*priority*/ 0);

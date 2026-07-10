@@ -503,7 +503,7 @@ fn requested_model_is_available(
 fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
     let mut best: Option<ModelInfo> = None;
     for candidate in candidates {
-        if !model.starts_with(&candidate.slug) {
+        if !model_matches_candidate_prefix(model, &candidate.slug) {
             continue;
         }
         let is_better_match = if let Some(current) = best.as_ref() {
@@ -516,6 +516,16 @@ fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option
         }
     }
     best
+}
+
+fn model_matches_candidate_prefix(model: &str, candidate_slug: &str) -> bool {
+    if model == candidate_slug {
+        return true;
+    }
+
+    model
+        .strip_prefix(candidate_slug)
+        .is_some_and(|suffix| !suffix.starts_with("-spark"))
 }
 
 fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
