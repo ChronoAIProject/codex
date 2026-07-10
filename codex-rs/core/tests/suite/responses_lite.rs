@@ -134,6 +134,54 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn azure_provider_uses_standard_responses_request_for_lite_model() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+            model_info.supports_parallel_tool_calls = true;
+        })
+        .with_config(|config| {
+            config.model_provider.name = "Azure".to_string();
+            config.base_instructions = Some("test instructions".to_string());
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("hello").await?;
+
+    let request = response_mock.single_request();
+    assert_eq!(request.header(RESPONSES_LITE_HEADER), None);
+    let body = request.body_json();
+    assert_eq!(body["instructions"].as_str(), Some("test instructions"));
+    assert!(
+        body["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+    );
+    assert!(
+        body["input"]
+            .as_array()
+            .context("Responses request input should be an array")?
+            .iter()
+            .all(|item| item.get("type").and_then(Value::as_str) != Some("additional_tools"))
+    );
+    assert_eq!(body.get("parallel_tool_calls"), Some(&Value::Bool(true)));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_prepares_images() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
