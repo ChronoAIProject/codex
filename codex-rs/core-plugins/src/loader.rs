@@ -52,6 +52,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use tempfile::TempDir;
 use tracing::instrument;
 use tracing::warn;
@@ -62,6 +64,10 @@ const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
 const CONFIG_TOML_FILE: &str = "config.toml";
 const CURATED_PLUGIN_CACHE_VERSION_SHA_PREFIX_LEN: usize = 8;
+const BUNDLED_COMPUTER_USE_PLUGIN_KEY: &str = "computer-use@openai-bundled";
+const SKY_COMPUTER_USE_SERVICE_PATH: &str =
+    "Codex Computer Use.app/Contents/MacOS/SkyComputerUseService";
+const SWIFT_PRIORITY_ESCALATION_SYMBOL: &[u8] = b"_swift_task_addPriorityEscalationHandler";
 
 /// Hook declarations and warnings resolved without loading other plugin capabilities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -801,6 +807,12 @@ async fn load_plugin(
         loaded_plugin.error = Some("missing or invalid plugin.json".to_string());
         return loaded_plugin;
     };
+    if let Some(error) =
+        bundled_computer_use_compatibility_error(&loaded_plugin_id, plugin_root.as_path())
+    {
+        loaded_plugin.error = Some(error);
+        return loaded_plugin;
+    }
 
     let manifest_paths = &manifest.paths;
     loaded_plugin.plugin_namespace = Some(manifest.name.clone());
@@ -844,6 +856,152 @@ async fn load_plugin(
     loaded_plugin.hook_sources = hook_sources;
     loaded_plugin.hook_load_warnings = hook_load_warnings;
     loaded_plugin
+}
+
+fn bundled_computer_use_compatibility_error(
+    plugin_id: &PluginId,
+    plugin_root: &Path,
+) -> Option<String> {
+    bundled_computer_use_compatibility_error_with_symbol_availability(
+        plugin_id,
+        plugin_root,
+        host_swift_runtime_symbol_availability(),
+    )
+}
+
+fn bundled_computer_use_compatibility_error_with_symbol_availability(
+    plugin_id: &PluginId,
+    plugin_root: &Path,
+    symbol_availability: SwiftRuntimeSymbolAvailability,
+) -> Option<String> {
+    if plugin_id.as_key() != BUNDLED_COMPUTER_USE_PLUGIN_KEY {
+        return None;
+    }
+    if !file_contains_bytes(
+        plugin_root.join(SKY_COMPUTER_USE_SERVICE_PATH).as_path(),
+        SWIFT_PRIORITY_ESCALATION_SYMBOL,
+    ) {
+        return None;
+    }
+
+    match symbol_availability {
+        SwiftRuntimeSymbolAvailability::Missing => Some(
+            "bundled Computer Use helper requires a Swift runtime symbol unavailable on this macOS version"
+                .to_string(),
+        ),
+        SwiftRuntimeSymbolAvailability::Available | SwiftRuntimeSymbolAvailability::Unknown => None,
+    }
+}
+
+fn file_contains_bytes(path: &Path, needle: &[u8]) -> bool {
+    fs::read(path).ok().is_some_and(|contents| {
+        contents
+            .windows(needle.len())
+            .any(|window| window == needle)
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SwiftRuntimeSymbolAvailability {
+    Available,
+    Missing,
+    Unknown,
+}
+
+#[cfg(test)]
+static SWIFT_RUNTIME_SYMBOL_AVAILABILITY_FOR_TEST: std::sync::Mutex<
+    Option<SwiftRuntimeSymbolAvailability>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) struct SwiftRuntimeSymbolAvailabilityOverride {
+    previous: Option<SwiftRuntimeSymbolAvailability>,
+}
+
+#[cfg(test)]
+impl Drop for SwiftRuntimeSymbolAvailabilityOverride {
+    fn drop(&mut self) {
+        let mut availability = SWIFT_RUNTIME_SYMBOL_AVAILABILITY_FOR_TEST
+            .lock()
+            .expect("test Swift runtime symbol override mutex should not be poisoned");
+        *availability = self.previous;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_swift_runtime_symbol_availability_for_test(
+    symbol_availability: SwiftRuntimeSymbolAvailability,
+) -> SwiftRuntimeSymbolAvailabilityOverride {
+    let mut availability = SWIFT_RUNTIME_SYMBOL_AVAILABILITY_FOR_TEST
+        .lock()
+        .expect("test Swift runtime symbol override mutex should not be poisoned");
+    let previous = availability.replace(symbol_availability);
+    SwiftRuntimeSymbolAvailabilityOverride { previous }
+}
+
+fn host_swift_runtime_symbol_availability() -> SwiftRuntimeSymbolAvailability {
+    #[cfg(test)]
+    if let Some(availability) = *SWIFT_RUNTIME_SYMBOL_AVAILABILITY_FOR_TEST
+        .lock()
+        .expect("test Swift runtime symbol override mutex should not be poisoned")
+    {
+        return availability;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        static AVAILABILITY: OnceLock<SwiftRuntimeSymbolAvailability> = OnceLock::new();
+        *AVAILABILITY.get_or_init(detect_host_swift_runtime_symbol_availability)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        SwiftRuntimeSymbolAvailability::Available
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_host_swift_runtime_symbol_availability() -> SwiftRuntimeSymbolAvailability {
+    if macos_major_version().is_some_and(|major| major < 26) {
+        return SwiftRuntimeSymbolAvailability::Missing;
+    }
+
+    let output = Command::new("/usr/bin/nm")
+        .args(["-gj", "/usr/lib/swift/libswift_Concurrency.dylib"])
+        .output();
+    let Ok(output) = output else {
+        return SwiftRuntimeSymbolAvailability::Unknown;
+    };
+    if !output.status.success() {
+        return SwiftRuntimeSymbolAvailability::Unknown;
+    }
+
+    if output
+        .stdout
+        .windows(SWIFT_PRIORITY_ESCALATION_SYMBOL.len())
+        .any(|window| window == SWIFT_PRIORITY_ESCALATION_SYMBOL)
+    {
+        SwiftRuntimeSymbolAvailability::Available
+    } else {
+        SwiftRuntimeSymbolAvailability::Missing
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u64> {
+    let output = Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse::<u64>()
+        .ok()
 }
 
 fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginMcpServerConfig) {

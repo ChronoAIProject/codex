@@ -6,8 +6,10 @@ use crate::PluginLoadOutcome;
 use crate::ToolSuggestDiscoverablePlugin;
 use crate::ToolSuggestPluginDiscoveryInput;
 use crate::installed_marketplaces::marketplace_install_root;
+use crate::loader::SwiftRuntimeSymbolAvailability;
 use crate::loader::load_plugin_skills;
 use crate::loader::load_plugins_from_layer_stack;
+use crate::loader::override_swift_runtime_symbol_availability_for_test;
 use crate::loader::refresh_non_curated_plugin_cache;
 use crate::loader::refresh_non_curated_plugin_cache_force_reinstall;
 use crate::marketplace::MarketplacePluginInstallPolicy;
@@ -918,6 +920,49 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
     assert_eq!(
         outcome.effective_apps(),
         vec![AppConnectorId("connector_example".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn load_plugins_blocks_bundled_computer_use_when_swift_symbol_is_missing() {
+    let _override = override_swift_runtime_symbol_availability_for_test(
+        SwiftRuntimeSymbolAvailability::Missing,
+    );
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache/openai-bundled/computer-use/1.0.1000366");
+    write_plugin_with_version(
+        &codex_home.path().join("plugins/cache/openai-bundled"),
+        "computer-use/1.0.1000366",
+        "computer-use",
+        Some("1.0.1000366"),
+    );
+    write_file(
+        &plugin_root.join("Codex Computer Use.app/Contents/MacOS/SkyComputerUseService"),
+        "fake Mach-O import _swift_task_addPriorityEscalationHandler",
+    );
+
+    let outcome = load_plugins_from_config(
+        r#"
+[features]
+plugins = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+"#,
+        codex_home.path(),
+        /*auth_mode*/ None,
+    )
+    .await;
+
+    assert_eq!(outcome.capability_summaries(), &[]);
+    assert_eq!(outcome.plugins().len(), 1);
+    assert_eq!(
+        outcome.plugins()[0].error.as_deref(),
+        Some(
+            "bundled Computer Use helper requires a Swift runtime symbol unavailable on this macOS version"
+        )
     );
 }
 
