@@ -22,7 +22,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::Message;
 
-pub(crate) const CONTROL_SOCKET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const CONTROL_SOCKET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_NAME: &str = "codex_app_server_daemon";
 const INITIALIZE_REQUEST_ID: RequestId = RequestId::Integer(1);
 
@@ -159,9 +159,14 @@ fn parse_version_from_user_agent(user_agent: &str) -> Result<String> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use anyhow::Result;
+    use codex_app_server_protocol::JSONRPCResponse;
+    use codex_uds::UnixListener;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+    use tokio_tungstenite::accept_async;
 
-    use super::parse_version_from_user_agent;
+    use super::*;
 
     #[test]
     fn parses_version_from_codex_user_agent() {
@@ -177,5 +182,53 @@ mod tests {
     #[test]
     fn rejects_user_agent_without_version() {
         assert!(parse_version_from_user_agent("codex_app_server_daemon").is_err());
+    }
+
+    #[tokio::test]
+    async fn probe_waits_for_slow_initialize_response() -> Result<()> {
+        let dir = TempDir::new()?;
+        let socket_path = dir.path().join("app-server.sock");
+        let mut listener = UnixListener::bind(&socket_path).await?;
+        let server_task = tokio::spawn(async move {
+            let stream = listener.accept().await?;
+            let mut websocket = accept_async(stream).await?;
+            let initialize = read_message(&mut websocket).await?;
+            let JSONRPCMessage::Request(initialize) = initialize else {
+                panic!("expected initialize request");
+            };
+            assert_eq!(initialize.id, INITIALIZE_REQUEST_ID);
+            assert_eq!(initialize.method, "initialize");
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            send_message(
+                &mut websocket,
+                &JSONRPCMessage::Response(JSONRPCResponse {
+                    id: INITIALIZE_REQUEST_ID,
+                    result: serde_json::json!({
+                        "userAgent": "codex_app_server/1.2.3",
+                        "codexHome": "/tmp/codex-home",
+                        "platformFamily": "unix",
+                        "platformOs": "macos",
+                    }),
+                }),
+            )
+            .await?;
+
+            let initialized = read_message(&mut websocket).await?;
+            let JSONRPCMessage::Notification(initialized) = initialized else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+            Ok::<_, anyhow::Error>(())
+        });
+
+        assert_eq!(
+            probe(&socket_path).await?,
+            ProbeInfo {
+                app_server_version: "1.2.3".to_string(),
+            }
+        );
+        server_task.await??;
+        Ok(())
     }
 }
