@@ -319,6 +319,21 @@ where
     Ok(serde_json::from_value(serde_json::Value::String(value)).ok())
 }
 
+fn deserialize_optional_reasoning_effort<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReasoningEffort>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse().map(Some).map_err(D::Error::custom)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, TS, JsonSchema)]
 pub struct TruncationPolicyConfig {
     pub mode: TruncationMode,
@@ -355,7 +370,11 @@ pub struct ModelInfo {
     pub slug: String,
     pub display_name: String,
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_reasoning_effort"
+    )]
     pub default_reasoning_level: Option<ReasoningEffort>,
     pub supported_reasoning_levels: Vec<ReasoningEffortPreset>,
     pub shell_type: ConfigShellToolType,
@@ -983,6 +1002,27 @@ mod tests {
         let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
 
         assert_eq!(model.tool_mode, Some(ToolMode::CodeModeOnly));
+    }
+
+    #[test]
+    fn model_info_treats_empty_default_reasoning_level_as_omitted() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        let object = value
+            .as_object_mut()
+            .expect("model info should be an object");
+        object.insert(
+            "default_reasoning_level".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+
+        assert_eq!(model.default_reasoning_level, None);
+        let serialized = serde_json::to_value(model).expect("serialize model info");
+        let object = serialized
+            .as_object()
+            .expect("model info should be an object");
+        assert!(!object.contains_key("default_reasoning_level"));
     }
 
     #[test]
