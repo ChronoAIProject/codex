@@ -301,18 +301,46 @@ impl Daemon {
 
     async fn start(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
+        let backend = self.running_backend_instance(&settings).await?;
         if let Ok(info) = client::probe(&self.socket_path).await {
+            if let Some(backend) = backend.as_ref() {
+                #[cfg(unix)]
+                {
+                    let managed_version = managed_codex_version(&self.managed_codex_bin).await?;
+                    match restart_decision(
+                        RestartMode::IfVersionChanged,
+                        Some(&info),
+                        Some(managed_version.as_str()),
+                    ) {
+                        RestartDecision::AlreadyCurrent => {}
+                        RestartDecision::Restart => {
+                            backend.stop().await?;
+                            let pid = self.start_managed_backend(&settings).await?;
+                            let info = self.wait_until_ready().await?;
+                            return Ok(self
+                                .output(
+                                    LifecycleStatus::Restarted,
+                                    Some(BackendKind::Pid),
+                                    pid,
+                                    Some(info.app_server_version),
+                                )
+                                .await);
+                        }
+                        RestartDecision::NotReady => {}
+                    }
+                }
+            }
             return Ok(self
                 .output(
                     LifecycleStatus::AlreadyRunning,
-                    self.running_backend(&settings).await?,
+                    backend.as_ref().map(|_| BackendKind::Pid),
                     /*pid*/ None,
                     Some(info.app_server_version),
                 )
                 .await);
         }
 
-        if self.running_backend_instance(&settings).await?.is_some() {
+        if backend.is_some() {
             let info = self.wait_until_ready().await?;
             return Ok(self
                 .output(
@@ -854,8 +882,19 @@ fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    use anyhow::Context;
+    use anyhow::Result;
+    use codex_app_server_protocol::JSONRPCMessage;
+    use codex_app_server_protocol::JSONRPCResponse;
+    use codex_app_server_protocol::RequestId;
+    use codex_uds::UnixListener;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+    use tokio::process::Command;
+    use tokio_tungstenite::accept_async;
 
     use super::BackendKind;
     use super::BootstrapOutput;
@@ -872,6 +911,7 @@ mod tests {
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
+    use crate::settings::DaemonSettings;
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -1038,5 +1078,134 @@ mod tests {
                 stderr_log.display()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn start_restarts_stale_managed_backend() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let socket_path = temp_dir.path().join("app-server-control.sock");
+        let pid_file = temp_dir.path().join("app-server.pid");
+        let managed_codex_bin = temp_dir.path().join("codex");
+        write_fake_managed_codex(&managed_codex_bin, "2.0.0").await?;
+
+        let mut old_child = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .context("spawn old backend")?;
+        let old_pid = old_child.id().context("old backend has no pid")?;
+        write_pid_record(&pid_file, old_pid).await?;
+        let old_child_reaper = tokio::spawn(async move { old_child.wait().await });
+
+        let listener = UnixListener::bind(&socket_path).await?;
+        let server = tokio::spawn(serve_probe_versions(
+            listener,
+            vec!["1.0.0".to_string(), "2.0.0".to_string()],
+        ));
+        let daemon = Daemon {
+            socket_path,
+            pid_file: pid_file.clone(),
+            update_pid_file: temp_dir.path().join("app-server-updater.pid"),
+            operation_lock_file: temp_dir.path().join("daemon.lock"),
+            settings_file: temp_dir.path().join("settings.json"),
+            managed_codex_bin,
+        };
+        DaemonSettings::default()
+            .save(&daemon.settings_file)
+            .await?;
+
+        let output = daemon.start().await?;
+
+        assert_eq!(
+            output.status,
+            LifecycleStatus::Restarted,
+            "stale managed app-server should be replaced"
+        );
+        assert_eq!(output.backend, Some(BackendKind::Pid));
+        assert_eq!(output.app_server_version, Some("2.0.0".to_string()));
+        assert!(output.pid.is_some());
+
+        let _ = old_child_reaper.await.context("join old child reaper")??;
+        terminate_pid_file_process(&pid_file).await?;
+        server.await.context("join probe server")??;
+        Ok(())
+    }
+
+    async fn write_fake_managed_codex(path: &Path, version: &str) -> Result<()> {
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then\n\
+             \techo \"codex {version}\"\n\
+             \texit 0\n\
+             fi\n\
+             sleep 60\n"
+        );
+        tokio::fs::write(path, script).await?;
+        let mut permissions = tokio::fs::metadata(path).await?.permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(path, permissions).await?;
+        Ok(())
+    }
+
+    async fn write_pid_record(pid_file: &Path, pid: u32) -> Result<()> {
+        let process_start_time = read_process_start_time(pid).await?;
+        let record = serde_json::json!({
+            "pid": pid,
+            "processStartTime": process_start_time,
+        });
+        tokio::fs::write(pid_file, serde_json::to_vec(&record)?).await?;
+        Ok(())
+    }
+
+    async fn read_process_start_time(pid: u32) -> Result<String> {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .output()
+            .await
+            .context("read process start time")?;
+        let start_time = String::from_utf8(output.stdout)?.trim().to_string();
+        Ok(start_time)
+    }
+
+    async fn terminate_pid_file_process(pid_file: &Path) -> Result<()> {
+        let contents = tokio::fs::read_to_string(pid_file).await?;
+        let record: serde_json::Value = serde_json::from_str(&contents)?;
+        let pid = record["pid"].as_u64().context("pid file missing pid")?;
+        let pid = libc::pid_t::try_from(pid).context("pid out of range")?;
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        Ok(())
+    }
+
+    async fn serve_probe_versions(mut listener: UnixListener, versions: Vec<String>) -> Result<()> {
+        for version in versions {
+            let stream = listener.accept().await?;
+            let mut websocket = accept_async(stream).await?;
+            let initialize = crate::client::read_message(&mut websocket).await?;
+            let JSONRPCMessage::Request(initialize) = initialize else {
+                panic!("expected initialize request");
+            };
+            assert_eq!(initialize.id, RequestId::Integer(1));
+            assert_eq!(initialize.method, "initialize");
+            crate::client::send_message(
+                &mut websocket,
+                &JSONRPCMessage::Response(JSONRPCResponse {
+                    id: RequestId::Integer(1),
+                    result: serde_json::json!({
+                        "userAgent": format!("codex_app_server/{version}"),
+                        "codexHome": "/tmp/codex-home",
+                        "platformFamily": "unix",
+                        "platformOs": "macos",
+                    }),
+                }),
+            )
+            .await?;
+            let initialized = crate::client::read_message(&mut websocket).await?;
+            let JSONRPCMessage::Notification(initialized) = initialized else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+        }
+        Ok(())
     }
 }
