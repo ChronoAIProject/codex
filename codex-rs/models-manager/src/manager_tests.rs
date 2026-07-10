@@ -366,6 +366,22 @@ async fn get_model_info_tracks_fallback_usage() {
 }
 
 #[tokio::test]
+async fn get_model_info_uses_bundled_metadata_for_gpt_5_6_variants() {
+    let codex_home = tempdir().expect("temp dir");
+    let config = ModelsManagerConfig::default();
+    let manager = openai_manager_for_tests(
+        codex_home.path().to_path_buf(),
+        TestModelsEndpoint::new(Vec::new()),
+    );
+
+    let model_info = manager.get_model_info("gpt-5.6-sol", &config).await;
+
+    assert_eq!(model_info.slug, "gpt-5.6-sol");
+    assert_eq!(model_info.display_name, "GPT-5.6");
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
 async fn get_model_info_uses_custom_catalog() {
     let config = ModelsManagerConfig::default();
     let mut overlay = remote_model("gpt-overlay", "Overlay", /*priority*/ 0);

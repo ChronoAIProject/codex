@@ -21,8 +21,8 @@
       "auto_compact_token_limit": null,
       "reasoning_summary_format": "experimental",
       "default_reasoning_summary": "none",
-      "slug": "gpt-5.5",
-      "display_name": "GPT-5.5",
+      "slug": "gpt-5.6",
+      "display_name": "GPT-5.6",
       "description": "Frontier model for complex coding, research, and real-world work.",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
@@ -48,7 +48,7 @@
       "minimal_client_version": "0.124.0",
       "supported_in_api": true,
       "availability_nux": {
-        "message": "GPT-5.5 is now available in Codex. It's our strongest agentic coding model yet, built to reason through large codebases, check assumptions with tools, and keep going until the work is done.\n\nLearn more: https://openai.com/index/introducing-gpt-5-5/\n\n"
+        "message": "GPT-5.6 is now available in Codex. It's our strongest agentic coding model yet, built to reason through large codebases, check assumptions with tools, and keep going until the work is done.\n\nLearn more: https://openai.com/index/introducing-gpt-5-6/\n\n"
       },
       "upgrade": null,
       "priority": 0,
