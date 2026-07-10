@@ -2345,6 +2345,37 @@ fn sandbox_policy_deserializes_legacy_workspace_write_full_access_field() {
 }
 
 #[test]
+fn sandbox_policy_deserializes_workspace_write_network_access_name() {
+    let policy = serde_json::from_value::<SandboxPolicy>(json!({
+        "type": "workspaceWrite",
+        "writableRoots": [],
+        "networkAccess": "enabled",
+        "excludeTmpdirEnvVar": false,
+        "excludeSlashTmp": false
+    }))
+    .expect("workspace-write policy should accept named network access");
+
+    assert_eq!(
+        policy,
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }
+    );
+    assert_eq!(
+        policy.to_core(),
+        codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }
+    );
+}
+
+#[test]
 fn sandbox_policy_rejects_legacy_read_only_restricted_access_field() {
     let err = serde_json::from_value::<SandboxPolicy>(json!({
         "type": "readOnly",

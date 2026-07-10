@@ -558,7 +558,7 @@ enum SandboxPolicyDeserialize {
         writable_roots: Vec<AbsolutePathBuf>,
         #[serde(default)]
         read_only_access: Option<LegacyReadOnlyAccess>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_network_access_bool")]
         network_access: bool,
         #[serde(default)]
         exclude_tmpdir_env_var: bool,
@@ -572,6 +572,24 @@ enum SandboxPolicyDeserialize {
 enum LegacyReadOnlyAccess {
     FullAccess,
     Restricted,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NetworkAccessBool {
+    Bool(bool),
+    Access(NetworkAccess),
+}
+
+fn deserialize_network_access_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match NetworkAccessBool::deserialize(deserializer)? {
+        NetworkAccessBool::Bool(network_access) => network_access,
+        NetworkAccessBool::Access(NetworkAccess::Restricted) => false,
+        NetworkAccessBool::Access(NetworkAccess::Enabled) => true,
+    })
 }
 
 impl<'de> Deserialize<'de> for SandboxPolicy {
