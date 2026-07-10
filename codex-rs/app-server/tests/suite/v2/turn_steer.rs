@@ -363,7 +363,7 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_steer_rejects_context_only_input_without_merging_context() -> Result<()> {
+async fn turn_steer_accepts_context_only_input() -> Result<()> {
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().join("codex_home");
     std::fs::create_dir(&codex_home)?;
@@ -441,16 +441,16 @@ async fn turn_steer_rejects_context_only_input_without_merging_context() -> Resu
             input: Vec::new(),
             responsesapi_client_metadata: None,
             additional_context,
-            expected_turn_id: turn.id,
+            expected_turn_id: turn.id.clone(),
         })
         .await?;
-    let steer_error: JSONRPCError = timeout(
+    let steer_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(steer_req)),
+        mcp.read_stream_until_response_message(RequestId::Integer(steer_req)),
     )
     .await??;
-    assert_eq!(steer_error.error.code, -32600);
-    assert_eq!(steer_error.error.message, "input must not be empty");
+    let steer: TurnSteerResponse = to_response::<TurnSteerResponse>(steer_resp)?;
+    assert_eq!(steer.turn_id, turn.id);
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -471,8 +471,7 @@ async fn turn_steer_rejects_context_only_input_without_merging_context() -> Resu
         .body_json::<Value>()
         .context("request body should be JSON")?;
     assert!(
-        !body
-            .to_string()
+        body.to_string()
             .contains("<external_browser_info>tab one</external_browser_info>")
     );
 
