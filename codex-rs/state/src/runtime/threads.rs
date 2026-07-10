@@ -1146,12 +1146,20 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
 "#,
         );
         builder.push_bind(ancestor_thread_id.to_string());
+        builder.push(" AND status = ");
+        builder.push_bind(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref());
         builder.push(
             r#"
     UNION
     SELECT edge.child_thread_id, edge.parent_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE edge.status =
+"#,
+        );
+        builder.push_bind(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+        builder.push(
+            r#"
 )
 "#,
         );
@@ -1175,6 +1183,8 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
             builder.push(" AND listed_edge.parent_thread_id = ");
             builder.push_bind(parent_thread_id.to_string());
+            builder.push(" AND listed_edge.status = ");
+            builder.push_bind(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref());
         }
         Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
             builder.push(" AND subtree.child_thread_id != ");
@@ -1984,7 +1994,7 @@ mod tests {
             (
                 parent_id,
                 second_child_id,
-                DirectionalThreadSpawnEdgeStatus::Closed,
+                DirectionalThreadSpawnEdgeStatus::Open,
             ),
             (
                 first_child_id,
@@ -2138,6 +2148,96 @@ mod tests {
                 .map(|item| item.id)
                 .collect::<Vec<_>>(),
             vec![grandchild_id, second_child_id, first_child_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_threads_by_relation_excludes_closed_spawn_edges() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let parent_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000920").expect("valid thread id");
+        let open_child_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000921").expect("valid thread id");
+        let closed_child_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000922").expect("valid thread id");
+
+        for thread_id in [parent_id, open_child_id, closed_child_id] {
+            runtime
+                .upsert_thread(&test_thread_metadata(
+                    &codex_home,
+                    thread_id,
+                    codex_home.clone(),
+                ))
+                .await
+                .expect("thread insert should succeed");
+        }
+        runtime
+            .upsert_thread_spawn_edge(
+                parent_id,
+                open_child_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open edge insert should succeed");
+        runtime
+            .upsert_thread_spawn_edge(
+                parent_id,
+                closed_child_id,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed edge insert should succeed");
+
+        let page = runtime
+            .list_threads_by_parent(
+                /*page_size*/ 10,
+                parent_id,
+                ThreadFilterOptions {
+                    archived_only: false,
+                    allowed_sources: &[],
+                    model_providers: None,
+                    cwd_filters: None,
+                    anchor: None,
+                    sort_key: SortKey::CreatedAt,
+                    sort_direction: SortDirection::Desc,
+                    search_term: None,
+                },
+            )
+            .await
+            .expect("child listing should succeed");
+
+        assert_eq!(
+            page.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![open_child_id]
+        );
+
+        let descendants = runtime
+            .list_threads_by_relation(
+                /*page_size*/ 10,
+                crate::ThreadRelationFilter::DescendantsOf(parent_id),
+                ThreadFilterOptions {
+                    archived_only: false,
+                    allowed_sources: &[],
+                    model_providers: None,
+                    cwd_filters: None,
+                    anchor: None,
+                    sort_key: SortKey::CreatedAt,
+                    sort_direction: SortDirection::Desc,
+                    search_term: None,
+                },
+            )
+            .await
+            .expect("descendant listing should succeed");
+        assert_eq!(
+            descendants
+                .items
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![open_child_id]
         );
     }
 
