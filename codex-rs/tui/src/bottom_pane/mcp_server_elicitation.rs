@@ -214,16 +214,19 @@ impl McpServerElicitationFormRequest {
             request,
             ..
         } = request;
-        let McpServerElicitationRequest::Form {
-            meta,
-            message,
-            requested_schema,
-        } = request
-        else {
-            return None;
+        let (meta, message, requested_schema) = match request {
+            McpServerElicitationRequest::Form {
+                meta,
+                message,
+                requested_schema,
+            } => (meta, message, serde_json::to_value(requested_schema).ok()?),
+            McpServerElicitationRequest::OpenAiForm {
+                meta,
+                message,
+                requested_schema,
+            } => (meta, message, requested_schema),
+            McpServerElicitationRequest::Url { .. } => return None,
         };
-
-        let requested_schema = serde_json::to_value(requested_schema).ok()?;
         Self::from_parts(
             thread_id,
             server_name,
@@ -545,6 +548,12 @@ fn parse_fields_from_schema(requested_schema: &Value) -> Option<Vec<McpServerEli
     let properties = schema.get("properties")?.as_object()?;
     let mut fields = Vec::new();
     for (id, property_schema) in properties {
+        if let Some(field) =
+            parse_openai_image_picker_field(id, property_schema, required.contains(id))
+        {
+            fields.push(field);
+            continue;
+        }
         let property =
             serde_json::from_value::<McpElicitationPrimitiveSchema>(property_schema.clone())
                 .ok()?;
@@ -554,6 +563,69 @@ fn parse_fields_from_schema(requested_schema: &Value) -> Option<Vec<McpServerEli
         return None;
     }
     Some(fields)
+}
+
+fn parse_openai_image_picker_field(
+    id: &str,
+    property_schema: &Value,
+    required: bool,
+) -> Option<McpServerElicitationField> {
+    let schema = property_schema.as_object()?;
+    if schema.get("type").and_then(Value::as_str) != Some("openai/imagePicker") {
+        return None;
+    }
+    let label = schema
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or(id)
+        .to_string();
+    let prompt = schema
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or(&label)
+        .to_string();
+    let items = schema.get("items")?.as_array()?;
+    let options = items
+        .iter()
+        .map(|item| {
+            let item = item.as_object()?;
+            let item_id = item.get("id").and_then(Value::as_str)?;
+            Some(McpServerElicitationOption {
+                label: item
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or(item_id)
+                    .to_string(),
+                description: item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                value: Value::String(item_id.to_string()),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if options.is_empty() {
+        return None;
+    }
+    let default_idx = schema
+        .get("default")
+        .and_then(Value::as_str)
+        .and_then(|default| {
+            options
+                .iter()
+                .position(|option| option.value.as_str() == Some(default))
+        });
+
+    Some(McpServerElicitationField {
+        id: id.to_string(),
+        label,
+        prompt,
+        required,
+        input: McpServerElicitationFieldInput::Select {
+            options,
+            default_idx,
+        },
+    })
 }
 
 fn parse_field(
@@ -1766,6 +1838,22 @@ mod tests {
         }
     }
 
+    fn openai_form_request(
+        message: &str,
+        requested_schema: Value,
+    ) -> McpServerElicitationRequestParams {
+        McpServerElicitationRequestParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            server_name: "server-1".to_string(),
+            request: McpServerElicitationRequest::OpenAiForm {
+                meta: None,
+                message: message.to_string(),
+                requested_schema,
+            },
+        }
+    }
+
     fn request_id(value: &str) -> AppServerRequestId {
         AppServerRequestId::String(value.to_string())
     }
@@ -1900,6 +1988,77 @@ mod tests {
                             },
                         ],
                         default_idx: None,
+                    },
+                }],
+                tool_suggestion: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_openai_form_image_picker_request() {
+        let thread_id = ThreadId::default();
+        let request = from_form_request(
+            thread_id,
+            openai_form_request(
+                "Choose site design",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "template": {
+                            "type": "openai/imagePicker",
+                            "title": "Template",
+                            "description": "Pick the design to use.",
+                            "items": [
+                                {
+                                    "id": "option-1",
+                                    "title": "Clean dashboard",
+                                    "description": "Dense table layout.",
+                                    "image": "data:image/png;base64,abc",
+                                },
+                                {
+                                    "id": "option-2",
+                                    "title": "Editorial landing",
+                                    "image": "data:image/png;base64,def",
+                                },
+                            ],
+                            "default": "option-2",
+                        }
+                    },
+                    "required": ["template"],
+                }),
+            ),
+        )
+        .expect("expected supported openai/form image picker");
+
+        assert_eq!(
+            request,
+            McpServerElicitationFormRequest {
+                thread_id,
+                server_name: "server-1".to_string(),
+                request_id: request_id("request-1"),
+                message: "Choose site design".to_string(),
+                approval_display_params: Vec::new(),
+                response_mode: McpServerElicitationResponseMode::FormContent,
+                fields: vec![McpServerElicitationField {
+                    id: "template".to_string(),
+                    label: "Template".to_string(),
+                    prompt: "Pick the design to use.".to_string(),
+                    required: true,
+                    input: McpServerElicitationFieldInput::Select {
+                        options: vec![
+                            McpServerElicitationOption {
+                                label: "Clean dashboard".to_string(),
+                                description: Some("Dense table layout.".to_string()),
+                                value: Value::String("option-1".to_string()),
+                            },
+                            McpServerElicitationOption {
+                                label: "Editorial landing".to_string(),
+                                description: None,
+                                value: Value::String("option-2".to_string()),
+                            },
+                        ],
+                        default_idx: Some(1),
                     },
                 }],
                 tool_suggestion: None,

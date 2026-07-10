@@ -396,18 +396,22 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
 async fn connect_remote_app_server(
     endpoint: RemoteAppServerEndpoint,
 ) -> color_eyre::Result<AppServerClient> {
-    let app_server = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+    let app_server = RemoteAppServerClient::connect(remote_app_server_connect_args(endpoint))
+        .await
+        .wrap_err("failed to connect to remote app server")?;
+    Ok(AppServerClient::Remote(app_server))
+}
+
+fn remote_app_server_connect_args(endpoint: RemoteAppServerEndpoint) -> RemoteAppServerConnectArgs {
+    RemoteAppServerConnectArgs {
         endpoint,
         client_name: "codex-tui".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
+        mcp_server_openai_form_elicitation: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
-    .await
-    .wrap_err("failed to connect to remote app server")?;
-    Ok(AppServerClient::Remote(app_server))
+    }
 }
 
 #[cfg(unix)]
@@ -565,7 +569,7 @@ where
         client_name: "codex-tui".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
+        mcp_server_openai_form_elicitation: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
@@ -2247,6 +2251,16 @@ mod tests {
                 "expected `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`"
             ));
         }
+    }
+
+    #[test]
+    fn remote_app_server_connect_args_support_openai_form_elicitation() -> color_eyre::Result<()> {
+        let args = remote_app_server_connect_args(RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::relative_to_current_dir("codex.sock")?,
+        });
+
+        assert!(args.mcp_server_openai_form_elicitation);
+        Ok(())
     }
 
     #[tokio::test]
