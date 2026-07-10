@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolRegistry;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
@@ -80,6 +83,41 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
         Box::pin(self.handle_call(call))
     }
 }
+
+struct RegistryEchoHandler {
+    tool_name: ToolName,
+}
+
+impl ToolExecutor<crate::tools::context::ToolInvocation> for RegistryEchoHandler {
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: self.tool_name.name.clone(),
+            description: "Echoes that the registry handler was reached.".to_string(),
+            strict: false,
+            parameters: codex_tools::JsonSchema::default(),
+            output_schema: None,
+            defer_loading: None,
+        })
+    }
+
+    fn handle(
+        &self,
+        _invocation: crate::tools::context::ToolInvocation,
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async {
+            Ok(Box::new(FunctionToolOutput::from_text(
+                "registry handler reached".to_string(),
+                Some(true),
+            )) as Box<dyn crate::tools::context::ToolOutput>)
+        })
+    }
+}
+
+impl CoreToolRuntime for RegistryEchoHandler {}
 
 impl ExtensionEchoExecutor {
     async fn handle_call(
@@ -174,6 +212,53 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
             assert_eq!(arguments, "{}");
         }
         other => panic!("expected function payload, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_resolves_unique_plain_call_to_namespaced_registry_tool() -> anyhow::Result<()> {
+    let (session, turn) = make_session_and_context().await;
+    let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = ToolRouter::from_parts(
+        ToolRegistry::with_handler_for_test(Arc::new(RegistryEchoHandler {
+            tool_name: ToolName::namespaced("mcp__tavily__", "tavily_search"),
+        })),
+        Vec::new(),
+    );
+    let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "tavily_search".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-flat-mcp".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("function_call should produce a tool call");
+
+    let result = router
+        .dispatch_tool_call_with_code_mode_result(
+            Arc::new(session),
+            step_context,
+            CancellationToken::new(),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call,
+            ToolCallSource::Direct,
+        )
+        .await?;
+
+    let response = result.into_response();
+    match response {
+        ResponseInputItem::FunctionCallOutput { call_id, output } => {
+            assert_eq!(call_id, "call-flat-mcp");
+            assert_eq!(
+                output.body,
+                FunctionCallOutputBody::Text("registry handler reached".to_string())
+            );
+        }
+        other => panic!("expected function call output, got {other:?}"),
     }
 
     Ok(())

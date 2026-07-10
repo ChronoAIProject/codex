@@ -360,6 +360,25 @@ impl ToolRegistry {
         self.tools.get(name).map(Arc::clone)
     }
 
+    pub(crate) fn canonical_tool_name(&self, name: ToolName) -> ToolName {
+        if name.namespace.is_some() || self.tools.contains_key(&name) {
+            return name;
+        }
+
+        let mut matches = self
+            .tools
+            .keys()
+            .filter(|candidate| candidate.name == name.name);
+        let Some(canonical) = matches.next() else {
+            return name;
+        };
+        if matches.next().is_some() {
+            return name;
+        }
+
+        canonical.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self.tools.keys().cloned().collect::<Vec<_>>();

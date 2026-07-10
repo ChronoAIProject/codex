@@ -219,10 +219,11 @@ impl ToolRouter {
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let ToolCall {
-            tool_name,
+            mut tool_name,
             call_id,
             payload,
         } = call;
+        tool_name = self.registry.canonical_tool_name(tool_name);
 
         // Keep the legacy ToolInvocation.turn field tied to the same request state until handlers migrate.
         let turn = Arc::clone(&step_context.turn);
