@@ -8,6 +8,7 @@ use tokio::process::Command;
 const CODEX_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
 const CODEX_DMG_URL_X64: &str =
     "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg";
+const CODEX_APP_BUNDLE_NAMES: [&str; 2] = ["ChatGPT.app", "Codex.app"];
 
 pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
@@ -70,9 +71,17 @@ fn find_existing_codex_app_path() -> Option<PathBuf> {
 }
 
 fn candidate_codex_app_paths() -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
+    let mut paths = CODEX_APP_BUNDLE_NAMES
+        .iter()
+        .map(|name| PathBuf::from("/Applications").join(name))
+        .collect::<Vec<_>>();
     if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join("Applications").join("Codex.app"));
+        let user_applications = PathBuf::from(home).join("Applications");
+        paths.extend(
+            CODEX_APP_BUNDLE_NAMES
+                .iter()
+                .map(|name| user_applications.join(name)),
+        );
     }
     paths
 }
@@ -146,6 +155,10 @@ async fn download_and_install_codex_to_user_applications(dmg_url: &str) -> anyho
 }
 
 async fn install_codex_app_bundle(app_in_volume: &Path) -> anyhow::Result<PathBuf> {
+    let app_bundle_name = app_in_volume
+        .file_name()
+        .context("mounted app bundle path has no file name")?;
+
     for applications_dir in candidate_applications_dirs()? {
         eprintln!(
             "Installing Codex Desktop into {applications_dir}...",
@@ -158,7 +171,7 @@ async fn install_codex_app_bundle(app_in_volume: &Path) -> anyhow::Result<PathBu
             )
         })?;
 
-        let dest_app = applications_dir.join("Codex.app");
+        let dest_app = applications_dir.join(app_bundle_name);
         if dest_app.is_dir() {
             return Ok(dest_app);
         }
@@ -167,14 +180,18 @@ async fn install_codex_app_bundle(app_in_volume: &Path) -> anyhow::Result<PathBu
             Ok(()) => return Ok(dest_app),
             Err(err) => {
                 eprintln!(
-                    "warning: failed to install Codex.app to {applications_dir}: {err}",
+                    "warning: failed to install {app_bundle_name} to {applications_dir}: {err}",
+                    app_bundle_name = app_bundle_name.to_string_lossy(),
                     applications_dir = applications_dir.display()
                 );
             }
         }
     }
 
-    anyhow::bail!("failed to install Codex.app to any applications directory");
+    anyhow::bail!(
+        "failed to install {app_bundle_name} to any applications directory",
+        app_bundle_name = app_bundle_name.to_string_lossy()
+    );
 }
 
 fn candidate_applications_dirs() -> anyhow::Result<Vec<PathBuf>> {
@@ -243,9 +260,11 @@ async fn detach_dmg(mount_point: &Path) -> anyhow::Result<()> {
 }
 
 fn find_codex_app_in_mount(mount_point: &Path) -> anyhow::Result<PathBuf> {
-    let direct = mount_point.join("Codex.app");
-    if direct.is_dir() {
-        return Ok(direct);
+    for app_bundle_name in CODEX_APP_BUNDLE_NAMES {
+        let direct = mount_point.join(app_bundle_name);
+        if direct.is_dir() {
+            return Ok(direct);
+        }
     }
 
     for entry in std::fs::read_dir(mount_point).with_context(|| {
@@ -302,10 +321,22 @@ fn parse_hdiutil_attach_mount_point(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::candidate_codex_app_paths;
     use super::codex_new_thread_url;
     use super::parse_hdiutil_attach_mount_point;
     use pretty_assertions::assert_eq;
     use std::path::Path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn candidate_paths_include_current_chatgpt_bundle_name_before_legacy_codex_name() {
+        let paths = candidate_codex_app_paths();
+        let expected = [
+            PathBuf::from("/Applications/ChatGPT.app"),
+            PathBuf::from("/Applications/Codex.app"),
+        ];
+        assert_eq!(&paths[..2], expected.as_slice());
+    }
 
     #[test]
     fn parses_mount_point_from_tab_separated_hdiutil_output() {
