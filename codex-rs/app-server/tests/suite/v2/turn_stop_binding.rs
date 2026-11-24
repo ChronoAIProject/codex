@@ -381,7 +381,7 @@ async fn administrative_stop_seals_partial_output_and_allows_a_successor() -> Re
     ])
     .await;
     let (mut server, target, _home) =
-        start_bound_turn_with_options(&model.uri(), None, /*seal*/ true).await?;
+        start_bound_turn_with_options(model.uri(), None, /*seal*/ true).await?;
     let delta: AgentMessageDeltaNotification = timeout(
         TEST_TIMEOUT,
         server.read_notification("item/agentMessage/delta"),
