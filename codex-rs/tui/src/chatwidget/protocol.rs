@@ -389,6 +389,7 @@ impl ChatWidget {
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::FsChanged(_)
             | ServerNotification::TurnModerationMetadata(_)
+            | ServerNotification::TurnStopFence(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
             | ServerNotification::ThreadRealtimeItemAdded(_)
