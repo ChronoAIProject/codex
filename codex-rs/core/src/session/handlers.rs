@@ -500,8 +500,17 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::InterruptIfNoPendingInput { turn_id, reply } => {
-                    sess.interrupt_turn_if_no_pending_input(&turn_id, reply)
-                        .await;
+                    sess.interrupt_turn_if_no_pending_input(
+                        &turn_id, /*require_unsteered*/ false, reply,
+                    )
+                    .await;
+                    false
+                }
+                Op::InterruptIfUnsteered { turn_id, reply } => {
+                    sess.interrupt_turn_if_no_pending_input(
+                        &turn_id, /*require_unsteered*/ true, reply,
+                    )
+                    .await;
                     false
                 }
                 Op::CleanBackgroundTerminals => {

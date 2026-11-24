@@ -342,9 +342,15 @@ pub(super) async fn ensure_listener_task_running(
                     // synchronized with the conversation.
                     let (raw_events_enabled, terminal_summary) = {
                         let mut thread_state = thread_state.lock().await;
+                        if thread_state.listener_generation != listener_generation {
+                            break;
+                        }
                         thread_state.track_current_turn_event(&event.id, &event.msg);
                         let terminal = matches!(event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
                             .then(|| thread_state.turn_summary.clone());
+                        if terminal.is_some() {
+                            thread_state.stop_binding.note_canonical(&event.id);
+                        }
                         (thread_state.experimental_raw_events, terminal)
                     };
                     if matches!(

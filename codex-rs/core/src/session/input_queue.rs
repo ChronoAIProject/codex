@@ -196,6 +196,7 @@ impl InputQueue {
         if !turn_state.accepts_mailbox_delivery_for_current_turn() {
             return false;
         }
+        turn_state.accepted_additional_input = true;
         turn_state
             .pending_input
             .items
@@ -377,6 +378,7 @@ impl InputQueue {
     ) {
         {
             let mut turn_state = turn_state.lock().await;
+            turn_state.accepted_additional_input |= !input.is_empty();
             turn_state.pending_input.has_pending_injection |= input
                 .iter()
                 .any(|input| matches!(input, TurnInput::ResponseItem(_)));
@@ -391,7 +393,11 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
-        turn_state.lock().await.pending_input.items.extend(input);
+        let mut turn_state = turn_state.lock().await;
+        turn_state.accepted_additional_input |= input
+            .iter()
+            .any(|item| matches!(item, TurnInput::InterAgentCommunication(_)));
+        turn_state.pending_input.items.extend(input);
     }
 
     pub(crate) async fn take_pending_input_for_turn_state(
@@ -409,34 +415,31 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> (Vec<TurnInput>, TurnStartOptions) {
-        let (pending_input, accepts_mailbox_delivery) = {
-            let mut active = active_turn.lock().await;
-            match active.as_mut() {
-                Some(active_turn) => {
-                    let mut turn_state = active_turn.turn_state.lock().await;
-                    let accepts_mailbox_delivery =
-                        turn_state.accepts_mailbox_delivery_for_current_turn();
-                    let pending_input = if accepts_mailbox_delivery {
-                        std::mem::take(&mut turn_state.pending_input).items
-                    } else {
-                        Vec::new()
-                    };
-                    (pending_input, accepts_mailbox_delivery)
-                }
-                None => (Vec::new(), true),
-            }
+        let active = active_turn.lock().await;
+        let Some(active_turn) = active.as_ref() else {
+            drop(active);
+            return self.drain_mailbox_input_items().await;
         };
-        if !accepts_mailbox_delivery {
-            return (pending_input, TurnStartOptions::default());
-        }
+        let mut pending_input = {
+            let mut turn_state = active_turn.turn_state.lock().await;
+            if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+                return (Vec::new(), TurnStartOptions::default());
+            }
+            std::mem::take(&mut turn_state.pending_input).items
+        };
+        // Exact interruption also takes the active-turn lock. Keep mailbox
+        // consumption and acceptance together so it cannot see an empty queue
+        // before learning that this turn accepted the delivered input.
         let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
-        if pending_input.is_empty() {
-            (mailbox_items, start_options)
-        } else {
-            let mut pending_input = pending_input;
-            pending_input.extend(mailbox_items);
-            (pending_input, start_options)
+        if !mailbox_items.is_empty() {
+            active_turn
+                .turn_state
+                .lock()
+                .await
+                .accepted_additional_input = true;
         }
+        pending_input.extend(mailbox_items);
+        (pending_input, start_options)
     }
 
     #[expect(
