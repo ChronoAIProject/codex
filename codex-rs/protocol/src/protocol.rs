@@ -665,6 +665,13 @@ pub enum Op {
         reply: oneshot::Sender<bool>,
     },
 
+    /// Interrupt the named turn only if no later steering joined and no input is queued.
+    #[debug("InterruptIfUnsteered {{ turn_id: {turn_id:?} }}")]
+    InterruptIfUnsteered {
+        turn_id: String,
+        reply: oneshot::Sender<bool>,
+    },
+
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,
@@ -1043,6 +1050,7 @@ impl Op {
         match self {
             Self::Interrupt => "interrupt",
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
+            Self::InterruptIfUnsteered { .. } => "interrupt_if_unsteered",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAttach { .. } => "realtime_conversation_attach",

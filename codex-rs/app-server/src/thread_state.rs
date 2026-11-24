@@ -463,15 +463,32 @@ impl ThreadStateManager {
         state.threads.entry(thread_id).or_default().state.clone()
     }
 
-    pub(crate) async fn stop_subscriber(
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "validate subscription membership and listener incarnation at a single admission point"
+    )]
+    pub(crate) async fn with_stop_listener<T>(
         &self,
         thread_id: ThreadId,
         connection: ConnectionId,
-    ) -> Option<(Arc<Mutex<ThreadState>>, Uuid)> {
-        let state = self.state.lock().await;
-        let entry = state.threads.get(&thread_id)?;
-        entry.connection_ids.contains(&connection).then_some(())?;
-        Some((entry.state.clone(), entry.single_subscriber?))
+        operation: impl FnOnce(&mut ThreadState, String) -> T,
+    ) -> Option<(Arc<Mutex<ThreadState>>, T)> {
+        let listener = {
+            let manager = self.state.lock().await;
+            Arc::clone(&manager.threads.get(&thread_id)?.state)
+        };
+        let result = {
+            let mut listener_state = listener.lock().await;
+            let manager = self.state.lock().await;
+            let entry = manager.threads.get(&thread_id)?;
+            if !Arc::ptr_eq(&entry.state, &listener) || !entry.connection_ids.contains(&connection)
+            {
+                return None;
+            }
+            let incarnation = listener_state.stop_listener_incarnation(entry.single_subscriber?)?;
+            operation(&mut listener_state, incarnation)
+        };
+        Some((listener, result))
     }
 
     pub(crate) fn current_listener_command_tx(
@@ -714,5 +731,49 @@ impl ThreadStateManager {
             .threads
             .get(&thread_id)
             .map(|thread_entry| thread_entry.has_connections_watcher.subscribe())
+    }
+}
+
+#[cfg(test)]
+mod exact_stop_listener_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "hold the listener lock to stage loss of the subscriber before admission"
+    )]
+    async fn subscriber_loss_between_lookup_and_admission_refuses_operation() {
+        let manager = ThreadStateManager::new();
+        let thread = ThreadId::new();
+        let connection = ConnectionId(1);
+        let listener = {
+            let mut state = manager.state.lock().await;
+            let mut entry = ThreadEntry::default();
+            entry.connection_ids.insert(connection);
+            entry.single_subscriber = Some(Uuid::now_v7());
+            state.threads.insert(thread, entry);
+            state
+                .thread_ids_by_connection
+                .entry(connection)
+                .or_default()
+                .insert(thread);
+            Arc::clone(&state.threads[&thread].state)
+        };
+        let mut guard = listener.lock().await;
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        guard.listener_command_tx = Some(sender);
+        let admission = manager.with_stop_listener(thread, connection, |_, _| -> () {
+            panic!("the old subscriber may not admit an operation")
+        });
+        tokio::pin!(admission);
+        assert!(futures::poll!(&mut admission).is_pending());
+        assert!(
+            manager
+                .unsubscribe_connection_from_thread(thread, connection)
+                .await
+        );
+        drop(guard);
+        assert!(admission.await.is_none());
     }
 }

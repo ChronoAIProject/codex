@@ -5,12 +5,19 @@ use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartBoundParams;
 use codex_app_server_protocol::TurnStartBoundResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::TurnStopCapabilityParams;
 use codex_app_server_protocol::TurnStopCapabilityResponse;
 use codex_app_server_protocol::TurnStopExactResponse;
@@ -163,56 +170,26 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
         },
     ]])
     .await;
-    let home = TempDir::new()?;
-    MockResponsesConfig::new(&model.uri()).write(home.path())?;
-    let mut server = TestAppServer::builder()
-        .with_codex_home(home.path())
-        .with_env_overrides(&[(ENABLE_ENV, Some("1"))])
-        .build_initialized()
-        .await?;
-    let thread_id = server
-        .start_thread(ThreadStartParams {
-            model: Some("mock-model".into()),
-            ..Default::default()
-        })
-        .await?
-        .thread
-        .id;
-    let capability: TurnStopCapabilityResponse = server
-        .request(|request_id| ClientRequest::TurnStopCapability {
-            request_id,
-            params: TurnStopCapabilityParams {
-                thread_id: thread_id.clone(),
-            },
-        })
-        .await?;
-    let listener_incarnation = capability.listener_incarnation.context("live listener")?;
-    let bound: TurnStartBoundResponse = server
-        .request(|request_id| ClientRequest::TurnStartBound {
-            request_id,
-            params: TurnStartBoundParams {
-                turn: TurnStartParams {
-                    thread_id: thread_id.clone(),
-                    input: vec![UserInput::Text {
-                        text: "Wait for the response".into(),
-                        text_elements: vec![],
-                    }],
-                    ..Default::default()
-                },
-                listener_incarnation: listener_incarnation.clone(),
-                dispatch_sequence: 1,
-                dispatch_key: "accepted-dispatch".into(),
-            },
-        })
-        .await?;
+    let (mut server, mut target, _home) = start_bound_turn(model.uri()).await?;
     timeout(TEST_TIMEOUT, model.wait_for_request_count(1)).await?;
-    let mut target = TurnStopStatusParams {
-        thread_id,
-        turn_id: bound.turn.id.clone(),
-        listener_incarnation,
-        dispatch_sequence: 1,
-        dispatch_key: "wrong".into(),
-    };
+    let refused_start = server
+        .send_raw_request(
+            "turn/startBound",
+            Some(json!({
+                "turn": { "threadId": target.thread_id, "input": [
+                    { "type": "text", "text": "refused successor", "textElements": [] }
+                ] },
+                "listenerIncarnation": target.listener_incarnation,
+                "dispatchSequence": 2,
+                "dispatchKey": "successor-dispatch",
+            })),
+        )
+        .await?;
+    let refused = server
+        .read_stream_until_error_message(RequestId::Integer(refused_start))
+        .await?;
+    assert!(refused.error.message.contains("NotIdle"), "{refused:?}");
+    target.dispatch_key = "wrong".into();
     let wrong: TurnStopExactResponse = server
         .request(|request_id| ClientRequest::TurnStopExact {
             request_id,
@@ -237,7 +214,7 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
         .await?;
     let completed: TurnCompletedNotification =
         timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
-    assert_eq!(completed.turn.id, bound.turn.id);
+    assert_eq!(completed.turn.id, target.turn_id);
     assert_eq!(completed.turn.status, TurnStatus::Interrupted);
     let replay: TurnStopExactResponse = server
         .request(|request_id| ClientRequest::TurnStopExact {
@@ -246,6 +223,222 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
         })
         .await?;
     assert_eq!(replay.status, TurnStopStatus::Canonical);
+    assert_eq!(model.requests().await.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_stop_holds_after_core_consumes_later_steering() -> Result<()> {
+    let (release_initial, initial_gate) = oneshot::channel();
+    let (release_steered, steered_gate) = oneshot::channel();
+    let (model, _completions) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("initial")]),
+            },
+            StreamingSseChunk {
+                gate: Some(initial_gate),
+                body: responses::sse(vec![responses::ev_completed("initial")]),
+            },
+        ],
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("steered")]),
+            },
+            StreamingSseChunk {
+                gate: Some(steered_gate),
+                body: responses::sse(vec![
+                    responses::ev_assistant_message("message", "steered result"),
+                    responses::ev_completed("steered"),
+                ]),
+            },
+        ],
+    ])
+    .await;
+    let (mut server, target, _home) = start_bound_turn(model.uri()).await?;
+    timeout(TEST_TIMEOUT, model.wait_for_request_count(1)).await?;
+    let steered: TurnSteerResponse = server
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: TurnSteerParams {
+                thread_id: target.thread_id.clone(),
+                expected_turn_id: target.turn_id.clone(),
+                input: vec![UserInput::Text {
+                    text: "later steering input".into(),
+                    text_elements: vec![],
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(steered.turn_id, target.turn_id);
+    release_initial.send(()).expect("stream is waiting");
+    timeout(TEST_TIMEOUT, model.wait_for_request_count(2)).await?;
+    let stop: TurnStopExactResponse = server
+        .request(|request_id| ClientRequest::TurnStopExact {
+            request_id,
+            params: target.clone(),
+        })
+        .await?;
+    assert_eq!(stop.status, TurnStopStatus::Hold);
+    release_steered.send(()).expect("steered stream is waiting");
+    let completed: TurnCompletedNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
+    assert_eq!(completed.turn.id, target.turn_id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let requests = model.requests().await;
+    assert_eq!(requests.len(), 2);
+    let request: serde_json::Value = serde_json::from_slice(&requests[1])?;
+    assert!(
+        request["input"]
+            .to_string()
+            .contains("later steering input")
+    );
+    Ok(())
+}
+
+async fn start_bound_turn(
+    model_uri: &str,
+) -> Result<(TestAppServer, TurnStopStatusParams, TempDir)> {
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(model_uri).write(codex_home.path())?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[(ENABLE_ENV, Some("1"))])
+        .build_initialized()
+        .await?;
+    let thread_id = server
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".into()),
+            ..Default::default()
+        })
+        .await?
+        .thread
+        .id;
+    let capability: TurnStopCapabilityResponse = server
+        .request(|request_id| ClientRequest::TurnStopCapability {
+            request_id,
+            params: TurnStopCapabilityParams {
+                thread_id: thread_id.clone(),
+            },
+        })
+        .await?;
+    let listener_incarnation = capability.listener_incarnation.context("live listener")?;
+    let dispatch_key = "accepted-dispatch".to_string();
+    let bound: TurnStartBoundResponse = server
+        .request(|request_id| ClientRequest::TurnStartBound {
+            request_id,
+            params: TurnStartBoundParams {
+                turn: TurnStartParams {
+                    thread_id: thread_id.clone(),
+                    input: vec![UserInput::Text {
+                        text: "Wait for the response".into(),
+                        text_elements: vec![],
+                    }],
+                    ..Default::default()
+                },
+                listener_incarnation: listener_incarnation.clone(),
+                dispatch_sequence: 1,
+                dispatch_key: dispatch_key.clone(),
+            },
+        })
+        .await?;
+    Ok((
+        server,
+        TurnStopStatusParams {
+            thread_id,
+            turn_id: bound.turn.id,
+            listener_incarnation,
+            dispatch_sequence: 1,
+            dispatch_key,
+        },
+        codex_home,
+    ))
+}
+
+#[tokio::test]
+async fn subscriber_gap_disqualifies_old_incarnation_without_stopping_turn() -> Result<()> {
+    let (release, gate) = oneshot::channel();
+    let (model, _completions) = start_streaming_sse_server(vec![vec![
+        StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![responses::ev_response_created("held-response")]),
+        },
+        StreamingSseChunk {
+            gate: Some(gate),
+            body: responses::sse(vec![
+                responses::ev_assistant_message("result", "completed naturally"),
+                responses::ev_completed("held-response"),
+            ]),
+        },
+    ]])
+    .await;
+    let (mut server, target, _home) = start_bound_turn(model.uri()).await?;
+    timeout(TEST_TIMEOUT, model.wait_for_request_count(1)).await?;
+    let unsubscribed: ThreadUnsubscribeResponse = server
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: target.thread_id.clone(),
+            },
+        })
+        .await?;
+    assert_eq!(unsubscribed.status, ThreadUnsubscribeStatus::Unsubscribed);
+    let _: ThreadResumeResponse = server
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: target.thread_id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let capability: TurnStopCapabilityResponse = server
+        .request(|request_id| ClientRequest::TurnStopCapability {
+            request_id,
+            params: TurnStopCapabilityParams {
+                thread_id: target.thread_id.clone(),
+            },
+        })
+        .await?;
+    let fresh = capability
+        .listener_incarnation
+        .context("replacement listener")?;
+    assert_ne!(fresh, target.listener_incarnation);
+    let stop: TurnStopExactResponse = server
+        .request(|request_id| ClientRequest::TurnStopExact {
+            request_id,
+            params: target.clone(),
+        })
+        .await?;
+    assert_eq!(stop.status, TurnStopStatus::Hold);
+    release.send(()).expect("stream is waiting");
+    let completed: TurnCompletedNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
+    assert_eq!(completed.turn.id, target.turn_id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let stale_start = server
+        .send_raw_request(
+            "turn/startBound",
+            Some(json!({
+                "turn": { "threadId": target.thread_id, "input": [
+                    { "type": "text", "text": "stale subscriber", "textElements": [] }
+                ] },
+                "listenerIncarnation": target.listener_incarnation,
+                "dispatchSequence": 2,
+                "dispatchKey": "stale-subscriber-dispatch",
+            })),
+        )
+        .await?;
+    let error = server
+        .read_stream_until_error_message(RequestId::Integer(stale_start))
+        .await?;
+    assert_eq!(
+        error.error.message,
+        "invalid or repeated exact turn binding"
+    );
     assert_eq!(model.requests().await.len(), 1);
     Ok(())
 }

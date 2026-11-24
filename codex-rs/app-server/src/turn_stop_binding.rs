@@ -13,7 +13,7 @@ pub(crate) fn enabled() -> bool {
     *ENABLED
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DispatchBinding {
     pub(crate) listener_incarnation: String,
     pub(crate) dispatch_sequence: u32,
@@ -27,6 +27,7 @@ pub(crate) struct TurnStopBinding {
 }
 
 struct AcceptedTurn {
+    binding: DispatchBinding,
     turn_id: String,
     expires_at: Instant,
     canonical: bool,
@@ -57,7 +58,6 @@ impl TurnStopBinding {
             return false;
         }
         self.start = Some(binding);
-        self.accepted = None;
         true
     }
 
@@ -68,11 +68,12 @@ impl TurnStopBinding {
         turn_id: String,
         canonical: bool,
     ) {
-        if self.start.as_ref().is_some_and(|start| {
+        if let Some(start) = self.start.as_ref().filter(|start| {
             start.listener_incarnation == listener_incarnation
                 && start.dispatch_sequence == dispatch_sequence
         }) {
             self.accepted = Some(AcceptedTurn {
+                binding: start.clone(),
                 turn_id,
                 expires_at: Instant::now() + RETENTION,
                 canonical,
@@ -96,15 +97,12 @@ impl TurnStopBinding {
         dispatch_key: &str,
         turn_id: &str,
     ) -> TurnStopStatus {
-        let Some(start) = &self.start else {
-            return TurnStopStatus::Hold;
-        };
         let Some(accepted) = &self.accepted else {
             return TurnStopStatus::Hold;
         };
-        if start.listener_incarnation != listener_incarnation
-            || start.dispatch_sequence != dispatch_sequence
-            || start.dispatch_key != dispatch_key
+        if accepted.binding.listener_incarnation != listener_incarnation
+            || accepted.binding.dispatch_sequence != dispatch_sequence
+            || accepted.binding.dispatch_key != dispatch_key
             || accepted.turn_id != turn_id
             || Instant::now() >= accepted.expires_at
         {
@@ -204,6 +202,11 @@ mod tests {
         }
         assert!(state.reserve_start(binding(2, "listener")));
         assert!(!state.reserve_start(binding(1, "listener")));
+        assert_eq!(
+            state.observe("listener", 1, "key-1", "turn"),
+            TurnStopStatus::Canonical
+        );
+        state.complete_start("listener", 2, "successor".into(), false);
         assert_eq!(
             state.observe("listener", 1, "key-1", "turn"),
             TurnStopStatus::Hold

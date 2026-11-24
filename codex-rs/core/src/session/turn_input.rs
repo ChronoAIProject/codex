@@ -916,6 +916,7 @@ impl Session {
             }
         };
         pending_input.push(input);
+        active_turn.turn_state.lock().await.accepted_steering = true;
         self.input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 active_turn.turn_state.as_ref(),

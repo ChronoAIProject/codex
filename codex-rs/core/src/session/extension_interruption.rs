@@ -23,6 +23,21 @@ impl CodexThread {
     /// Returns the decision before joining cancellation, so tool callbacks can await it.
     /// Like [`Op::Interrupt`], this does not notify idle contributors; the caller owns wakeup.
     pub async fn interrupt_if_no_pending_input(&self, turn_id: &str) -> CodexResult<bool> {
+        self.interrupt_if_eligible(turn_id, /*require_unsteered*/ false)
+            .await
+    }
+
+    /// Interrupts the named turn only while its original dispatch has exclusive input.
+    pub async fn interrupt_if_unsteered(&self, turn_id: &str) -> CodexResult<bool> {
+        self.interrupt_if_eligible(turn_id, /*require_unsteered*/ true)
+            .await
+    }
+
+    async fn interrupt_if_eligible(
+        &self,
+        turn_id: &str,
+        require_unsteered: bool,
+    ) -> CodexResult<bool> {
         let cancellation_token = {
             let active = self.session.active_turn.lock().await;
             let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
@@ -37,10 +52,13 @@ impl CodexThread {
         tokio::select! {
             biased;
             result = async {
-                self.submit(Op::InterruptIfNoPendingInput {
-                    turn_id: turn_id.to_owned(),
-                    reply,
-                }).await?;
+                let turn_id = turn_id.to_owned();
+                let op = if require_unsteered {
+                    Op::InterruptIfUnsteered { turn_id, reply }
+                } else {
+                    Op::InterruptIfNoPendingInput { turn_id, reply }
+                };
+                self.submit(op).await?;
                 (&mut result).await.map_err(|_| CodexErr::InternalAgentDied)
             } => result,
             // An earlier interrupt may already be waiting for this tool callback to finish.
@@ -61,6 +79,7 @@ impl Session {
     pub(crate) async fn interrupt_turn_if_no_pending_input(
         self: &Arc<Self>,
         turn_id: &str,
+        require_unsteered: bool,
         reply: oneshot::Sender<bool>,
     ) {
         let active_turn = {
@@ -73,7 +92,11 @@ impl Session {
                 let _ = reply.send(false);
                 return;
             };
-            if !turn.turn_state.lock().await.pending_input.is_empty()
+            let has_conflicting_input = {
+                let state = turn.turn_state.lock().await;
+                !state.pending_input.is_empty() || (require_unsteered && state.accepted_steering)
+            };
+            if has_conflicting_input
                 || self.input_queue.has_pending_mailbox_items().await
                 || reply.is_closed()
             {
