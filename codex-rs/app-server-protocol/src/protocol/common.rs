@@ -148,9 +148,9 @@ macro_rules! serialization_scope_expr {
     ($actual_params:ident, global_shared_read($key:literal)) => {
         Some(ClientRequestSerializationScope::GlobalSharedRead($key))
     };
-    ($actual_params:ident, thread_id($params:ident . $field:ident)) => {
+    ($actual_params:ident, thread_id($params:ident $(. $field:ident)+)) => {
         Some(ClientRequestSerializationScope::Thread {
-            thread_id: $actual_params.$field.clone(),
+            thread_id: $actual_params$(.$field)+.clone(),
         })
     };
     ($actual_params:ident, optional_thread_id($params:ident . $field:ident)) => {
@@ -1078,6 +1078,30 @@ client_request_definitions! {
         inspect_params: true,
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
+    },
+    #[experimental("turn/startBound")]
+    TurnStartBound => "turn/startBound" {
+        params: v2::TurnStartBoundParams,
+        serialization: thread_id(params.turn.thread_id),
+        response: v2::TurnStartBoundResponse,
+    },
+    #[experimental("turn/stopCapability")]
+    TurnStopCapability => "turn/stopCapability" {
+        params: v2::TurnStopCapabilityParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnStopCapabilityResponse,
+    },
+    #[experimental("turn/stopStatus")]
+    TurnStopStatus => "turn/stopStatus" {
+        params: v2::TurnStopStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnStopStatusResponse,
+    },
+    #[experimental("turn/stopExact")]
+    TurnStopExact => "turn/stopExact" {
+        params: v2::TurnStopStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnStopExactResponse,
     },
     #[experimental("turn/settings/update")]
     TurnSettingsUpdate => "turn/settings/update" {

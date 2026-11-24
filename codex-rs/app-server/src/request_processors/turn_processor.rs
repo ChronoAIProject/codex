@@ -4,6 +4,15 @@ use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
+use codex_app_server_protocol::TurnStartBoundParams;
+use codex_app_server_protocol::TurnStartBoundResponse;
+use codex_app_server_protocol::TurnStopCapabilityParams;
+use codex_app_server_protocol::TurnStopCapabilityResponse;
+use codex_app_server_protocol::TurnStopExactResponse;
+use codex_app_server_protocol::TurnStopStatus;
+use codex_app_server_protocol::TurnStopStatusParams;
+use codex_app_server_protocol::TurnStopStatusResponse;
+use codex_core::StartIfIdleSubmission;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -21,6 +30,7 @@ use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
+use crate::turn_stop_binding::DispatchBinding;
 
 pub(super) fn validate_user_input_image_urls(
     input: &[V2UserInput],
@@ -187,9 +197,154 @@ impl TurnRequestProcessor {
             params,
             app_server_client_name,
             app_server_client_version,
+            /*binding*/ None,
         )
         .await
         .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn turn_start_bound(
+        &self,
+        request_id: ConnectionRequestId,
+        params: TurnStartBoundParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if !crate::turn_stop_binding::enabled() {
+            return Err(invalid_request("exact turn binding is disabled"));
+        }
+        validate_user_input_image_urls(&params.turn.input)?;
+        let binding = DispatchBinding {
+            listener_incarnation: params.listener_incarnation,
+            dispatch_sequence: params.dispatch_sequence,
+            dispatch_key: params.dispatch_key,
+        };
+        let response = self
+            .turn_start_inner(
+                request_id,
+                params.turn,
+                app_server_client_name,
+                app_server_client_version,
+                Some(binding),
+            )
+            .await?;
+        Ok(Some(
+            TurnStartBoundResponse {
+                turn: response.turn,
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn turn_stop_capability(
+        &self,
+        connection: ConnectionId,
+        params: &TurnStopCapabilityParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread = ThreadId::from_string(&params.thread_id)
+            .map_err(|_| invalid_request("invalid thread id"))?;
+        let listener_incarnation = match self
+            .thread_state_manager
+            .stop_subscriber(thread, connection)
+            .await
+        {
+            Some((state, subscriber)) => state.lock().await.stop_listener_incarnation(subscriber),
+            None => None,
+        };
+        let response = TurnStopCapabilityResponse {
+            binding_version: listener_incarnation.as_ref().map(|_| 1),
+            listener_incarnation,
+        };
+        Ok(Some(response.into()))
+    }
+
+    pub(crate) async fn turn_stop_status(
+        &self,
+        connection: ConnectionId,
+        params: &TurnStopStatusParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread = ThreadId::from_string(&params.thread_id)
+            .map_err(|_| invalid_request("invalid thread id"))?;
+        let status = match self
+            .thread_state_manager
+            .stop_subscriber(thread, connection)
+            .await
+        {
+            Some((state, subscriber)) => {
+                let state = state.lock().await;
+                if state.stop_listener_incarnation(subscriber).as_deref()
+                    == Some(params.listener_incarnation.as_str())
+                {
+                    state.stop_binding.status(params)
+                } else {
+                    TurnStopStatus::Hold
+                }
+            }
+            None => TurnStopStatus::Hold,
+        };
+        Ok(Some(TurnStopStatusResponse { status }.into()))
+    }
+
+    pub(crate) async fn turn_stop_exact(
+        &self,
+        connection: ConnectionId,
+        params: &TurnStopStatusParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let status = self.request_bound_stop(connection, params).await?;
+        Ok(Some(TurnStopExactResponse { status }.into()))
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the subscription must still be current when the listener accepts the stop"
+    )]
+    async fn request_bound_stop(
+        &self,
+        connection: ConnectionId,
+        params: &TurnStopStatusParams,
+    ) -> Result<TurnStopStatus, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|_| invalid_request("invalid thread id"))?;
+        let Some((state, subscriber)) = self
+            .thread_state_manager
+            .stop_subscriber(thread_id, connection)
+            .await
+        else {
+            return Ok(TurnStopStatus::Hold);
+        };
+        let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
+            return Ok(TurnStopStatus::Hold);
+        };
+        {
+            let mut state = state.lock().await;
+            if !self
+                .thread_state_manager
+                .stop_subscriber(thread_id, connection)
+                .await
+                .is_some_and(|(_, current)| current == subscriber)
+                || !state.listener_matches(&thread)
+                || state.stop_listener_incarnation(subscriber).as_deref()
+                    != Some(params.listener_incarnation.as_str())
+            {
+                return Ok(TurnStopStatus::Hold);
+            }
+            if !state.stop_binding.claim_stop(params) {
+                return Ok(state.stop_binding.status(params));
+            }
+        }
+
+        // Core decides against the exact active task. Its decision only confirms
+        // that interruption began. The ordinary terminal remains authoritative.
+        let decision = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            thread.interrupt_if_no_pending_input(&params.turn_id),
+        )
+        .await;
+        let mut state = state.lock().await;
+        if !matches!(decision, Ok(Ok(true))) {
+            state.stop_binding.note_unconfirmed_stop(params);
+        }
+        Ok(state.stop_binding.status(params))
     }
 
     pub(crate) async fn thread_inject_items(
@@ -528,6 +683,7 @@ impl TurnRequestProcessor {
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        binding: Option<DispatchBinding>,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
@@ -658,30 +814,69 @@ impl TurnRequestProcessor {
             )
             .await?;
 
-        let submission = thread
-            .start_or_steer_turn(
-                TurnInputRequest::new(input)
-                    .with_thread_settings(thread_settings)
-                    .on_start(TurnStartOptions {
-                        turn_trigger: params.turn_trigger,
-                        parent_turn_id: params.parent_turn_id,
-                        initiating_agent_path: None,
-                        root_turn_id: params.root_turn_id,
-                        final_output_json_schema: params.output_schema,
-                        service_tier: params.service_tier_for_turn,
-                        cyber_access_program: params.cyber_access_program.map(Into::into),
-                    })
-                    .with_additional_context(additional_context)
-                    .with_responses_metadata(params.responsesapi_client_metadata)
-                    .with_responses_metadata_patch(params.responsesapi_client_metadata_patch)
-                    .with_trace(self.request_trace_context(&request_id).await),
-            )
-            .await
-            .map_err(|err| {
-                let error = internal_error(format!("failed to submit turn input: {err}"));
-                self.track_error_response(&request_id, &error, /*error_type*/ None);
-                error
-            })?;
+        let turn_request = TurnInputRequest::new(input)
+            .with_thread_settings(thread_settings)
+            .on_start(TurnStartOptions {
+                turn_trigger: params.turn_trigger,
+                parent_turn_id: params.parent_turn_id,
+                initiating_agent_path: None,
+                root_turn_id: params.root_turn_id,
+                final_output_json_schema: params.output_schema,
+                service_tier: params.service_tier_for_turn,
+                cyber_access_program: params.cyber_access_program.map(Into::into),
+            })
+            .with_additional_context(additional_context)
+            .with_responses_metadata(params.responsesapi_client_metadata)
+            .with_responses_metadata_patch(params.responsesapi_client_metadata_patch)
+            .with_trace(self.request_trace_context(&request_id).await);
+        let bound_start = if let Some(binding) = binding {
+            let (state, subscriber) = self
+                .thread_state_manager
+                .stop_subscriber(thread_id, request_id.connection_id)
+                .await
+                .ok_or_else(|| {
+                    invalid_request("exact turn binding requires a single subscribed listener")
+                })?;
+            let incarnation = binding.listener_incarnation.clone();
+            let sequence = binding.dispatch_sequence;
+            {
+                let mut state = state.lock().await;
+                if !state.listener_matches(&thread)
+                    || state.stop_listener_incarnation(subscriber).as_deref()
+                        != Some(incarnation.as_str())
+                    || !state.stop_binding.reserve_start(binding)
+                {
+                    return Err(invalid_request("invalid or repeated exact turn binding"));
+                }
+            }
+            Some((state, incarnation, sequence))
+        } else {
+            None
+        };
+        let submission = if bound_start.is_some() {
+            thread
+                .start_turn_if_idle(turn_request)
+                .await
+                .map(|submission| match submission {
+                    StartIfIdleSubmission::Started {
+                        turn_id,
+                        root_turn_id,
+                    } => TurnInputSubmission::Started {
+                        turn_id,
+                        root_turn_id,
+                    },
+                    StartIfIdleSubmission::NotSubmitted { reason } => {
+                        TurnInputSubmission::NotSubmitted { reason }
+                    }
+                })
+        } else {
+            thread.start_or_steer_turn(turn_request).await
+        }
+        .map_err(|err| {
+            let error = internal_error(format!("failed to submit turn input: {err}"));
+            self.track_error_response(&request_id, &error, /*error_type*/ None);
+            error
+        })?;
         let (turn_id, root_turn_id, started) = match submission {
             TurnInputSubmission::Started {
                 turn_id,
@@ -701,6 +896,14 @@ impl TurnRequestProcessor {
                 return Err(error);
             }
         };
+
+        if let Some((state, incarnation, sequence)) = bound_start {
+            let mut state = state.lock().await;
+            let canonical = state.last_terminal_turn_id.as_deref() == Some(turn_id.as_str());
+            state
+                .stop_binding
+                .complete_start(&incarnation, sequence, turn_id.clone(), canonical);
+        }
 
         if turn_has_input && started {
             let config_snapshot = thread.config_snapshot().await;

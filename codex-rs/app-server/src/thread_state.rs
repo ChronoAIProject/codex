@@ -1,5 +1,6 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use crate::turn_stop_binding::TurnStopBinding;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -32,6 +33,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::error;
+use uuid::Uuid;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
 
@@ -106,6 +108,7 @@ pub(crate) struct ThreadState {
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
+    pub(crate) stop_binding: TurnStopBinding,
     /// Lets an internal runtime replacement wait until the old listener has processed Core's
     /// `ShutdownComplete` event before that listener is superseded.
     shutdown_drain_waiter: Option<oneshot::Sender<()>>,
@@ -138,6 +141,7 @@ impl ThreadState {
             let _ = previous.send(());
         }
         self.listener_generation = self.listener_generation.wrapping_add(1);
+        self.stop_binding = TurnStopBinding::default();
         self.last_thread_settings = Some(thread_settings_baseline);
         let (listener_command_tx, listener_command_rx) = mpsc::unbounded_channel();
         self.listener_command_tx = Some(listener_command_tx);
@@ -152,6 +156,7 @@ impl ThreadState {
         }
         self.shutdown_drain_waiter = None;
         self.listener_command_tx = None;
+        self.stop_binding = TurnStopBinding::default();
         self.current_turn_history.reset();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
@@ -165,6 +170,12 @@ impl ThreadState {
         &self,
     ) -> Option<mpsc::UnboundedSender<ThreadListenerCommand>> {
         self.listener_command_tx.clone()
+    }
+
+    pub(crate) fn stop_listener_incarnation(&self, subscriber: Uuid) -> Option<String> {
+        self.listener_command_tx
+            .as_ref()
+            .map(|_| format!("{subscriber}/{}", self.listener_generation))
     }
 
     pub(crate) fn active_turn_snapshot(&self) -> Option<Turn> {
@@ -320,6 +331,7 @@ mod tests {
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
+    single_subscriber: Option<Uuid>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -328,13 +340,17 @@ impl Default for ThreadEntry {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
+            single_subscriber: None,
             has_connections_watcher: watch::channel(false).0,
         }
     }
 }
 
 impl ThreadEntry {
-    fn update_has_connections(&self) {
+    fn update_has_connections(&mut self) {
+        self.single_subscriber = (self.connection_ids.len() == 1
+            && crate::turn_stop_binding::enabled())
+        .then(Uuid::now_v7);
         let _ = self.has_connections_watcher.send_if_modified(|current| {
             let prev = *current;
             *current = !self.connection_ids.is_empty();
@@ -445,6 +461,17 @@ impl ThreadStateManager {
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {
         let mut state = self.state.lock().await;
         state.threads.entry(thread_id).or_default().state.clone()
+    }
+
+    pub(crate) async fn stop_subscriber(
+        &self,
+        thread_id: ThreadId,
+        connection: ConnectionId,
+    ) -> Option<(Arc<Mutex<ThreadState>>, Uuid)> {
+        let state = self.state.lock().await;
+        let entry = state.threads.get(&thread_id)?;
+        entry.connection_ids.contains(&connection).then_some(())?;
+        Some((entry.state.clone(), entry.single_subscriber?))
     }
 
     pub(crate) fn current_listener_command_tx(
@@ -580,8 +607,9 @@ impl ThreadStateManager {
                 }
             }
             if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
-                thread_entry.connection_ids.remove(&connection_id);
-                thread_entry.update_has_connections();
+                if thread_entry.connection_ids.remove(&connection_id) {
+                    thread_entry.update_has_connections();
+                }
             }
         };
 
@@ -615,8 +643,9 @@ impl ThreadStateManager {
                 .or_default()
                 .insert(thread_id);
             let thread_entry = state.threads.entry(thread_id).or_default();
-            thread_entry.connection_ids.insert(connection_id);
-            thread_entry.update_has_connections();
+            if thread_entry.connection_ids.insert(connection_id) {
+                thread_entry.update_has_connections();
+            }
             thread_entry.state.clone()
         };
         {
@@ -643,8 +672,9 @@ impl ThreadStateManager {
             .or_default()
             .insert(thread_id);
         let thread_entry = state.threads.entry(thread_id).or_default();
-        thread_entry.connection_ids.insert(connection_id);
-        thread_entry.update_has_connections();
+        if thread_entry.connection_ids.insert(connection_id) {
+            thread_entry.update_has_connections();
+        }
         true
     }
 
@@ -657,8 +687,9 @@ impl ThreadStateManager {
                 .remove(&connection_id)
                 .unwrap_or_default();
             for thread_id in &thread_ids {
-                if let Some(thread_entry) = state.threads.get_mut(thread_id) {
-                    thread_entry.connection_ids.remove(&connection_id);
+                if let Some(thread_entry) = state.threads.get_mut(thread_id)
+                    && thread_entry.connection_ids.remove(&connection_id)
+                {
                     thread_entry.update_has_connections();
                 }
             }

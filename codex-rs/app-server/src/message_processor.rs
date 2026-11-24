@@ -1014,6 +1014,7 @@ impl MessageProcessor {
             | ClientRequest::ThreadArchive { .. } => (Some(self.turn_admission.admit()?), false),
             ClientRequest::ThreadSample { .. }
             | ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnStartBound { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
@@ -1683,6 +1684,31 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                     )
+                    .await
+            }
+            ClientRequest::TurnStartBound { params, .. } => {
+                self.turn_processor
+                    .turn_start_bound(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
+                    .await
+            }
+            ClientRequest::TurnStopCapability { params, .. } => {
+                self.turn_processor
+                    .turn_stop_capability(request_id.connection_id, &params)
+                    .await
+            }
+            ClientRequest::TurnStopStatus { params, .. } => {
+                self.turn_processor
+                    .turn_stop_status(request_id.connection_id, &params)
+                    .await
+            }
+            ClientRequest::TurnStopExact { params, .. } => {
+                self.turn_processor
+                    .turn_stop_exact(request_id.connection_id, &params)
                     .await
             }
             ClientRequest::ThreadInjectItems { params, .. } => {
