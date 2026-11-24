@@ -2296,6 +2296,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::RawResponseItem(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::ExactStopTaskJoined
+        | EventMsg::ExactStopSealed(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)

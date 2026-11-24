@@ -13,6 +13,8 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -26,6 +28,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
+use codex_app_server_protocol::TurnStopAndSealResponse;
 use codex_app_server_protocol::TurnStopCapabilityParams;
 use codex_app_server_protocol::TurnStopCapabilityResponse;
 use codex_app_server_protocol::TurnStopExactResponse;
@@ -44,6 +47,7 @@ use tokio::time::Duration;
 use tokio::time::timeout;
 
 const ENABLE_ENV: &str = "CHRONO_CODEX_EXACT_TURN_STOP_V1";
+const ENABLE_SEAL_ENV: &str = "CHRONO_CODEX_EXACT_TURN_SEAL_V1";
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[tokio::test]
@@ -344,18 +348,122 @@ async fn exact_stop_holds_after_core_consumes_later_input(inject: bool) -> Resul
 async fn start_bound_turn(
     model_uri: &str,
 ) -> Result<(TestAppServer, TurnStopStatusParams, TempDir)> {
-    start_bound_turn_with_tools(model_uri, None).await
+    start_bound_turn_with_options(model_uri, None, /*seal*/ false).await
 }
 
-async fn start_bound_turn_with_tools(
+#[tokio::test]
+async fn administrative_stop_seals_partial_output_and_allows_a_successor() -> Result<()> {
+    const PREFIX: &str = "partial output before administrative stop";
+    let (_release, gate) = oneshot::channel();
+    let (model, _completions) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("held-response"),
+                    responses::ev_message_item_added("partial-message", ""),
+                    responses::ev_output_text_delta(PREFIX),
+                ]),
+            },
+            StreamingSseChunk {
+                gate: Some(gate),
+                body: responses::sse(vec![responses::ev_completed("held-response")]),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("successor"),
+                responses::ev_assistant_message("result", "successor completed"),
+                responses::ev_completed("successor"),
+            ]),
+        }],
+    ])
+    .await;
+    let (mut server, target, _home) =
+        start_bound_turn_with_options(&model.uri(), None, /*seal*/ true).await?;
+    let delta: AgentMessageDeltaNotification = timeout(
+        TEST_TIMEOUT,
+        server.read_notification("item/agentMessage/delta"),
+    )
+    .await??;
+    assert_eq!(delta.turn_id, target.turn_id);
+    assert_eq!(delta.delta, PREFIX);
+
+    let response: TurnStopAndSealResponse = server
+        .request(|request_id| ClientRequest::TurnStopAndSeal {
+            request_id,
+            params: target.clone(),
+        })
+        .await?;
+    assert_ne!(response.status, TurnStopStatus::StoppedWithoutCanonical);
+    let fence: TurnStopFenceNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/stopFence")).await??;
+    assert_eq!(fence.thread_id, target.thread_id);
+    assert_eq!(fence.turn_id, target.turn_id);
+    assert_eq!(fence.listener_incarnation, target.listener_incarnation);
+    assert_eq!(fence.dispatch_sequence, target.dispatch_sequence);
+    assert_eq!(fence.status, TurnStopStatus::StoppedWithoutCanonical);
+
+    let read: ThreadReadResponse = server
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: target.thread_id.clone(),
+                include_turns: true,
+            },
+        })
+        .await?;
+    assert_eq!(read.thread.turns.len(), 1);
+    assert_eq!(read.thread.turns[0].id, target.turn_id);
+    assert_eq!(read.thread.turns[0].status, TurnStatus::Interrupted);
+
+    let replay: TurnStopAndSealResponse = server
+        .request(|request_id| ClientRequest::TurnStopAndSeal {
+            request_id,
+            params: target.clone(),
+        })
+        .await?;
+    assert_eq!(replay.status, TurnStopStatus::Hold);
+    let successor: TurnStartBoundResponse = server
+        .request(|request_id| ClientRequest::TurnStartBound {
+            request_id,
+            params: TurnStartBoundParams {
+                turn: TurnStartParams {
+                    thread_id: target.thread_id.clone(),
+                    input: vec![UserInput::Text {
+                        text: "Successor input".into(),
+                        text_elements: vec![],
+                    }],
+                    ..Default::default()
+                },
+                listener_incarnation: target.listener_incarnation.clone(),
+                dispatch_sequence: 2,
+                dispatch_key: "successor-dispatch".into(),
+            },
+        })
+        .await?;
+    let completed: TurnCompletedNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
+    assert_eq!(completed.turn.id, successor.turn.id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    assert_eq!(model.requests().await.len(), 2);
+    Ok(())
+}
+
+async fn start_bound_turn_with_options(
     model_uri: &str,
     dynamic_tools: Option<Vec<DynamicToolSpec>>,
+    seal: bool,
 ) -> Result<(TestAppServer, TurnStopStatusParams, TempDir)> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(model_uri).write(codex_home.path())?;
     let mut server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[(ENABLE_ENV, Some("1"))])
+        .with_env_overrides(&[
+            (ENABLE_ENV, Some("1")),
+            (ENABLE_SEAL_ENV, seal.then_some("1")),
+        ])
         .build_initialized()
         .await?;
     let thread_id = server
@@ -376,6 +484,7 @@ async fn start_bound_turn_with_tools(
         })
         .await?;
     let listener_incarnation = capability.listener_incarnation.context("live listener")?;
+    assert_eq!(capability.seal_version, seal.then_some(1));
     let dispatch_key = "accepted-dispatch".to_string();
     let bound: TurnStartBoundResponse = server
         .request(|request_id| ClientRequest::TurnStartBound {
@@ -429,7 +538,7 @@ async fn pending_tool_prevents_exact_stop_and_can_finish_normally() -> Result<()
         }],
     ])
     .await;
-    let (mut server, target, _home) = start_bound_turn_with_tools(
+    let (mut server, target, _home) = start_bound_turn_with_options(
         model.uri(),
         Some(vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
             name: "fixture_wait".into(),
@@ -437,6 +546,7 @@ async fn pending_tool_prevents_exact_stop_and_can_finish_normally() -> Result<()
             input_schema: json!({"type": "object", "properties": {}}),
             defer_loading: false,
         })]),
+        /*seal*/ false,
     )
     .await?;
     let request = timeout(TEST_TIMEOUT, server.read_stream_until_request_message()).await??;

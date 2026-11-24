@@ -1103,6 +1103,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStopExactResponse,
     },
+    #[experimental("turn/stopAndSeal")]
+    TurnStopAndSeal => "turn/stopAndSeal" {
+        params: v2::TurnStopStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnStopAndSealResponse,
+    },
     #[experimental("turn/settings/update")]
     TurnSettingsUpdate => "turn/settings/update" {
         params: v2::TurnSettingsUpdateParams,

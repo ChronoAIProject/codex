@@ -185,6 +185,7 @@ fn persisted_event_msg(
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::ExactStopTaskJoined
+        | EventMsg::ExactStopSealed(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)

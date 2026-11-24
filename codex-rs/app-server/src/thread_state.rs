@@ -12,6 +12,7 @@ use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnStopStatus;
 use codex_core::CodexThread;
 use codex_core::ThreadConfigSnapshot;
 use codex_file_watcher::WatchRegistration;
@@ -500,6 +501,24 @@ impl ThreadStateManager {
         listener_generation: u64,
         outgoing: &OutgoingMessageSender,
     ) -> bool {
+        self.send_stop_fence(
+            thread_id,
+            turn_id,
+            listener_generation,
+            TurnStopStatus::Canonical,
+            outgoing,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_stop_fence(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        listener_generation: u64,
+        status: TurnStopStatus,
+        outgoing: &OutgoingMessageSender,
+    ) -> bool {
         let subscribers = self.subscribed_connection_ids(thread_id).await;
         let [connection] = subscribers.as_slice() else {
             return false;
@@ -512,10 +531,11 @@ impl ThreadStateManager {
                 if listener.listener_generation != listener_generation {
                     return None;
                 }
-                let fence = listener.stop_binding.canonical_fence(
+                let fence = listener.stop_binding.take_fence(
                     thread_id.to_string(),
                     turn_id,
                     incarnation,
+                    status,
                 )?;
                 Some(permit.send(*connection, ServerNotification::TurnStopFence(fence)))
             })
@@ -777,8 +797,10 @@ mod exact_stop_listener_tests {
     use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::TurnStopStatusParams;
 
+    #[test_case::test_case(false; "canonical")]
+    #[test_case::test_case(true; "administrative")]
     #[tokio::test]
-    async fn fence_waiting_for_queue_capacity_drops_after_resubscribe() {
+    async fn fence_waiting_for_queue_capacity_drops_after_resubscribe(seal: bool) {
         let manager = ThreadStateManager::new();
         let thread_id = ThreadId::new();
         let connection = ConnectionId(1);
@@ -802,7 +824,7 @@ mod exact_stop_listener_tests {
         }
         let listener = manager.thread_state(thread_id).await;
         let (command_tx, _command_rx) = mpsc::unbounded_channel();
-        let (generation, incarnation) = {
+        let (generation, target, status) = {
             let mut listener = listener.lock().await;
             listener.listener_command_tx = Some(command_tx);
             let incarnation = listener.stop_listener_incarnation(subscriber).unwrap();
@@ -814,15 +836,22 @@ mod exact_stop_listener_tests {
             listener
                 .stop_binding
                 .complete_start(&incarnation, 1, turn_id.into(), false);
-            assert!(listener.stop_binding.claim_stop(&TurnStopStatusParams {
+            let target = TurnStopStatusParams {
                 thread_id: thread_id.to_string(),
                 turn_id: turn_id.into(),
-                listener_incarnation: incarnation.clone(),
+                listener_incarnation: incarnation,
                 dispatch_sequence: 1,
                 dispatch_key: "fixture-dispatch".into(),
-            }));
-            listener.stop_binding.note_canonical(turn_id);
-            (listener.listener_generation, incarnation)
+            };
+            assert!(listener.stop_binding.claim_stop(&target, seal));
+            let status = if seal {
+                listener.stop_binding.note_sealed(turn_id);
+                TurnStopStatus::StoppedWithoutCanonical
+            } else {
+                listener.stop_binding.note_canonical(turn_id);
+                TurnStopStatus::Canonical
+            };
+            (listener.listener_generation, target, status)
         };
         let (sender, mut receiver) = mpsc::channel::<OutgoingEnvelope>(1);
         let outgoing =
@@ -838,7 +867,7 @@ mod exact_stop_listener_tests {
                 }),
             )
             .await;
-        let delivery = manager.send_canonical_stop_fence(thread_id, turn_id, generation, &outgoing);
+        let delivery = manager.send_stop_fence(thread_id, turn_id, generation, status, &outgoing);
         tokio::pin!(delivery);
         assert!(futures::poll!(&mut delivery).is_pending());
         assert!(
@@ -866,11 +895,17 @@ mod exact_stop_listener_tests {
                 .await
                 .stop_listener_incarnation(replacement)
                 .unwrap(),
-            incarnation
+            target.listener_incarnation
         );
         assert!(receiver.recv().await.is_some());
         assert!(!delivery.await);
         assert!(receiver.try_recv().is_err());
+        if seal {
+            assert_eq!(
+                listener.lock().await.stop_binding.status(&target),
+                TurnStopStatus::Hold
+            );
+        }
     }
 
     #[tokio::test]

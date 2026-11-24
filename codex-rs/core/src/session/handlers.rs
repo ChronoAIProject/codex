@@ -22,6 +22,7 @@ use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
+use crate::tasks::TurnInterruption;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
@@ -504,14 +505,27 @@ pub(super) async fn submission_loop(
                 }
                 Op::InterruptIfNoPendingInput { turn_id, reply } => {
                     sess.interrupt_turn_if_no_pending_input(
-                        &turn_id, /*require_unsteered*/ false, reply,
+                        &turn_id,
+                        TurnInterruption::Ordinary,
+                        reply,
                     )
                     .await;
                     false
                 }
                 Op::InterruptIfUnsteered { turn_id, reply } => {
                     sess.interrupt_turn_if_no_pending_input(
-                        &turn_id, /*require_unsteered*/ true, reply,
+                        &turn_id,
+                        TurnInterruption::Exact,
+                        reply,
+                    )
+                    .await;
+                    false
+                }
+                Op::StopUnsteeredAndSeal { turn_id, reply } => {
+                    sess.interrupt_turn_if_no_pending_input(
+                        &turn_id,
+                        TurnInterruption::Seal,
+                        reply,
                     )
                     .await;
                     false

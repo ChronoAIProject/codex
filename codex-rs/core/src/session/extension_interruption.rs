@@ -3,12 +3,15 @@
 
 use super::session::Session;
 use crate::codex_thread::CodexThread;
+use crate::state::TaskKind;
+use crate::tasks::TurnInterruption;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnAbortReason;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -23,20 +26,26 @@ impl CodexThread {
     /// Returns the decision before joining cancellation, so tool callbacks can await it.
     /// Like [`Op::Interrupt`], this does not notify idle contributors; the caller owns wakeup.
     pub async fn interrupt_if_no_pending_input(&self, turn_id: &str) -> CodexResult<bool> {
-        self.interrupt_if_eligible(turn_id, /*require_unsteered*/ false)
+        self.interrupt_if_eligible(turn_id, TurnInterruption::Ordinary)
             .await
     }
 
     /// Interrupts the named turn only while its original dispatch has exclusive input.
     pub async fn interrupt_if_unsteered(&self, turn_id: &str) -> CodexResult<bool> {
-        self.interrupt_if_eligible(turn_id, /*require_unsteered*/ true)
+        self.interrupt_if_eligible(turn_id, TurnInterruption::Exact)
+            .await
+    }
+
+    /// Requests an administrative stop. Only the ordered native seal proves finality.
+    pub async fn stop_unsteered_and_seal(&self, turn_id: &str) -> CodexResult<bool> {
+        self.interrupt_if_eligible(turn_id, TurnInterruption::Seal)
             .await
     }
 
     async fn interrupt_if_eligible(
         &self,
         turn_id: &str,
-        require_unsteered: bool,
+        interruption: TurnInterruption,
     ) -> CodexResult<bool> {
         let cancellation_token = {
             let active = self.session.active_turn.lock().await;
@@ -53,10 +62,10 @@ impl CodexThread {
             biased;
             result = async {
                 let turn_id = turn_id.to_owned();
-                let op = if require_unsteered {
-                    Op::InterruptIfUnsteered { turn_id, reply }
-                } else {
-                    Op::InterruptIfNoPendingInput { turn_id, reply }
+                let op = match interruption {
+                    TurnInterruption::Ordinary => Op::InterruptIfNoPendingInput { turn_id, reply },
+                    TurnInterruption::Exact => Op::InterruptIfUnsteered { turn_id, reply },
+                    TurnInterruption::Seal => Op::StopUnsteeredAndSeal { turn_id, reply },
                 };
                 self.submit(op).await?;
                 (&mut result).await.map_err(|_| CodexErr::InternalAgentDied)
@@ -79,7 +88,7 @@ impl Session {
     pub(crate) async fn interrupt_turn_if_no_pending_input(
         self: &Arc<Self>,
         turn_id: &str,
-        require_unsteered: bool,
+        interruption: TurnInterruption,
         reply: oneshot::Sender<bool>,
     ) {
         let active_turn = {
@@ -96,6 +105,7 @@ impl Session {
                 let _ = reply.send(false);
                 return;
             };
+            let require_unsteered = interruption != TurnInterruption::Ordinary;
             let has_conflicting_input = {
                 let state = turn.turn_state.lock().await;
                 !state.pending_input.is_empty()
@@ -105,6 +115,12 @@ impl Session {
             if has_conflicting_input
                 || self.input_queue.has_pending_mailbox_items().await
                 || reply.is_closed()
+                || (interruption == TurnInterruption::Seal
+                    && (task.kind != TaskKind::Regular
+                        || matches!(
+                            task.turn_context.session_source,
+                            SessionSource::Internal(_) | SessionSource::SubAgent(_)
+                        )))
                 || (require_unsteered && !task.turn_context.exact_stop_producers.close())
             {
                 let _ = reply.send(false);
@@ -120,7 +136,7 @@ impl Session {
                 active_turn,
                 TurnAbortReason::Interrupted,
                 /*error*/ None,
-                require_unsteered,
+                interruption,
             )
             .await;
         }

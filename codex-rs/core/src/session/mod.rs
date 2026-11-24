@@ -2513,7 +2513,21 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
-        let legacy_source = msg.clone();
+        self.publish_turn_event(turn_context, msg, /*persist*/ true)
+            .await;
+    }
+
+    pub(crate) async fn publish_turn_event(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        persist: bool,
+    ) {
+        let sealed = matches!(msg, EventMsg::ExactStopSealed(_));
+        let legacy_source = match &msg {
+            EventMsg::ExactStopSealed(aborted) => EventMsg::TurnAborted(aborted.clone()),
+            _ => msg.clone(),
+        };
         if let EventMsg::Error(error) = &legacy_source
             && error
                 .codex_error_info
@@ -2554,13 +2568,17 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
+        self.send_event_raw_with_persistence(event, persist).await;
         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
             .await;
+
+        if sealed {
+            return;
+        }
 
         let show_raw_agent_reasoning = self.show_raw_agent_reasoning();
         for legacy in legacy_source.as_legacy_events(show_raw_agent_reasoning) {
@@ -2731,17 +2749,22 @@ impl Session {
         // Keep realtime reduction, canonical append, and delivery in the same order.
         // This lock must not acquire SessionState or ActiveTurn: event producers can
         // already hold those locks. Host presentation policies are synchronous.
+        let canonical_observation = match &event.msg {
+            EventMsg::ExactStopSealed(aborted) => Some(EventMsg::TurnAborted(aborted.clone())),
+            _ => None,
+        };
+        let observed = canonical_observation.as_ref().unwrap_or(&event.msg);
         let mut realtime_history = match &self.realtime_history {
             Some(history) => {
                 let history = history.lock().await;
-                history.should_observe(&event.msg).then_some(history)
+                history.should_observe(observed).then_some(history)
             }
             None => None,
         };
-        self.services.mcp_runtime.observe_event(&event.msg);
+        self.services.mcp_runtime.observe_event(observed);
         let (before_event, after_event) = match realtime_history.as_mut() {
             Some(history) => {
-                let effects = history.observe(&event.msg);
+                let effects = history.observe(observed);
                 match effects.order {
                     RealtimeEventOrder::BeforeEvent => (Some(effects), None),
                     RealtimeEventOrder::AfterEvent => (None, Some(effects)),
@@ -2761,7 +2784,7 @@ impl Session {
         }
         self.services
             .rollout_thread_trace
-            .record_protocol_event(&event.msg);
+            .record_protocol_event(observed);
         if let Some(effects) = after_event
             && let Err(error) = self.send_realtime_history_effects(&event.id, effects).await
         {

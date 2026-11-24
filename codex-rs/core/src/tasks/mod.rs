@@ -41,6 +41,7 @@ use crate::state::TurnState;
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
 use codex_context_fragments::RenderedFragment;
+use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_E2E_DURATION_METRIC;
 use codex_otel::TURN_MEMORY_METRIC;
@@ -70,6 +71,13 @@ pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnInterruption {
+    Ordinary,
+    Exact,
+    Seal,
+}
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
@@ -394,26 +402,11 @@ impl Session {
                 .instrument(trace_span!("session_task.run"))
                 .await;
             let sess = Arc::clone(&session);
-            // Private reviewers save their transcript together with the terminal event.
-            // Errors and cancellation retain their existing save path.
-            if (!sess.is_private_guardian_reviewer().await
-                || task_cancellation_token.is_cancelled()
-                || task_result.is_err())
-                && let Err(err) = sess.flush_rollout().await
-            {
-                warn!("failed to flush rollout before completing turn: {err}");
-                sess.send_event(
-                    ctx_for_finish.as_ref(),
-                    EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
-                        ),
-                    }),
-                )
-                .await;
-            }
-            if !task_cancellation_token.is_cancelled() {
-                // Finish uniformly from the spawn site so all tasks share the same lifecycle.
+            if task_cancellation_token.is_cancelled() {
+                sess.flush_before_task_terminal(ctx_for_finish.as_ref())
+                    .await;
+            } else {
+                // Claim the terminal before flushing or publishing any result.
                 sess.on_task_finished(Arc::clone(&ctx_for_finish), task_result)
                     .await;
             }
@@ -582,7 +575,7 @@ impl Session {
                     reason.clone(),
                     &active_turn.turn_state,
                     /*error*/ None,
-                    /*await_task_exit*/ false,
+                    TurnInterruption::Ordinary,
                 )
                 .await;
             }
@@ -629,7 +622,7 @@ impl Session {
             return false;
         };
 
-        self.finish_turn_abort(active_turn, reason, error, /*await_task_exit*/ false)
+        self.finish_turn_abort(active_turn, reason, error, TurnInterruption::Ordinary)
             .await;
         true
     }
@@ -639,7 +632,7 @@ impl Session {
         mut active_turn: ActiveTurn,
         reason: TurnAbortReason,
         error: Option<ErrorEvent>,
-        await_task_exit: bool,
+        interruption: TurnInterruption,
     ) {
         let task = active_turn.task.take();
         if let Some(task) = task {
@@ -648,7 +641,7 @@ impl Session {
                 reason.clone(),
                 &active_turn.turn_state,
                 error,
-                await_task_exit,
+                interruption,
             )
             .await;
         }
@@ -666,6 +659,28 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
+        let finishing = CancellationToken::new();
+        let finish_recording = finishing.clone().drop_guard();
+        let turn_state = {
+            let mut active = self.active_turn.lock().await;
+            active.as_mut().and_then(|active_turn| {
+                let task = active_turn
+                    .task
+                    .take_if(|task| Arc::ptr_eq(&task.turn_context, &turn_context))?;
+                task.handle.detach();
+                active_turn.finishing = Some(finishing.clone());
+                Some(Arc::clone(&active_turn.turn_state))
+            })
+        };
+        let Some(turn_state) = turn_state else {
+            return;
+        };
+
+        // Private reviewers save their successful transcript together with the terminal.
+        if task_result.is_err() || !self.is_private_guardian_reviewer().await {
+            self.flush_before_task_terminal(turn_context.as_ref()).await;
+        }
+
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -692,20 +707,6 @@ impl Session {
             .turn_metadata_state
             .cancel_git_enrichment_task();
 
-        let finishing = CancellationToken::new();
-        let finish_recording = finishing.clone().drop_guard();
-        let turn_state = {
-            let mut active = self.active_turn.lock().await;
-            active.as_mut().and_then(|active_turn| {
-                let task = active_turn.task.take()?;
-                task.handle.detach();
-                active_turn.finishing = Some(finishing);
-                Some(Arc::clone(&active_turn.turn_state))
-            })
-        };
-        let Some(turn_state) = turn_state else {
-            return;
-        };
         let pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -901,8 +902,7 @@ impl Session {
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
-                && active_turn.task.is_none()
-                && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                && active_turn.finishing.as_ref() == Some(&finishing)
             {
                 *active = None;
                 true
@@ -927,20 +927,38 @@ impl Session {
         }
     }
 
+    async fn flush_before_task_terminal(&self, turn_context: &TurnContext) {
+        if let Err(err) = self.flush_rollout().await {
+            warn!("failed to flush rollout before completing turn: {err}");
+            self.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: format!(
+                        "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
+                    ),
+                }),
+            )
+            .await;
+        }
+    }
+
     async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {
         let mut active = self.active_turn.lock().await;
         if matches!(
             reason,
             TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
-        ) && active.as_ref().is_some_and(|turn| {
-            turn.task.is_some()
-                || (self.enabled(Feature::WakeOnAgentMessages) && turn.finishing.is_none())
-        }) {
+        ) && let Some(turn) = active.as_ref()
+        {
+            if turn.finishing.is_some() {
+                return None;
+            }
             // Message wakes reserve work before registering a task. With the
             // feature enabled, stopping a reservation must block later mail too.
             // Finishing turns must retain their status until completion is
             // persisted, so capacity eviction cannot close their rollout writer.
-            self.mark_interrupted();
+            if turn.task.is_some() || self.enabled(Feature::WakeOnAgentMessages) {
+                self.mark_interrupted();
+            }
         }
         active.take()
     }
@@ -965,11 +983,11 @@ impl Session {
 
     async fn handle_task_abort(
         self: &Arc<Self>,
-        task: RunningTask,
+        mut task: RunningTask,
         reason: TurnAbortReason,
         turn_state: &Mutex<TurnState>,
         error: Option<ErrorEvent>,
-        await_task_exit: bool,
+        interruption: TurnInterruption,
     ) {
         let sub_id = task.turn_context.sub_id.clone();
         if task.cancellation_token.is_cancelled() {
@@ -997,34 +1015,33 @@ impl Session {
             .cancel_git_enrichment_task();
         let session_task = task.task;
 
-        select! {
-            _ = task.done.notified() => {
-            },
-            _ = tokio::time::sleep(Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS)) => {
-                warn!("task {sub_id} didn't complete gracefully after {}ms", GRACEFULL_INTERRUPTION_TIMEOUT_MS);
-            }
-        }
-
-        task.handle.abort();
-        let exact_task_joined = if await_task_exit {
-            match tokio::time::timeout(
-                Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS),
-                task.handle,
-            )
-            .await
-            {
+        let grace = Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS);
+        let exact_task_joined = if interruption != TurnInterruption::Ordinary {
+            // The join handle can observe completion even if the task exited
+            // before the interrupt handler began waiting for it.
+            match tokio::time::timeout(grace, &mut task.handle).await {
                 Ok(Ok(())) => true,
-                Ok(Err(error)) if error.is_cancelled() => true,
                 Ok(Err(error)) => {
                     warn!(%error, "exact stop could not join the turn task");
                     false
                 }
                 Err(_) => {
-                    warn!(sub_id, "exact stop timed out joining the turn task");
+                    warn!(sub_id, "exact stop required a forced task abort");
+                    task.handle.abort();
+                    if tokio::time::timeout(grace, task.handle).await.is_err() {
+                        warn!(sub_id, "exact stop timed out joining the aborted turn task");
+                    }
                     false
                 }
             }
         } else {
+            select! {
+                _ = task.done.notified() => {},
+                _ = tokio::time::sleep(grace) => {
+                    warn!("task {sub_id} didn't complete gracefully after {}ms", GRACEFULL_INTERRUPTION_TIMEOUT_MS);
+                }
+            }
+            task.handle.abort();
             false
         };
 
@@ -1074,7 +1091,7 @@ impl Session {
             });
         self.emit_turn_abort_lifecycle(reason.clone(), task.turn_context.extension_data.as_ref())
             .await;
-        let event = EventMsg::TurnAborted(TurnAbortedEvent {
+        let terminal = TurnAbortedEvent {
             root_turn_id: Some(task.turn_context.root_turn_id()),
             turn_id: Some(task.turn_context.sub_id.clone()),
             reason,
@@ -1082,8 +1099,43 @@ impl Session {
             started_at,
             completed_at,
             duration_ms,
-        });
-        self.send_event(task.turn_context.as_ref(), event).await;
+        };
+        if interruption == TurnInterruption::Seal
+            && exact_task_joined
+            && !interrupt_hook_dispatched
+            && let Some(rollout) = self.live_thread()
+        {
+            match rollout.persist(PersistContext::Standard).await {
+                Ok(()) => {
+                    let event = EventMsg::TurnAborted(terminal.clone());
+                    let appended = rollout.append_items(&[RolloutItem::EventMsg(event)]).await;
+                    if let Err(error) = &appended {
+                        warn!(%error, "uncertain exact stop history append");
+                    }
+                    let flushed = rollout.flush().await;
+                    if let Err(error) = &flushed {
+                        warn!(%error, "failed to flush exact stop history");
+                    }
+                    let event = if appended.is_ok() && flushed.is_ok() {
+                        EventMsg::ExactStopSealed(terminal)
+                    } else {
+                        EventMsg::TurnAborted(terminal)
+                    };
+                    // The failed append may have committed. Deliver the same
+                    // terminal without sending a second append to the writer.
+                    self.publish_turn_event(
+                        task.turn_context.as_ref(),
+                        event,
+                        /*persist*/ false,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => warn!(%error, "could not materialize exact stop history"),
+            }
+        }
+        self.send_event(task.turn_context.as_ref(), EventMsg::TurnAborted(terminal))
+            .await;
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
