@@ -665,7 +665,7 @@ pub enum Op {
         reply: oneshot::Sender<bool>,
     },
 
-    /// Interrupt the named turn only if no later steering joined and no input is queued.
+    /// Interrupt the named turn only if no additional input joined and no input is queued.
     #[debug("InterruptIfUnsteered {{ turn_id: {turn_id:?} }}")]
     InterruptIfUnsteered {
         turn_id: String,

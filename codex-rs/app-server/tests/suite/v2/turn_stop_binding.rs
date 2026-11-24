@@ -5,6 +5,8 @@ use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadInjectItemsParams;
+use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -227,8 +229,11 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
     Ok(())
 }
 
+#[test_case::test_case(false; "steered")]
+#[test_case::test_case(true; "client_injected")]
 #[tokio::test]
-async fn exact_stop_holds_after_core_consumes_later_steering() -> Result<()> {
+async fn exact_stop_holds_after_core_consumes_later_input(inject: bool) -> Result<()> {
+    const MARKER: &str = "independently accepted input";
     let (release_initial, initial_gate) = oneshot::channel();
     let (release_steered, steered_gate) = oneshot::channel();
     let (model, _completions) = start_streaming_sse_server(vec![
@@ -259,23 +264,41 @@ async fn exact_stop_holds_after_core_consumes_later_steering() -> Result<()> {
     .await;
     let (mut server, target, _home) = start_bound_turn(model.uri()).await?;
     timeout(TEST_TIMEOUT, model.wait_for_request_count(1)).await?;
-    let steered: TurnSteerResponse = server
-        .request(|request_id| ClientRequest::TurnSteer {
-            request_id,
-            params: TurnSteerParams {
-                thread_id: target.thread_id.clone(),
-                expected_turn_id: target.turn_id.clone(),
-                input: vec![UserInput::Text {
-                    text: "later steering input".into(),
-                    text_elements: vec![],
-                }],
-                ..Default::default()
-            },
-        })
-        .await?;
-    assert_eq!(steered.turn_id, target.turn_id);
+    if inject {
+        let _: ThreadInjectItemsResponse = server
+            .request(|request_id| ClientRequest::ThreadInjectItems {
+                request_id,
+                params: ThreadInjectItemsParams {
+                    thread_id: target.thread_id.clone(),
+                    items: vec![json!({
+                        "type": "message", "role": "user",
+                        "content": [{ "type": "input_text", "text": MARKER }],
+                    })],
+                },
+            })
+            .await?;
+    } else {
+        let steered: TurnSteerResponse = server
+            .request(|request_id| ClientRequest::TurnSteer {
+                request_id,
+                params: TurnSteerParams {
+                    thread_id: target.thread_id.clone(),
+                    expected_turn_id: target.turn_id.clone(),
+                    input: vec![UserInput::Text {
+                        text: MARKER.into(),
+                        text_elements: vec![],
+                    }],
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(steered.turn_id, target.turn_id);
+    }
     release_initial.send(()).expect("stream is waiting");
     timeout(TEST_TIMEOUT, model.wait_for_request_count(2)).await?;
+    let requests = model.requests().await;
+    let request: serde_json::Value = serde_json::from_slice(&requests[1])?;
+    assert!(request["input"].to_string().contains(MARKER));
     let stop: TurnStopExactResponse = server
         .request(|request_id| ClientRequest::TurnStopExact {
             request_id,
@@ -288,14 +311,7 @@ async fn exact_stop_holds_after_core_consumes_later_steering() -> Result<()> {
         timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
     assert_eq!(completed.turn.id, target.turn_id);
     assert_eq!(completed.turn.status, TurnStatus::Completed);
-    let requests = model.requests().await;
-    assert_eq!(requests.len(), 2);
-    let request: serde_json::Value = serde_json::from_slice(&requests[1])?;
-    assert!(
-        request["input"]
-            .to_string()
-            .contains("later steering input")
-    );
+    assert_eq!(model.requests().await.len(), 2);
     Ok(())
 }
 

@@ -94,7 +94,8 @@ impl Session {
             };
             let has_conflicting_input = {
                 let state = turn.turn_state.lock().await;
-                !state.pending_input.is_empty() || (require_unsteered && state.accepted_steering)
+                !state.pending_input.is_empty()
+                    || (require_unsteered && state.accepted_additional_input)
             };
             if has_conflicting_input
                 || self.input_queue.has_pending_mailbox_items().await

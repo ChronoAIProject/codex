@@ -623,10 +623,10 @@ impl ThreadStateManager {
                     state.thread_ids_by_connection.remove(&connection_id);
                 }
             }
-            if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
-                if thread_entry.connection_ids.remove(&connection_id) {
-                    thread_entry.update_has_connections();
-                }
+            if let Some(thread_entry) = state.threads.get_mut(&thread_id)
+                && thread_entry.connection_ids.remove(&connection_id)
+            {
+                thread_entry.update_has_connections();
             }
         };
 

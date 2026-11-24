@@ -2067,6 +2067,67 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_interrupt_refuses_consumed_mailbox_input() -> anyhow::Result<()> {
+    const MAIL: &str = "independently delivered mailbox task";
+    let (release_first, first_gate) = oneshot::channel();
+    let (release_second, second_gate) = oneshot::channel();
+    let first_chunks = vec![
+        chunk(ev_response_created("first")),
+        chunk(ev_reasoning_item_added("reason-1", &["thinking"])),
+        gated_chunk(first_gate, vec![ev_completed("first")]),
+    ];
+    let second_chunks = vec![
+        chunk(ev_response_created("second")),
+        gated_chunk(
+            second_gate,
+            vec![
+                ev_message_item_done("answer", "done"),
+                ev_completed("second"),
+            ],
+        ),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+    let config_server = responses::start_mock_server().await;
+    let base_url = format!("{}/v1", server.uri());
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(move |config| {
+            config.model_provider.base_url = Some(base_url);
+            let _ = config.features.disable(Feature::EnableRequestCompression);
+        })
+        .build_with_auto_env(&config_server)
+        .await?;
+    let codex = &test.codex;
+    let TurnInputSubmission::Started { turn_id, .. } = codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "first prompt".into(),
+            text_elements: vec![],
+        }]))
+        .await?
+    else {
+        panic!("initial input should start a turn");
+    };
+    wait_for_reasoning_item_started(codex).await;
+    submit_queue_only_agent_mail(codex, MAIL).await;
+    release_first.send(()).expect("first stream is waiting");
+    let deadline = std::time::Duration::from_secs(10);
+    tokio::time::timeout(deadline, server.wait_for_request_count(2)).await?;
+    let requests = server.requests().await;
+    let second: Value = from_slice(&requests[1])?;
+    assert!(second["input"].to_string().contains(MAIL));
+    assert!(!tokio::time::timeout(deadline, codex.interrupt_if_unsteered(&turn_id)).await??);
+    release_second.send(()).expect("second stream is waiting");
+    wait_for_event(codex, |event| {
+        assert!(!matches!(event, EventMsg::TurnAborted(_)));
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(server.requests().await.len(), 2);
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ConditionalInterruptCase {
     CurrentTurn,
