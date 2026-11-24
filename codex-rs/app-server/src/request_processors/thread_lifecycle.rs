@@ -327,6 +327,12 @@ pub(super) async fn ensure_listener_task_running(
                             break;
                         }
                     };
+                    if matches!(event.msg, EventMsg::ExactStopTaskJoined) {
+                        let _ = thread_state_manager.send_canonical_stop_fence(
+                            conversation_id, &event.id, listener_generation, &outgoing_for_task,
+                        ).await;
+                        continue;
+                    }
 
                     if let Some(worker) = &turn_cost_worker {
                         worker.observe_event(

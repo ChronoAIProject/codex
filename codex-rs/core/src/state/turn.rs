@@ -122,6 +122,14 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 impl TurnState {
+    pub(crate) fn has_pending_external_work(&self) -> bool {
+        !self.pending_approvals.is_empty()
+            || !self.pending_request_permissions.is_empty()
+            || !self.pending_user_input.is_empty()
+            || !self.pending_elicitations.is_empty()
+            || !self.pending_dynamic_tools.is_empty()
+    }
+
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,

@@ -127,6 +127,25 @@ pub(crate) enum OutgoingEnvelope {
     },
 }
 
+pub(crate) struct ServerNotificationPermit<'a>(mpsc::Permit<'a, OutgoingEnvelope>);
+
+impl ServerNotificationPermit<'_> {
+    pub(crate) fn send(
+        self,
+        connection_id: ConnectionId,
+        notification: ServerNotification,
+    ) -> oneshot::Receiver<()> {
+        tracing::trace!("app-server event: {notification}");
+        let (write_complete_tx, write_complete_rx) = oneshot::channel();
+        self.0.send(OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: timestamped_server_notification(notification),
+            write_complete_tx: Some(write_complete_tx),
+        });
+        write_complete_rx
+    }
+}
+
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
     verification_auth: OnceLock<Arc<codex_login::AuthManager>>,
@@ -820,21 +839,21 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         notification: ServerNotification,
     ) -> bool {
-        tracing::trace!("app-server event: {notification}");
-        let outgoing_message = timestamped_server_notification(notification);
-        let (write_complete_tx, write_complete_rx) = oneshot::channel();
-        if let Err(err) = self
-            .sender
-            .send(OutgoingEnvelope::ToConnection {
-                connection_id,
-                message: outgoing_message,
-                write_complete_tx: Some(write_complete_tx),
-            })
-            .await
-        {
-            warn!("failed to send server notification to client: {err:?}");
+        let Some(permit) = self.reserve_server_notification().await else {
+            return false;
+        };
+        permit.send(connection_id, notification).await.is_ok()
+    }
+
+    /// Reserve capacity before validating state that must stay current through enqueue.
+    pub(crate) async fn reserve_server_notification(&self) -> Option<ServerNotificationPermit<'_>> {
+        match self.sender.reserve().await {
+            Ok(permit) => Some(ServerNotificationPermit(permit)),
+            Err(error) => {
+                warn!("failed to send server notification to client: {error:?}");
+                None
+            }
         }
-        write_complete_rx.await.is_ok()
     }
 
     pub(crate) async fn send_error(
@@ -941,6 +960,7 @@ mod tests {
     use codex_app_server_protocol::AccountLoginCompletedNotification;
     use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
     use codex_app_server_protocol::AccountUpdatedNotification;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::ApplyPatchApprovalParams;
     use codex_app_server_protocol::AuthMode;
     use codex_app_server_protocol::CommandExecutionApprovalDecision;
@@ -958,6 +978,8 @@ mod tests {
     use codex_app_server_protocol::ServerResponse;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
+    use codex_app_server_protocol::TurnStopFenceNotification;
+    use codex_app_server_protocol::TurnStopStatus;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1480,6 +1502,69 @@ mod tests {
             .await
             .expect("send task should finish after write completion is signaled")
             .expect("send task should not panic");
+    }
+
+    #[tokio::test]
+    async fn exact_stop_fence_waits_behind_an_earlier_delta_and_for_its_write() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let connection = ConnectionId(42);
+        outgoing
+            .send_server_notification_to_connections(
+                &[connection],
+                ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                    thread_id: "thread-1".into(),
+                    turn_id: "turn-1".into(),
+                    item_id: "item-1".into(),
+                    delta: "partial output".into(),
+                }),
+            )
+            .await;
+        let fence = outgoing.send_server_notification_to_connection_and_wait(
+            connection,
+            ServerNotification::TurnStopFence(TurnStopFenceNotification {
+                thread_id: "thread-1".into(),
+                turn_id: "turn-1".into(),
+                listener_incarnation: "listener-1".into(),
+                dispatch_sequence: 1,
+                status: TurnStopStatus::Canonical,
+            }),
+        );
+        tokio::pin!(fence);
+        assert!(futures::poll!(&mut fence).is_pending());
+        let Some(OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::AppServerNotification(delta),
+            ..
+        }) = rx.recv().await
+        else {
+            panic!("expected the earlier targeted delta");
+        };
+        assert_eq!(connection_id, connection);
+        assert!(matches!(
+            delta.notification,
+            ServerNotification::AgentMessageDelta(_)
+        ));
+        assert!(futures::poll!(&mut fence).is_pending());
+        let Some(OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::AppServerNotification(marker),
+            write_complete_tx: Some(written),
+        }) = rx.recv().await
+        else {
+            panic!("expected the targeted fence with a write receipt");
+        };
+        assert_eq!(connection_id, connection);
+        assert!(matches!(
+            marker.notification,
+            ServerNotification::TurnStopFence(_)
+        ));
+        assert!(futures::poll!(&mut fence).is_pending());
+        written
+            .send(())
+            .expect("fence is still waiting for the write");
+        assert!(fence.await);
     }
 
     #[tokio::test]

@@ -2295,6 +2295,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::PrivateSessionEvent(_)
+        | EventMsg::ExactStopTaskJoined
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)
@@ -2703,6 +2704,12 @@ async fn try_run_sampling_request(
         .await;
     let hooks = hooks_for_model_request(&sess, &step_context);
     let post_mode = hooks.execution_mode_for_event(HookEventName::PostModelRequest);
+    let pre_mode = hooks.execution_mode_for_event(HookEventName::PreModelRequest);
+    if (post_mode.is_some() || pre_mode.is_some())
+        && !turn_context.exact_stop_producers.admit_untracked()
+    {
+        return Err(CodexErr::TurnAborted);
+    }
     let defer_tool_dispatch = post_mode == Some(HookExecutionMode::Sync);
     let finish_post_request = post_mode.map(|_| {
         let (post_request, completed) = tokio::sync::oneshot::channel();
@@ -2730,10 +2737,7 @@ async fn try_run_sampling_request(
             }
         }
     });
-    if hooks
-        .execution_mode_for_event(HookEventName::PreModelRequest)
-        .is_some()
-    {
+    if pre_mode.is_some() {
         run_model_request_hooks(&sess, &step_context, &hooks, PreModelRequest).await;
     }
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();

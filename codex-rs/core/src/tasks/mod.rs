@@ -582,6 +582,7 @@ impl Session {
                     reason.clone(),
                     &active_turn.turn_state,
                     /*error*/ None,
+                    /*await_task_exit*/ false,
                 )
                 .await;
             }
@@ -628,7 +629,8 @@ impl Session {
             return false;
         };
 
-        self.finish_turn_abort(active_turn, reason, error).await;
+        self.finish_turn_abort(active_turn, reason, error, /*await_task_exit*/ false)
+            .await;
         true
     }
 
@@ -637,11 +639,18 @@ impl Session {
         mut active_turn: ActiveTurn,
         reason: TurnAbortReason,
         error: Option<ErrorEvent>,
+        await_task_exit: bool,
     ) {
         let task = active_turn.task.take();
         if let Some(task) = task {
-            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error)
-                .await;
+            self.handle_task_abort(
+                task,
+                reason.clone(),
+                &active_turn.turn_state,
+                error,
+                await_task_exit,
+            )
+            .await;
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
@@ -960,6 +969,7 @@ impl Session {
         reason: TurnAbortReason,
         turn_state: &Mutex<TurnState>,
         error: Option<ErrorEvent>,
+        await_task_exit: bool,
     ) {
         let sub_id = task.turn_context.sub_id.clone();
         if task.cancellation_token.is_cancelled() {
@@ -996,6 +1006,27 @@ impl Session {
         }
 
         task.handle.abort();
+        let exact_task_joined = if await_task_exit {
+            match tokio::time::timeout(
+                Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS),
+                task.handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => true,
+                Ok(Err(error)) if error.is_cancelled() => true,
+                Ok(Err(error)) => {
+                    warn!(%error, "exact stop could not join the turn task");
+                    false
+                }
+                Err(_) => {
+                    warn!(sub_id, "exact stop timed out joining the turn task");
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
         session_task
             .abort(Arc::clone(self), Arc::clone(&task.turn_context))
@@ -1022,9 +1053,8 @@ impl Session {
             }
         }
 
-        if reason == TurnAbortReason::Interrupted {
-            run_turn_interrupt_hooks(self, &task.turn_context, turn_state).await;
-        }
+        let interrupt_hook_dispatched = reason == TurnAbortReason::Interrupted
+            && run_turn_interrupt_hooks(self, &task.turn_context, turn_state).await;
 
         let started_at = task
             .turn_context
@@ -1058,6 +1088,12 @@ impl Session {
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
+        } else if exact_task_joined && !interrupt_hook_dispatched {
+            self.deliver_event_raw(codex_protocol::protocol::Event {
+                id: sub_id,
+                msg: EventMsg::ExactStopTaskJoined,
+            })
+            .await;
         }
     }
 }

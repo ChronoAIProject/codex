@@ -84,22 +84,28 @@ impl Session {
     ) {
         let active_turn = {
             let mut active = self.active_turn.lock().await;
-            let Some(turn) = active.as_ref().filter(|turn| {
-                turn.task
-                    .as_ref()
-                    .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            }) else {
+            let Some(turn) = active.as_ref() else {
+                let _ = reply.send(false);
+                return;
+            };
+            let Some(task) = turn
+                .task
+                .as_ref()
+                .filter(|task| task.turn_context.sub_id == turn_id)
+            else {
                 let _ = reply.send(false);
                 return;
             };
             let has_conflicting_input = {
                 let state = turn.turn_state.lock().await;
                 !state.pending_input.is_empty()
-                    || (require_unsteered && state.accepted_additional_input)
+                    || (require_unsteered
+                        && (state.accepted_additional_input || state.has_pending_external_work()))
             };
             if has_conflicting_input
                 || self.input_queue.has_pending_mailbox_items().await
                 || reply.is_closed()
+                || (require_unsteered && !task.turn_context.exact_stop_producers.close())
             {
                 let _ = reply.send(false);
                 return;
@@ -114,6 +120,7 @@ impl Session {
                 active_turn,
                 TurnAbortReason::Interrupted,
                 /*error*/ None,
+                require_unsteered,
             )
             .await;
         }

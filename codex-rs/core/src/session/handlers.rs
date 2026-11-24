@@ -108,6 +108,9 @@ pub async fn run_user_shell_command(
     if let Some((turn_context, cancellation_token)) =
         sess.active_turn_context_and_cancellation_token().await
     {
+        if !turn_context.exact_stop_producers.admit_untracked() {
+            return;
+        }
         let session = Arc::clone(sess);
         tokio::spawn(async move {
             execute_user_shell_command(

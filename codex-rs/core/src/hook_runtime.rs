@@ -168,9 +168,16 @@ pub(crate) async fn run_pending_session_start_hooks(
             &turn_context.initial_environments.refresh_readiness(),
         );
         let preview_runs = hooks.preview_session_start(&request);
+        let may_dispatch = hooks
+            .execution_mode_for_event(HookEventName::SessionStart)
+            .is_some()
+            || hooks
+                .execution_mode_for_event(HookEventName::SubagentStart)
+                .is_some();
         if run_context_injecting_hook(
             sess,
             turn_context,
+            may_dispatch,
             preview_runs,
             hooks.run_session_start(request, Some(turn_context.sub_id.clone())),
         )
@@ -443,7 +450,18 @@ pub(crate) async fn run_turn_stop_hooks(
     let executor_hook_sources = step_context.executor_hook_sources.clone();
     let hooks = with_environment_hooks(sess, turn_context, &step_context.environments)
         .with_executor_hooks(executor_hook_sources);
-    emit_hook_started_events(sess, turn_context, hooks.preview_stop(&request)).await;
+    let preview_runs = hooks.preview_stop(&request);
+    if (hooks
+        .execution_mode_for_event(HookEventName::Stop)
+        .is_some()
+        || hooks
+            .execution_mode_for_event(HookEventName::SubagentStop)
+            .is_some())
+        && !turn_context.exact_stop_producers.admit_untracked()
+    {
+        return StopOutcome::default();
+    }
+    emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let mut outcome = hooks.run_stop(request).await;
     emit_hook_completed_events(sess, turn_context, std::mem::take(&mut outcome.hook_events)).await;
@@ -499,9 +517,9 @@ pub(crate) async fn run_turn_interrupt_hooks(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     turn_state: &Mutex<TurnState>,
-) {
+) -> bool {
     if matches!(&turn_context.session_source, SessionSource::SubAgent(_)) {
-        return;
+        return false;
     }
 
     // The active turn has already been detached. Reuse only its last executing step's discovery.
@@ -520,8 +538,11 @@ pub(crate) async fn run_turn_interrupt_hooks(
         .with_executor_hooks(executor_hook_sources);
     let preview_runs = hooks.preview_interrupt();
     if preview_runs.is_empty() && !has_executor_hooks {
-        return;
+        return false;
     }
+    let may_dispatch = hooks
+        .execution_mode_for_event(HookEventName::Interrupt)
+        .is_some();
 
     let request_metadata = build_request_metadata(last_known_step_context.as_deref(), turn_context);
     let request = InterruptRequest {
@@ -541,6 +562,7 @@ pub(crate) async fn run_turn_interrupt_hooks(
 
     let outcome = hooks.run_interrupt(request).await;
     emit_hook_completed_events(sess, turn_context, outcome.hook_events).await;
+    may_dispatch
 }
 
 pub(crate) async fn run_pre_compact_hooks(
@@ -564,6 +586,13 @@ pub(crate) async fn run_pre_compact_hooks(
         &turn_context.initial_environments.refresh_readiness(),
     );
     let preview_runs = hooks.preview_pre_compact(&request);
+    if hooks
+        .execution_mode_for_event(HookEventName::PreCompact)
+        .is_some()
+        && !turn_context.exact_stop_producers.admit_untracked()
+    {
+        return PreCompactHookOutcome::Stopped;
+    }
     emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let outcome = hooks.run_pre_compact(request).await;
@@ -606,6 +635,13 @@ pub(crate) async fn run_post_compact_hooks(
         &turn_context.initial_environments.refresh_readiness(),
     );
     let preview_runs = hooks.preview_post_compact(&request);
+    if hooks
+        .execution_mode_for_event(HookEventName::PostCompact)
+        .is_some()
+        && !turn_context.exact_stop_producers.admit_untracked()
+    {
+        return PostCompactHookOutcome::Stopped;
+    }
     emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let outcome = hooks.run_post_compact(request).await;
@@ -633,6 +669,9 @@ pub(crate) async fn run_legacy_after_agent_hook(
         })
         .collect();
     let hooks = sess.hooks();
+    if hooks.has_legacy_after_agent() && !turn_context.exact_stop_producers.admit_untracked() {
+        return false;
+    }
     for hook_outcome in hooks
         .dispatch(codex_hooks::HookPayload {
             session_id: sess.session_id().into(),
@@ -713,6 +752,9 @@ pub(crate) async fn inspect_pending_input(
             run_context_injecting_hook(
                 sess,
                 turn_context,
+                hooks
+                    .execution_mode_for_event(HookEventName::UserPromptSubmit)
+                    .is_some(),
                 preview_runs,
                 hooks.run_user_prompt_submit(request),
             )
@@ -839,6 +881,7 @@ pub(crate) async fn drain_async_hook_results(
 async fn run_context_injecting_hook<Fut, Outcome>(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    may_dispatch: bool,
     preview_runs: Vec<HookRunSummary>,
     outcome_future: Fut,
 ) -> HookRuntimeOutcome
@@ -846,6 +889,12 @@ where
     Fut: Future<Output = Outcome>,
     Outcome: Into<ContextInjectingHookOutcome>,
 {
+    if may_dispatch && !turn_context.exact_stop_producers.admit_untracked() {
+        return HookRuntimeOutcome {
+            should_stop: true,
+            additional_contexts: Vec::new(),
+        };
+    }
     emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let outcome = outcome_future.await.into();

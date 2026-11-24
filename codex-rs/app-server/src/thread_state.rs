@@ -1,7 +1,9 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use crate::outgoing_message::OutgoingMessageSender;
 use crate::turn_stop_binding::TurnStopBinding;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadHistoryTurnMetadata;
@@ -491,6 +493,39 @@ impl ThreadStateManager {
         Some((listener, result))
     }
 
+    pub(crate) async fn send_canonical_stop_fence(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+        listener_generation: u64,
+        outgoing: &OutgoingMessageSender,
+    ) -> bool {
+        let subscribers = self.subscribed_connection_ids(thread_id).await;
+        let [connection] = subscribers.as_slice() else {
+            return false;
+        };
+        let Some(permit) = outgoing.reserve_server_notification().await else {
+            return false;
+        };
+        let Some((_, Some(written))) = self
+            .with_stop_listener(thread_id, *connection, |listener, incarnation| {
+                if listener.listener_generation != listener_generation {
+                    return None;
+                }
+                let fence = listener.stop_binding.canonical_fence(
+                    thread_id.to_string(),
+                    turn_id,
+                    incarnation,
+                )?;
+                Some(permit.send(*connection, ServerNotification::TurnStopFence(fence)))
+            })
+            .await
+        else {
+            return false;
+        };
+        written.await.is_ok()
+    }
+
     pub(crate) fn current_listener_command_tx(
         &self,
         thread_id: ThreadId,
@@ -737,6 +772,106 @@ impl ThreadStateManager {
 #[cfg(test)]
 mod exact_stop_listener_tests {
     use super::*;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::turn_stop_binding::DispatchBinding;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
+    use codex_app_server_protocol::TurnStopStatusParams;
+
+    #[tokio::test]
+    async fn fence_waiting_for_queue_capacity_drops_after_resubscribe() {
+        let manager = ThreadStateManager::new();
+        let thread_id = ThreadId::new();
+        let connection = ConnectionId(1);
+        let turn_id = "turn-1";
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, connection)
+                .await
+        );
+        let subscriber = Uuid::now_v7();
+        {
+            let mut manager_state = manager.state.lock().await;
+            manager_state
+                .threads
+                .get_mut(&thread_id)
+                .unwrap()
+                .single_subscriber = Some(subscriber);
+        }
+        let listener = manager.thread_state(thread_id).await;
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let (generation, incarnation) = {
+            let mut listener = listener.lock().await;
+            listener.listener_command_tx = Some(command_tx);
+            let incarnation = listener.stop_listener_incarnation(subscriber).unwrap();
+            assert!(listener.stop_binding.reserve_start(DispatchBinding {
+                listener_incarnation: incarnation.clone(),
+                dispatch_sequence: 1,
+                dispatch_key: "fixture-dispatch".into(),
+            }));
+            listener
+                .stop_binding
+                .complete_start(&incarnation, 1, turn_id.into(), false);
+            assert!(listener.stop_binding.claim_stop(&TurnStopStatusParams {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.into(),
+                listener_incarnation: incarnation.clone(),
+                dispatch_sequence: 1,
+                dispatch_key: "fixture-dispatch".into(),
+            }));
+            listener.stop_binding.note_canonical(turn_id);
+            (listener.listener_generation, incarnation)
+        };
+        let (sender, mut receiver) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing =
+            OutgoingMessageSender::new(sender, codex_analytics::AnalyticsEventsClient::disabled());
+        outgoing
+            .send_server_notification_to_connections(
+                &[connection],
+                ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: turn_id.into(),
+                    item_id: "item-1".into(),
+                    delta: "holds queue capacity".into(),
+                }),
+            )
+            .await;
+        let delivery = manager.send_canonical_stop_fence(thread_id, turn_id, generation, &outgoing);
+        tokio::pin!(delivery);
+        assert!(futures::poll!(&mut delivery).is_pending());
+        assert!(
+            manager
+                .unsubscribe_connection_from_thread(thread_id, connection)
+                .await
+        );
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, connection)
+                .await
+        );
+        let replacement = Uuid::now_v7();
+        {
+            let mut manager_state = manager.state.lock().await;
+            manager_state
+                .threads
+                .get_mut(&thread_id)
+                .unwrap()
+                .single_subscriber = Some(replacement);
+        }
+        assert_ne!(
+            listener
+                .lock()
+                .await
+                .stop_listener_incarnation(replacement)
+                .unwrap(),
+            incarnation
+        );
+        assert!(receiver.recv().await.is_some());
+        assert!(!delivery.await);
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[tokio::test]
     #[expect(

@@ -1,3 +1,4 @@
+use super::exact_stop_producers::ExactStopProducers;
 use super::step_settings::ResolvedStepSettings;
 use super::token_budget::has_explicit_settings;
 use super::token_budget::resolve_token_budget;
@@ -373,6 +374,7 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
+    pub(crate) exact_stop_producers: Arc<ExactStopProducers>,
     /// Shares the session-owned store; session approvals remain live across turns.
     session_grants: Arc<StdMutex<HashMap<String, AdditionalPermissionProfile>>>,
     /// Retained by background cells so a later active turn cannot replace their grants.
@@ -457,6 +459,7 @@ impl TurnContext {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            exact_stop_producers: Arc::default(),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),
@@ -869,6 +872,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             terminal_error: Arc::clone(&self.terminal_error),
+            exact_stop_producers: Arc::clone(&self.exact_stop_producers),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::clone(&self.turn_grants),
             server_model_warning_emitted: AtomicBool::new(
@@ -1154,6 +1158,7 @@ impl Session {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            exact_stop_producers: Arc::default(),
             session_grants,
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),

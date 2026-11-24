@@ -80,6 +80,7 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::TurnStarted(_)
         | ServerNotification::HookStarted(_)
         | ServerNotification::TurnCompleted(_)
+        | ServerNotification::TurnStopFence(_)
         | ServerNotification::HookCompleted(_)
         | ServerNotification::TurnDiffUpdated(_)
         | ServerNotification::TurnPlanUpdated(_)

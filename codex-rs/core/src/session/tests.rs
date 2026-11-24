@@ -12353,6 +12353,129 @@ async fn turn_complete_flushes_terminal_event_after_delivery() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_interrupt_withholds_fence_for_outstanding_executor_hook() {
+    use codex_config::HookEventsToml;
+    use codex_config::HookHandlerConfig;
+    use codex_config::MatcherGroup;
+    use codex_hooks::HookMcpCall;
+    use codex_hooks::HookMcpExecutor;
+    use codex_hooks::HookMcpOutput;
+    use codex_plugin::ExecutorPluginHookSource;
+    use codex_plugin::PluginId;
+    use futures::future::BoxFuture;
+
+    struct HeldInterruptHook {
+        started: async_channel::Sender<()>,
+        release: async_channel::Receiver<()>,
+    }
+
+    impl HookMcpExecutor for HeldInterruptHook {
+        fn execute(&self, call: HookMcpCall) -> BoxFuture<'_, anyhow::Result<HookMcpOutput>> {
+            Box::pin(async move {
+                assert_eq!(call.tool, "fixture_cleanup");
+                self.started.send(()).await?;
+                self.release.recv().await?;
+                Ok(HookMcpOutput {
+                    text: "{}".into(),
+                    source_tool_namespace: None,
+                })
+            })
+        }
+    }
+
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
+    let (started, hook_started) = async_channel::bounded(1);
+    let (release, hook_release) = async_channel::bounded(1);
+    let (hooks, _hook_events) = codex_hooks::Hooks::new(
+        HooksConfig {
+            feature_enabled: true,
+            ..HooksConfig::default()
+        },
+        session.thread_id,
+        Arc::new(HeldInterruptHook {
+            started,
+            release: hook_release,
+        }),
+    )
+    .expect("hook runtime");
+    let source = ExecutorPluginHookSource {
+        plugin_id: PluginId::parse("computer-use@openai-bundled").unwrap(),
+        environment_id: "executor-a".into(),
+        mcp_environment_id: None,
+        mcp_metadata: None,
+        plugin_root: "file:///plugins/computer-use".parse().unwrap(),
+        manifest_path: "file:///plugins/computer-use/.codex-plugin/plugin.json"
+            .parse()
+            .unwrap(),
+        source_relative_path: ".codex-plugin/plugin.json#hooks[0]".into(),
+        hooks: HookEventsToml {
+            interrupt: vec![MatcherGroup {
+                matcher: None,
+                hooks: vec![HookHandlerConfig::McpTool {
+                    server: "fixture".into(),
+                    tool: "fixture_cleanup".into(),
+                    input: serde_json::from_value(serde_json::json!({})).unwrap(),
+                    timeout_sec: None,
+                    status_message: None,
+                }],
+            }],
+            ..Default::default()
+        },
+    };
+    assert!(
+        hooks
+            .with_executor_hooks(vec![source.clone()])
+            .preview_interrupt()
+            .is_empty()
+    );
+    session.services.hooks.store(Arc::new(hooks));
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let mut step = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await
+        .unwrap();
+    let state = {
+        let active = session.active_turn.lock().await;
+        Arc::clone(&active.as_ref().expect("active turn").turn_state)
+    };
+    {
+        let mut state = state.lock().await;
+        state.last_known_step_context = None;
+        Arc::get_mut(&mut step)
+            .expect("unique step")
+            .executor_hook_sources
+            .push(source);
+        state.last_known_step_context = Some(step);
+    }
+
+    let (reply, accepted) = oneshot::channel();
+    session
+        .interrupt_turn_if_no_pending_input(&turn.sub_id, /*require_unsteered*/ true, reply)
+        .await;
+    assert!(accepted.await.unwrap());
+    timeout(StdDuration::from_secs(5), hook_started.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let terminal = recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
+    assert_eq!(terminal.id, turn.sub_id);
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event.msg, EventMsg::ExactStopTaskJoined));
+    }
+    release.send(()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turn_aborted_flushes_terminal_event_after_delivery() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
     let store = attach_in_memory_thread_store(
