@@ -164,7 +164,7 @@ async fn compaction_session(
     let mut provider =
         codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)["openai"]
             .clone();
-    provider.base_url = Some(format!("{}/v1", server_uri));
+    provider.base_url = Some(format!("{server_uri}/v1"));
     provider.supports_websockets = false;
     crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
