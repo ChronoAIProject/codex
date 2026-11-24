@@ -659,8 +659,8 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
-        let finishing = CancellationToken::new();
-        let finish_recording = finishing.clone().drop_guard();
+        let finishing = Arc::new(CancellationToken::new());
+        let finish_recording = finishing.as_ref().clone().drop_guard();
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             active.as_mut().and_then(|active_turn| {
@@ -668,7 +668,7 @@ impl Session {
                     .task
                     .take_if(|task| Arc::ptr_eq(&task.turn_context, &turn_context))?;
                 task.handle.detach();
-                active_turn.finishing = Some(finishing.clone());
+                active_turn.finishing = Some(Arc::clone(&finishing));
                 Some(Arc::clone(&active_turn.turn_state))
             })
         };
@@ -902,7 +902,10 @@ impl Session {
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
-                && active_turn.finishing.as_ref() == Some(&finishing)
+                && active_turn
+                    .finishing
+                    .as_ref()
+                    .is_some_and(|owner| Arc::ptr_eq(owner, &finishing))
             {
                 *active = None;
                 true

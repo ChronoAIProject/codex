@@ -6146,7 +6146,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
 #[test_case(None; "idle")]
 #[test_case(Some(ActiveTurn::default()); "reserved turn")]
 #[test_case(Some(ActiveTurn {
-    finishing: Some(tokio_util::sync::CancellationToken::new()),
+    finishing: Some(Arc::new(tokio_util::sync::CancellationToken::new())),
     ..Default::default()
 }); "finishing turn")]
 #[tokio::test]

@@ -31,7 +31,7 @@ pub(crate) struct ActiveTurn {
     pub(crate) task: Option<RunningTask>,
     /// Present when input admission is closed; cancelled when the final batch is recorded.
     /// Reservations that have not started still accept inputs.
-    pub(crate) finishing: Option<CancellationToken>,
+    pub(crate) finishing: Option<Arc<CancellationToken>>,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
 }
 
