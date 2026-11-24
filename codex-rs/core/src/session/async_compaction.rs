@@ -98,6 +98,10 @@ pub(super) async fn maybe_start(
     {
         return;
     }
+    // The session owns speculative requests after the turn ends, including usage charging.
+    if !turn_context.exact_stop_producers.admit_untracked() {
+        return;
+    }
 
     // Capture and register without yielding, so shutdown or history replacement cannot
     // overtake this request. Tool attribution still belongs to the foreground's current step.
