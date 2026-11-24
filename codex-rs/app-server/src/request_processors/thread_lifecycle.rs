@@ -320,7 +320,7 @@ pub(super) async fn ensure_listener_task_running(
                     .await;
                 }
                 event = conversation.next_event() => {
-                    let event = match event {
+                    let mut event = match event {
                         Ok(event) => event,
                         Err(err) => {
                             tracing::warn!("thread.next_event() failed with: {err}");
@@ -333,6 +333,14 @@ pub(super) async fn ensure_listener_task_running(
                         ).await;
                         continue;
                     }
+                    // Interrupted history and thread bookkeeping retain their
+                    // usual representation. Only the scoped fence is published.
+                    let sealed = if let EventMsg::ExactStopSealed(aborted) = &event.msg {
+                        event.msg = EventMsg::TurnAborted(aborted.clone());
+                        true
+                    } else {
+                        false
+                    };
 
                     if let Some(worker) = &turn_cost_worker {
                         worker.observe_event(
@@ -354,7 +362,9 @@ pub(super) async fn ensure_listener_task_running(
                         thread_state.track_current_turn_event(&event.id, &event.msg);
                         let terminal = matches!(event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
                             .then(|| thread_state.turn_summary.clone());
-                        if terminal.is_some() {
+                        if sealed {
+                            thread_state.stop_binding.note_sealed(&event.id);
+                        } else if terminal.is_some() {
                             thread_state.stop_binding.note_canonical(&event.id);
                         }
                         (thread_state.experimental_raw_events, terminal)
@@ -386,6 +396,17 @@ pub(super) async fn ensure_listener_task_running(
                             &db, &thread_state_manager,
                             &outgoing_for_task, conversation_id,
                         ).await;
+                    }
+                    if sealed {
+                        crate::bespoke_event_handling::finish_sealed_turn_interruption(
+                            conversation_id, &thread_outgoing, &thread_state, &thread_watch_manager,
+                        ).await;
+                        let _ = thread_state_manager.send_stop_fence(
+                            conversation_id, &event.id, listener_generation,
+                            codex_app_server_protocol::TurnStopStatus::StoppedWithoutCanonical,
+                            &outgoing_for_task,
+                        ).await;
+                        continue;
                     }
                     let is_shutdown_complete = matches!(event.msg, EventMsg::ShutdownComplete);
                     apply_bespoke_event_handling(

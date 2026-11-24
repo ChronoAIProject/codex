@@ -13,6 +13,7 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
@@ -529,6 +530,7 @@ pub struct InMemoryThreadStore {
 #[derive(Default)]
 struct InMemoryThreadStoreState {
     calls: InMemoryThreadStoreCalls,
+    fail_interrupted_append: Option<bool>,
     repeated_list_threads_cursor: Option<String>,
     created_threads: HashMap<ThreadId, CreateThreadParams>,
     histories: HashMap<ThreadId, Vec<RolloutItem>>,
@@ -568,6 +570,11 @@ impl InMemoryThreadStore {
     /// Returns the calls observed by this store.
     pub async fn calls(&self) -> InMemoryThreadStoreCalls {
         self.state.lock().await.calls.clone()
+    }
+
+    /// Returns an error from the next interrupted-terminal append, optionally after storing it.
+    pub async fn fail_interrupted_append_for_testing(&self, commit: bool) {
+        self.state.lock().await.fail_interrupted_append = Some(commit);
     }
 
     /// Makes every thread-list page return the same cursor for public API error-path tests.
@@ -668,11 +675,28 @@ impl InMemoryThreadStore {
             return Ok(());
         }
         state.calls.append_items += 1;
+        let fault = if persisted_items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnAborted(_))))
+        {
+            state.fail_interrupted_append.take()
+        } else {
+            None
+        };
+        let injected_error = || ThreadStoreError::Internal {
+            message: "fixture interrupted terminal append failure".into(),
+        };
+        if fault == Some(false) {
+            return Err(injected_error());
+        }
         state
             .histories
             .entry(params.thread_id)
             .or_default()
             .extend(persisted_items);
+        if fault == Some(true) {
+            return Err(injected_error());
+        }
         Ok(())
     }
 

@@ -423,6 +423,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::ExactStopTaskJoined
+        | EventMsg::ExactStopSealed(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)
@@ -505,6 +506,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::ExactStopTaskJoined
+        | EventMsg::ExactStopSealed(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)

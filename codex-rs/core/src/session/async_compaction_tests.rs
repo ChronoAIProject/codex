@@ -257,8 +257,12 @@ async fn exact_stop_holds_while_speculative_compaction_is_pending() {
         .unwrap();
 
     let (reply, accepted) = oneshot::channel();
-    sess.interrupt_turn_if_no_pending_input(&turn.sub_id, /*require_unsteered*/ true, reply)
-        .await;
+    sess.interrupt_turn_if_no_pending_input(
+        &turn.sub_id,
+        crate::tasks::TurnInterruption::Exact,
+        reply,
+    )
+    .await;
     assert!(!accepted.await.unwrap());
     assert!(sess.active_turn.lock().await.is_some());
     sess.abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)

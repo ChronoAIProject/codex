@@ -6,6 +6,7 @@ use codex_agent_extension::AgentRunner;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::TurnStartBoundParams;
 use codex_app_server_protocol::TurnStartBoundResponse;
+use codex_app_server_protocol::TurnStopAndSealResponse;
 use codex_app_server_protocol::TurnStopCapabilityParams;
 use codex_app_server_protocol::TurnStopCapabilityResponse;
 use codex_app_server_protocol::TurnStopExactResponse;
@@ -250,6 +251,9 @@ impl TurnRequestProcessor {
             .map(|(_, incarnation)| incarnation);
         let response = TurnStopCapabilityResponse {
             binding_version: listener_incarnation.as_ref().map(|_| 1),
+            seal_version: (listener_incarnation.is_some()
+                && crate::turn_stop_binding::seal_enabled())
+            .then_some(1),
             listener_incarnation,
         };
         Ok(Some(response.into()))
@@ -281,14 +285,31 @@ impl TurnRequestProcessor {
         connection: ConnectionId,
         params: &TurnStopStatusParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let status = self.request_bound_stop(connection, params).await?;
+        let status = self
+            .request_bound_stop(connection, params, /*seal*/ false)
+            .await?;
         Ok(Some(TurnStopExactResponse { status }.into()))
+    }
+
+    pub(crate) async fn turn_stop_and_seal(
+        &self,
+        connection: ConnectionId,
+        params: &TurnStopStatusParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let status = if crate::turn_stop_binding::seal_enabled() {
+            self.request_bound_stop(connection, params, /*seal*/ true)
+                .await?
+        } else {
+            TurnStopStatus::Hold
+        };
+        Ok(Some(TurnStopAndSealResponse { status }.into()))
     }
 
     async fn request_bound_stop(
         &self,
         connection: ConnectionId,
         params: &TurnStopStatusParams,
+        seal: bool,
     ) -> Result<TurnStopStatus, JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|_| invalid_request("invalid thread id"))?;
@@ -301,7 +322,7 @@ impl TurnRequestProcessor {
                 if incarnation != params.listener_incarnation || !state.listener_matches(&thread) {
                     return Err(TurnStopStatus::Hold);
                 }
-                if state.stop_binding.claim_stop(params) {
+                if state.stop_binding.claim_stop(params, seal) {
                     Ok(())
                 } else {
                     Err(state.stop_binding.status(params))
@@ -314,12 +335,14 @@ impl TurnRequestProcessor {
             None => return Ok(TurnStopStatus::Hold),
         }
 
-        // Core decides against the exact active task. Its decision only confirms
-        // that interruption began. The ordinary terminal remains authoritative.
-        let decision = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            thread.interrupt_if_unsteered(&params.turn_id),
-        )
+        // The decision confirms admission. Finality comes from the ordered output.
+        let decision = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            if seal {
+                thread.stop_unsteered_and_seal(&params.turn_id).await
+            } else {
+                thread.interrupt_if_unsteered(&params.turn_id).await
+            }
+        })
         .await;
         let result = self
             .thread_state_manager

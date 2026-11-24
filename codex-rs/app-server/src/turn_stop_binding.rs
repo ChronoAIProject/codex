@@ -8,10 +8,17 @@ use codex_app_server_protocol::TurnStopStatusParams;
 
 static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var("CHRONO_CODEX_EXACT_TURN_STOP_V1").as_deref() == Ok("1"));
+static SEAL_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    enabled() && std::env::var("CHRONO_CODEX_EXACT_TURN_SEAL_V1").as_deref() == Ok("1")
+});
 const RETENTION: Duration = Duration::from_secs(60 * 60);
 
 pub(crate) fn enabled() -> bool {
     *ENABLED
+}
+
+pub(crate) fn seal_enabled() -> bool {
+    *SEAL_ENABLED
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -40,6 +47,8 @@ struct AcceptedTurn {
 enum StopAttempt {
     Unrequested,
     Requested,
+    SealRequested,
+    Sealed,
     Unconfirmed,
 }
 
@@ -93,17 +102,50 @@ impl TurnStopBinding {
         }
     }
 
-    pub(crate) fn canonical_fence(
+    #[cfg(test)]
+    fn canonical_fence(
         &mut self,
         thread_id: String,
         turn_id: &str,
         listener_incarnation: String,
     ) -> Option<TurnStopFenceNotification> {
+        self.take_fence(
+            thread_id,
+            turn_id,
+            listener_incarnation,
+            TurnStopStatus::Canonical,
+        )
+    }
+
+    pub(crate) fn note_sealed(&mut self, turn_id: &str) {
+        if let Some(accepted) = &mut self.accepted
+            && accepted.turn_id == turn_id
+            && accepted.stop == StopAttempt::SealRequested
+        {
+            accepted.stop = StopAttempt::Sealed;
+        }
+    }
+
+    pub(crate) fn take_fence(
+        &mut self,
+        thread_id: String,
+        turn_id: &str,
+        listener_incarnation: String,
+        status: TurnStopStatus,
+    ) -> Option<TurnStopFenceNotification> {
         let accepted = self.accepted.as_mut()?;
+        let qualified = match status {
+            TurnStopStatus::Canonical => {
+                accepted.canonical && accepted.stop != StopAttempt::Unrequested
+            }
+            TurnStopStatus::StoppedWithoutCanonical => {
+                !accepted.canonical && accepted.stop == StopAttempt::Sealed
+            }
+            _ => false,
+        };
         if accepted.turn_id != turn_id
             || accepted.binding.listener_incarnation != listener_incarnation
-            || !accepted.canonical
-            || accepted.stop == StopAttempt::Unrequested
+            || !qualified
             || accepted.fence_sent
             || Instant::now() >= accepted.expires_at
         {
@@ -115,7 +157,7 @@ impl TurnStopBinding {
             turn_id: turn_id.to_string(),
             listener_incarnation,
             dispatch_sequence: accepted.binding.dispatch_sequence,
-            status: TurnStopStatus::Canonical,
+            status,
         })
     }
 
@@ -139,7 +181,10 @@ impl TurnStopBinding {
         }
         if accepted.canonical {
             TurnStopStatus::Canonical
-        } else if accepted.stop == StopAttempt::Unconfirmed {
+        } else if matches!(
+            accepted.stop,
+            StopAttempt::Unconfirmed | StopAttempt::Sealed
+        ) {
             TurnStopStatus::Hold
         } else {
             TurnStopStatus::Pending
@@ -155,7 +200,7 @@ impl TurnStopBinding {
         )
     }
 
-    pub(crate) fn claim_stop(&mut self, target: &TurnStopStatusParams) -> bool {
+    pub(crate) fn claim_stop(&mut self, target: &TurnStopStatusParams, seal: bool) -> bool {
         if self.status(target) != TurnStopStatus::Pending {
             return false;
         }
@@ -165,14 +210,21 @@ impl TurnStopBinding {
         if accepted.stop != StopAttempt::Unrequested {
             return false;
         }
-        accepted.stop = StopAttempt::Requested;
+        accepted.stop = if seal {
+            StopAttempt::SealRequested
+        } else {
+            StopAttempt::Requested
+        };
         true
     }
 
     pub(crate) fn note_unconfirmed_stop(&mut self, target: &TurnStopStatusParams) {
         if self.status(target) == TurnStopStatus::Pending
             && let Some(accepted) = &mut self.accepted
-            && accepted.stop == StopAttempt::Requested
+            && matches!(
+                accepted.stop,
+                StopAttempt::Requested | StopAttempt::SealRequested
+            )
         {
             accepted.stop = StopAttempt::Unconfirmed;
         }
@@ -188,6 +240,46 @@ mod tests {
             listener_incarnation: listener.to_string(),
             dispatch_sequence: sequence,
             dispatch_key: format!("key-{sequence}"),
+        }
+    }
+
+    #[test]
+    fn administrative_result_is_available_only_in_the_ordered_fence() {
+        let mut state = TurnStopBinding::default();
+        let target = TurnStopStatusParams {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            listener_incarnation: "listener".into(),
+            dispatch_sequence: 1,
+            dispatch_key: "key-1".into(),
+        };
+        assert!(state.reserve_start(binding(1, "listener")));
+        state.complete_start("listener", 1, "turn".into(), false);
+        assert!(state.claim_stop(&target, /*seal*/ true));
+        state.note_sealed("turn");
+        assert_eq!(state.status(&target), TurnStopStatus::Hold);
+        assert!(!state.claim_stop(&target, /*seal*/ true));
+        assert!(
+            state
+                .canonical_fence("thread".into(), "turn", "listener".into())
+                .is_none()
+        );
+        for (incarnation, expected) in [
+            ("successor", false),
+            ("listener", true),
+            ("listener", false),
+        ] {
+            let fence = state.take_fence(
+                "thread".into(),
+                "turn",
+                incarnation.into(),
+                TurnStopStatus::StoppedWithoutCanonical,
+            );
+            assert_eq!(fence.is_some(), expected);
+            if let Some(fence) = fence {
+                assert_eq!(fence.status, TurnStopStatus::StoppedWithoutCanonical);
+                assert_eq!(fence.dispatch_sequence, target.dispatch_sequence);
+            }
         }
     }
 
@@ -276,15 +368,15 @@ mod tests {
             dispatch_sequence: 1,
             dispatch_key: "wrong".into(),
         };
-        assert!(!state.claim_stop(&target));
+        assert!(!state.claim_stop(&target, /*seal*/ false));
         target.dispatch_key = "key-1".into();
-        assert!(state.claim_stop(&target));
-        assert!(!state.claim_stop(&target));
+        assert!(state.claim_stop(&target, /*seal*/ false));
+        assert!(!state.claim_stop(&target, /*seal*/ false));
         state.note_unconfirmed_stop(&target);
         assert_eq!(state.status(&target), TurnStopStatus::Hold);
         state.note_canonical("turn");
         assert_eq!(state.status(&target), TurnStopStatus::Canonical);
-        assert!(!state.claim_stop(&target));
+        assert!(!state.claim_stop(&target, /*seal*/ false));
         assert!(
             state
                 .canonical_fence("thread".into(), "turn", "wrong".into())

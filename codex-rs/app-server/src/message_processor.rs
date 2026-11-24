@@ -1709,6 +1709,11 @@ impl MessageProcessor {
                     .turn_stop_exact(request_id.connection_id, &params)
                     .await
             }
+            ClientRequest::TurnStopAndSeal { params, .. } => {
+                self.turn_processor
+                    .turn_stop_and_seal(request_id.connection_id, &params)
+                    .await
+            }
             ClientRequest::ThreadInjectItems { params, .. } => {
                 self.turn_processor
                     .thread_inject_items(&request_id, params)

@@ -377,6 +377,8 @@ pub struct TurnStopCapabilityParams {
 pub struct TurnStopCapabilityResponse {
     pub binding_version: Option<u32>,
     pub listener_incarnation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal_version: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -414,6 +416,7 @@ pub enum TurnStopStatus {
     Hold,
     Pending,
     Canonical,
+    StoppedWithoutCanonical,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -427,6 +430,13 @@ pub struct TurnStopStatusResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct TurnStopExactResponse {
+    pub status: TurnStopStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnStopAndSealResponse {
     pub status: TurnStopStatus,
 }
 
@@ -656,6 +666,7 @@ pub struct TurnStopFenceNotification {
     /// Reject a fence unless this is still the caller's continuous subscription.
     pub listener_incarnation: String,
     pub dispatch_sequence: u32,
+    /// The affirmative result is usable only from this ordered notification.
     /// A canonical terminal is carried by the ordinary output stream.
     pub status: TurnStopStatus,
 }

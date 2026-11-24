@@ -1175,7 +1175,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::HookCompleted(notification))
                 .await;
         }
-        EventMsg::ExactStopTaskJoined => {}
+        EventMsg::ExactStopTaskJoined | EventMsg::ExactStopSealed(_) => {}
         EventMsg::PrivateSessionEvent(private) => match private.event {
             PrivateSessionEventPayload::RecordedItem(mut recorded) => {
                 recorded.item.clear_executed_tool_calls();
@@ -1257,13 +1257,13 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         // If this is a TurnAborted, reply to any pending interrupt requests.
         EventMsg::TurnAborted(turn_aborted_event) => {
-            // All per-thread requests are bound to a turn, so abort them.
-            outgoing.abort_pending_server_requests().await;
-            respond_to_pending_interrupts(&thread_state, &outgoing).await;
-
-            thread_watch_manager
-                .note_turn_interrupted(&conversation_id.to_string())
-                .await;
+            finish_turn_interruption(
+                conversation_id,
+                &outgoing,
+                &thread_state,
+                &thread_watch_manager,
+            )
+            .await;
             handle_turn_interrupted(
                 conversation_id,
                 event_turn_id,
@@ -1588,6 +1588,35 @@ async fn handle_turn_complete(
         outgoing,
     )
     .await;
+}
+
+pub(crate) async fn finish_turn_interruption(
+    conversation_id: ThreadId,
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+    thread_watch_manager: &ThreadWatchManager,
+) {
+    outgoing.abort_pending_server_requests().await;
+    respond_to_pending_interrupts(thread_state, outgoing).await;
+    thread_watch_manager
+        .note_turn_interrupted(&conversation_id.to_string())
+        .await;
+}
+
+pub(crate) async fn finish_sealed_turn_interruption(
+    conversation_id: ThreadId,
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+    thread_watch_manager: &ThreadWatchManager,
+) {
+    finish_turn_interruption(
+        conversation_id,
+        outgoing,
+        thread_state,
+        thread_watch_manager,
+    )
+    .await;
+    find_and_remove_turn_summary(conversation_id, thread_state).await;
 }
 
 async fn handle_turn_interrupted(

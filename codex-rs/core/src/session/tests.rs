@@ -6146,7 +6146,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
 #[test_case(None; "idle")]
 #[test_case(Some(ActiveTurn::default()); "reserved turn")]
 #[test_case(Some(ActiveTurn {
-    finishing: Some(tokio_util::sync::CancellationToken::new()),
+    finishing: Some(Arc::new(tokio_util::sync::CancellationToken::new())),
     ..Default::default()
 }); "finishing turn")]
 #[tokio::test]
@@ -12353,6 +12353,204 @@ async fn turn_complete_flushes_terminal_event_after_delivery() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn administrative_stop_proves_one_durable_terminal_before_sealing() {
+    check_administrative_stop_history(None).await;
+}
+
+#[test_case(false; "rejected_append")]
+#[test_case(true; "uncertain_committed_append")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn administrative_stop_withholds_seal_after_append_error(committed: bool) {
+    check_administrative_stop_history(Some(committed)).await;
+}
+
+async fn check_administrative_stop_history(append_fault: Option<bool>) {
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    let store =
+        attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
+    if let Some(committed) = append_fault {
+        store.fail_interrupted_append_for_testing(committed).await;
+    }
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let (reply, admitted) = oneshot::channel();
+    session
+        .interrupt_turn_if_no_pending_input(
+            &turn.sub_id,
+            crate::tasks::TurnInterruption::Seal,
+            reply,
+        )
+        .await;
+    assert!(admitted.await.unwrap());
+
+    let mut live_results = 0;
+    while let Ok(event) = events.try_recv() {
+        match event.msg {
+            EventMsg::ExactStopSealed(aborted) => {
+                assert!(append_fault.is_none());
+                assert_eq!(aborted.turn_id.as_deref(), Some(turn.sub_id.as_str()));
+                live_results += 1;
+            }
+            EventMsg::TurnAborted(aborted) => {
+                assert!(append_fault.is_some());
+                assert_eq!(aborted.turn_id.as_deref(), Some(turn.sub_id.as_str()));
+                live_results += 1;
+            }
+            EventMsg::TurnComplete(_) | EventMsg::ExactStopTaskJoined => {
+                panic!("unexpected terminal: {event:?}")
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(live_results, 1);
+    let history = session
+        .services
+        .thread_store
+        .load_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("recorded native history");
+    let terminals = history
+        .items
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnAborted(_))))
+        .count();
+    assert_eq!(terminals, usize::from(append_fault != Some(false)));
+    assert!(store.calls().await.flush_thread > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "stall persistence after the task has elected a natural terminal"
+)]
+async fn administrative_stop_preserves_a_natural_result_before_publication() {
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
+    let finish = Arc::new(Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            HeldStepTask {
+                kind: TaskKind::Regular,
+                finish: Arc::clone(&finish),
+            },
+        )
+        .await;
+
+    let state = session.state.lock().await;
+    finish.notify_one();
+    timeout(Duration::from_secs(2), async {
+        while !session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|active| active.finishing.is_some())
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("natural finalization should claim the turn before accessing persistence state");
+    let (reply, admitted) = oneshot::channel();
+    session
+        .interrupt_turn_if_no_pending_input(
+            &turn.sub_id,
+            crate::tasks::TurnInterruption::Seal,
+            reply,
+        )
+        .await;
+    assert!(!admitted.await.unwrap());
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(
+            event.msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::ExactStopSealed(_)
+        ));
+    }
+    drop(state);
+
+    let terminal = recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
+    assert_eq!(terminal.id, turn.sub_id);
+}
+
+#[tokio::test]
+async fn a_late_task_result_cannot_take_its_successors_task() {
+    let (session, old, events) = make_session_and_context_with_rx().await;
+    let successor = session
+        .new_turn_with_default_settings("successor-turn".into(), Default::default())
+        .await;
+    let finish = Arc::new(Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&successor),
+            Vec::new(),
+            HeldStepTask {
+                kind: TaskKind::Regular,
+                finish: Arc::clone(&finish),
+            },
+        )
+        .await;
+    session
+        .on_task_finished(Arc::clone(&old), Err(CodexErr::TurnAborted))
+        .await;
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !(event.id == old.sub_id
+                && matches!(
+                    event.msg,
+                    EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_)
+                ))
+        );
+    }
+    finish.notify_one();
+    let terminal = recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
+    assert_eq!(terminal.id, successor.sub_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_interrupt_withholds_fence_after_forced_abort() {
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    let (reply, accepted) = oneshot::channel();
+    session
+        .interrupt_turn_if_no_pending_input(
+            &turn.sub_id,
+            crate::tasks::TurnInterruption::Exact,
+            reply,
+        )
+        .await;
+    assert!(accepted.await.unwrap());
+    let terminal = recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
+    assert_eq!(terminal.id, turn.sub_id);
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event.msg, EventMsg::ExactStopTaskJoined));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exact_interrupt_withholds_fence_for_outstanding_executor_hook() {
     use codex_config::HookEventsToml;
     use codex_config::HookHandlerConfig;
@@ -12460,7 +12658,11 @@ async fn exact_interrupt_withholds_fence_for_outstanding_executor_hook() {
 
     let (reply, accepted) = oneshot::channel();
     session
-        .interrupt_turn_if_no_pending_input(&turn.sub_id, /*require_unsteered*/ true, reply)
+        .interrupt_turn_if_no_pending_input(
+            &turn.sub_id,
+            crate::tasks::TurnInterruption::Exact,
+            reply,
+        )
         .await;
     assert!(accepted.await.unwrap());
     timeout(StdDuration::from_secs(5), hook_started.recv())

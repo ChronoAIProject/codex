@@ -672,6 +672,13 @@ pub enum Op {
         reply: oneshot::Sender<bool>,
     },
 
+    /// Administratively stop a qualifying turn and attempt a sealed output boundary.
+    #[debug("StopUnsteeredAndSeal {{ turn_id: {turn_id:?} }}")]
+    StopUnsteeredAndSeal {
+        turn_id: String,
+        reply: oneshot::Sender<bool>,
+    },
+
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,
@@ -1051,6 +1058,7 @@ impl Op {
             Self::Interrupt => "interrupt",
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
             Self::InterruptIfUnsteered { .. } => "interrupt_if_unsteered",
+            Self::StopUnsteeredAndSeal { .. } => "stop_unsteered_and_seal",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAttach { .. } => "realtime_conversation_attach",
@@ -1672,6 +1680,12 @@ pub enum EventMsg {
     #[schemars(skip)]
     #[ts(skip)]
     ExactStopTaskJoined,
+
+    /// In-process administrative terminal with a checked interrupted rollout entry.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ExactStopSealed(TurnAbortedEvent),
 
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
