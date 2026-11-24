@@ -443,7 +443,11 @@ pub(crate) async fn run_turn_stop_hooks(
     let executor_hook_sources = step_context.executor_hook_sources.clone();
     let hooks = with_environment_hooks(sess, turn_context, &step_context.environments)
         .with_executor_hooks(executor_hook_sources);
-    emit_hook_started_events(sess, turn_context, hooks.preview_stop(&request)).await;
+    let preview_runs = hooks.preview_stop(&request);
+    if !preview_runs.is_empty() && !turn_context.exact_stop_producers.admit_untracked() {
+        return StopOutcome::default();
+    }
+    emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let mut outcome = hooks.run_stop(request).await;
     emit_hook_completed_events(sess, turn_context, std::mem::take(&mut outcome.hook_events)).await;
@@ -846,6 +850,12 @@ where
     Fut: Future<Output = Outcome>,
     Outcome: Into<ContextInjectingHookOutcome>,
 {
+    if !preview_runs.is_empty() && !turn_context.exact_stop_producers.admit_untracked() {
+        return HookRuntimeOutcome {
+            should_stop: true,
+            additional_contexts: Vec::new(),
+        };
+    }
     emit_hook_started_events(sess, turn_context, preview_runs).await;
 
     let outcome = outcome_future.await.into();

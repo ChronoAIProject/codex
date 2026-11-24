@@ -3,8 +3,14 @@ use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolFunctionSpec;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadResumeParams;
@@ -23,6 +29,7 @@ use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::TurnStopCapabilityParams;
 use codex_app_server_protocol::TurnStopCapabilityResponse;
 use codex_app_server_protocol::TurnStopExactResponse;
+use codex_app_server_protocol::TurnStopFenceNotification;
 use codex_app_server_protocol::TurnStopStatus;
 use codex_app_server_protocol::TurnStopStatusParams;
 use codex_app_server_protocol::TurnStopStatusResponse;
@@ -160,11 +167,16 @@ async fn binding_is_disabled_by_default() -> Result<()> {
 
 #[tokio::test]
 async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()> {
+    const PREFIX: &str = "before exact stop ";
     let (_release, gate) = oneshot::channel();
     let (model, _completions) = start_streaming_sse_server(vec![vec![
         StreamingSseChunk {
             gate: None,
-            body: responses::sse(vec![responses::ev_response_created("held-response")]),
+            body: responses::sse(vec![
+                responses::ev_response_created("held-response"),
+                responses::ev_message_item_added("partial-message", ""),
+                responses::ev_output_text_delta(PREFIX),
+            ]),
         },
         StreamingSseChunk {
             gate: Some(gate),
@@ -174,6 +186,13 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
     .await;
     let (mut server, mut target, _home) = start_bound_turn(model.uri()).await?;
     timeout(TEST_TIMEOUT, model.wait_for_request_count(1)).await?;
+    let delta: AgentMessageDeltaNotification = timeout(
+        TEST_TIMEOUT,
+        server.read_notification("item/agentMessage/delta"),
+    )
+    .await??;
+    assert_eq!(delta.turn_id, target.turn_id);
+    assert_eq!(delta.delta, PREFIX);
     let refused_start = server
         .send_raw_request(
             "turn/startBound",
@@ -218,6 +237,13 @@ async fn exact_stop_preserves_ordinary_cancellation_across_replay() -> Result<()
         timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
     assert_eq!(completed.turn.id, target.turn_id);
     assert_eq!(completed.turn.status, TurnStatus::Interrupted);
+    let fence: TurnStopFenceNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/stopFence")).await??;
+    assert_eq!(fence.thread_id, target.thread_id);
+    assert_eq!(fence.turn_id, target.turn_id);
+    assert_eq!(fence.listener_incarnation, target.listener_incarnation);
+    assert_eq!(fence.dispatch_sequence, target.dispatch_sequence);
+    assert_eq!(fence.status, TurnStopStatus::Canonical);
     let replay: TurnStopExactResponse = server
         .request(|request_id| ClientRequest::TurnStopExact {
             request_id,
@@ -318,6 +344,13 @@ async fn exact_stop_holds_after_core_consumes_later_input(inject: bool) -> Resul
 async fn start_bound_turn(
     model_uri: &str,
 ) -> Result<(TestAppServer, TurnStopStatusParams, TempDir)> {
+    start_bound_turn_with_tools(model_uri, None).await
+}
+
+async fn start_bound_turn_with_tools(
+    model_uri: &str,
+    dynamic_tools: Option<Vec<DynamicToolSpec>>,
+) -> Result<(TestAppServer, TurnStopStatusParams, TempDir)> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(model_uri).write(codex_home.path())?;
     let mut server = TestAppServer::builder()
@@ -328,6 +361,7 @@ async fn start_bound_turn(
     let thread_id = server
         .start_thread(ThreadStartParams {
             model: Some("mock-model".into()),
+            dynamic_tools,
             ..Default::default()
         })
         .await?
@@ -372,6 +406,68 @@ async fn start_bound_turn(
         },
         codex_home,
     ))
+}
+
+#[tokio::test]
+async fn pending_tool_prevents_exact_stop_and_can_finish_normally() -> Result<()> {
+    let (model, _completions) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("first"),
+                responses::ev_function_call("fixture-call", "fixture_wait", "{}"),
+                responses::ev_completed("first"),
+            ]),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("second"),
+                responses::ev_assistant_message("result", "tool work completed"),
+                responses::ev_completed("second"),
+            ]),
+        }],
+    ])
+    .await;
+    let (mut server, target, _home) = start_bound_turn_with_tools(
+        model.uri(),
+        Some(vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            name: "fixture_wait".into(),
+            description: "Wait for a test response".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            defer_loading: false,
+        })]),
+    )
+    .await?;
+    let request = timeout(TEST_TIMEOUT, server.read_stream_until_request_message()).await??;
+    let ServerRequest::DynamicToolCall { request_id, params } = request else {
+        panic!("expected the held tool request, got {request:?}");
+    };
+    assert_eq!(params.turn_id, target.turn_id);
+    let stop: TurnStopExactResponse = server
+        .request(|request_id| ClientRequest::TurnStopExact {
+            request_id,
+            params: target.clone(),
+        })
+        .await?;
+    assert_eq!(stop.status, TurnStopStatus::Hold);
+    server
+        .send_response(
+            request_id,
+            serde_json::to_value(DynamicToolCallResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "approved fixture result".into(),
+                }],
+                success: true,
+            })?,
+        )
+        .await?;
+    let completed: TurnCompletedNotification =
+        timeout(TEST_TIMEOUT, server.read_notification("turn/completed")).await??;
+    assert_eq!(completed.turn.id, target.turn_id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    assert_eq!(model.requests().await.len(), 2);
+    Ok(())
 }
 
 #[tokio::test]

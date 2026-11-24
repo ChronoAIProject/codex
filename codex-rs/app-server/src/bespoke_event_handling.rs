@@ -1175,6 +1175,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::HookCompleted(notification))
                 .await;
         }
+        EventMsg::ExactStopTaskJoined => {}
         EventMsg::PrivateSessionEvent(private) => match private.event {
             PrivateSessionEventPayload::RecordedItem(mut recorded) => {
                 recorded.item.clear_executed_tool_calls();

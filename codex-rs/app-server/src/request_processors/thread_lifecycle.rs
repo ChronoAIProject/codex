@@ -327,6 +327,28 @@ pub(super) async fn ensure_listener_task_running(
                             break;
                         }
                     };
+                    if matches!(event.msg, EventMsg::ExactStopTaskJoined) {
+                        let subscribers = thread_state_manager.subscribed_connection_ids(conversation_id).await;
+                        if let [connection] = subscribers.as_slice()
+                            && let Some((_, Some(fence))) = thread_state_manager
+                                .with_stop_listener(conversation_id, *connection, |state, incarnation| {
+                                    if state.listener_generation != listener_generation {
+                                        return None;
+                                    }
+                                    state.stop_binding.canonical_fence(
+                                        conversation_id.to_string(), &event.id, incarnation,
+                                    )
+                                })
+                                .await
+                        {
+                            outgoing_for_task
+                                .send_server_notification_to_connections(
+                                    &[*connection], ServerNotification::TurnStopFence(fence),
+                                )
+                                .await;
+                        }
+                        continue;
+                    }
 
                     if let Some(worker) = &turn_cost_worker {
                         worker.observe_event(

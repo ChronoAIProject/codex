@@ -184,6 +184,7 @@ fn persisted_event_msg(
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::PrivateSessionEvent(_)
+        | EventMsg::ExactStopTaskJoined
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)

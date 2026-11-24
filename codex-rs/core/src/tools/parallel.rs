@@ -131,6 +131,11 @@ impl ToolCallRuntime {
         cancellation_token: CancellationToken,
         call_state: Arc<ToolCallState>,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
+        if !step_context.turn.exact_stop_producers.admit_untracked() {
+            return futures::future::Either::Left(std::future::ready(Err(
+                FunctionCallError::RespondToModel("the turn is stopping".to_string()),
+            )));
+        }
         let message_admission =
             super::user_messaging::admit_code_mode_send(&self.session, &source, &call.tool_name);
         self.session
@@ -255,7 +260,7 @@ impl ToolCallRuntime {
             .in_current_span(),
         ));
 
-        async move {
+        futures::future::Either::Right(async move {
             let mut tool_call_timing_guard = tool_call_timing_guard;
             let mut result = tokio::select! {
                 res = &mut dispatch_handle => res.map_err(Self::tool_task_join_error)?,
@@ -326,7 +331,7 @@ impl ToolCallRuntime {
             }
             result
         }
-        .in_current_span()
+        .in_current_span())
     }
 }
 

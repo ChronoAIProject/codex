@@ -1667,6 +1667,12 @@ pub enum EventMsg {
     #[ts(skip)]
     PrivateSessionEvent(PrivateSessionEvent),
 
+    /// In-process receipt that the exact interrupt joined the native turn task.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ExactStopTaskJoined,
+
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
     HookStarted(HookStartedEvent),

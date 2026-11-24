@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_app_server_protocol::TurnStopFenceNotification;
 use codex_app_server_protocol::TurnStopStatus;
 use codex_app_server_protocol::TurnStopStatusParams;
 
@@ -32,6 +33,7 @@ struct AcceptedTurn {
     expires_at: Instant,
     canonical: bool,
     stop: StopAttempt,
+    fence_sent: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,7 @@ impl TurnStopBinding {
                 expires_at: Instant::now() + RETENTION,
                 canonical,
                 stop: StopAttempt::Unrequested,
+                fence_sent: false,
             });
         }
     }
@@ -88,6 +91,32 @@ impl TurnStopBinding {
         {
             accepted.canonical = true;
         }
+    }
+
+    pub(crate) fn canonical_fence(
+        &mut self,
+        thread_id: String,
+        turn_id: &str,
+        listener_incarnation: String,
+    ) -> Option<TurnStopFenceNotification> {
+        let accepted = self.accepted.as_mut()?;
+        if accepted.turn_id != turn_id
+            || accepted.binding.listener_incarnation != listener_incarnation
+            || !accepted.canonical
+            || accepted.stop == StopAttempt::Unrequested
+            || accepted.fence_sent
+            || Instant::now() >= accepted.expires_at
+        {
+            return None;
+        }
+        accepted.fence_sent = true;
+        Some(TurnStopFenceNotification {
+            thread_id,
+            turn_id: turn_id.to_string(),
+            listener_incarnation,
+            dispatch_sequence: accepted.binding.dispatch_sequence,
+            status: TurnStopStatus::Canonical,
+        })
     }
 
     pub(crate) fn observe(
@@ -256,5 +285,21 @@ mod tests {
         state.note_canonical("turn");
         assert_eq!(state.status(&target), TurnStopStatus::Canonical);
         assert!(!state.claim_stop(&target));
+        assert!(
+            state
+                .canonical_fence("thread".into(), "turn", "wrong".into())
+                .is_none()
+        );
+        let fence = state
+            .canonical_fence("thread".into(), "turn", "listener".into())
+            .expect("canonical output marker");
+        assert_eq!(fence.turn_id, target.turn_id);
+        assert_eq!(fence.dispatch_sequence, target.dispatch_sequence);
+        assert_eq!(fence.status, TurnStopStatus::Canonical);
+        assert!(
+            state
+                .canonical_fence("thread".into(), "turn", "listener".into())
+                .is_none()
+        );
     }
 }
