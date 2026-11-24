@@ -234,6 +234,10 @@ impl Hooks {
         outcomes
     }
 
+    pub fn has_legacy_after_agent(&self) -> bool {
+        !self.after_agent.is_empty()
+    }
+
     pub fn preview_session_start(
         &self,
         request: &SessionStartRequest,

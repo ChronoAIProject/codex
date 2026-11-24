@@ -1053,9 +1053,8 @@ impl Session {
             }
         }
 
-        if reason == TurnAbortReason::Interrupted {
-            run_turn_interrupt_hooks(self, &task.turn_context, turn_state).await;
-        }
+        let interrupt_hook_dispatched = reason == TurnAbortReason::Interrupted
+            && run_turn_interrupt_hooks(self, &task.turn_context, turn_state).await;
 
         let started_at = task
             .turn_context
@@ -1089,7 +1088,7 @@ impl Session {
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
-        } else if exact_task_joined {
+        } else if exact_task_joined && !interrupt_hook_dispatched {
             self.deliver_event_raw(codex_protocol::protocol::Event {
                 id: sub_id,
                 msg: EventMsg::ExactStopTaskJoined,

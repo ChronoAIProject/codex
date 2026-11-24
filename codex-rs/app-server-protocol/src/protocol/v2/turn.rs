@@ -653,6 +653,7 @@ pub struct TurnCompletedNotification {
 pub struct TurnStopFenceNotification {
     pub thread_id: String,
     pub turn_id: String,
+    /// Reject a fence unless this is still the caller's continuous subscription.
     pub listener_incarnation: String,
     pub dispatch_sequence: u32,
     /// A canonical terminal is carried by the ordinary output stream.
