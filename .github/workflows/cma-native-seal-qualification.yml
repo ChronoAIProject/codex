@@ -1,0 +1,126 @@
+name: CMA native seal qualification
+on:
+  push:
+    branches: [cma/qualify-native-1427]
+    paths:
+      - .github/workflows/cma-native-seal-qualification.yml
+      - .github/scripts/cma-native-seal.test.cjs
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 146878dacb49ffbb498e33438c2b0d5ffc6694e5
+      TARGET: ${{ matrix.target }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify native runner and exact producer source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          git diff --exit-code "$SOURCE_SHA" HEAD -- codex-rs scripts third_party
+          printf 'STABLE_GIT_COMMIT=%s\n' "$SOURCE_SHA" >> "$GITHUB_ENV"
+          df -h .
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Configure verified musl build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/install-musl-build-tools.sh
+          flag="CARGO_TARGET_${TARGET^^}_RUSTFLAGS"
+          flag="${flag//-/_}"
+          printf '%s=%s\n' "$flag" '-C relocation-model=static -C link-arg=-static' >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Compile matching bundled executables
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET" --bin bwrap
+          release="target/$TARGET/release"
+          strip --strip-debug --strip-unneeded "$release/bwrap"
+          export CODEX_BWRAP_SHA256="$(sha256sum "$release/bwrap" | cut -d ' ' -f 1)"
+          cargo build --locked --release --target "$TARGET" --bin codex --bin codex-app-server --bin codex-code-mode-host --bin codex-responses-api-proxy
+          "$release/codex" --version
+          df -h .
+      - name: Stage matching native package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate"
+          release="$GITHUB_WORKSPACE/codex-rs/target/$TARGET/release"
+          bash .github/scripts/build-codex-package-archive.sh --target "$TARGET" --bundle primary \
+            --entrypoint-dir "$release" --archive-dir "$RUNNER_TEMP/candidate"
+          (
+            cd "$RUNNER_TEMP/candidate"
+            sha256sum *.tar.gz *.tar.zst > SHA256SUMS
+            printf '%s\n' "$SOURCE_SHA" > SOURCE_SHA
+          )
+          test "$("$release/codex" --version)" = 'codex-cli 0.165.0'
+      - name: Assemble exact CMA ACP bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout --filter=blob:none https://github.com/ChronoAIProject/cma.git "$RUNNER_TEMP/cma"
+          git -C "$RUNNER_TEMP/cma" fetch --depth=1 origin 3a7079a94f982f0edc7b51d860c3762ae674d88c
+          git -C "$RUNNER_TEMP/cma" checkout --detach FETCH_HEAD
+          source="$RUNNER_TEMP/cma/api/crates/layer3-adapter/src/codex"
+          npm ci --prefix "$RUNNER_TEMP/cma/api/crates/layer4-runtime/image/desktop-provider" --install-strategy=shallow --ignore-scripts --no-audit --no-fund
+          sudo mkdir -p /usr/local/lib/node_modules
+          sudo cp -a "$RUNNER_TEMP/cma/api/crates/layer4-runtime/image/desktop-provider/node_modules/@agentclientprotocol" /usr/local/lib/node_modules/
+          sudo chown -R "$(id -u):$(id -g)" /usr/local/lib/node_modules/@agentclientprotocol
+          for patch in persist_conversations subscription_auth managed_model_catalog runtime_observations required_access_tool session_commands agent_instructions turn_steering open_completion deferred_session_metadata session_open_overlap prompt_output_identity native_bound_dispatch; do
+            node "$source/$patch.cjs"
+          done
+          printf '%s  %s\n' '11c84d6c37f3b2e15020405a2301df3ed8c16ed2d9b05c3a3a43620bba78a7d4' /usr/local/lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js | sha256sum -c -
+      - name: Verify real packaged producer on native Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/codex-package-$TARGET"
+          export CMA_CODEX_TEST_BINARY="$package/bin/codex"
+          export CMA_NATIVE_STOP_TRACE="$RUNNER_TEMP/candidate/native-stop-trace.json"
+          export CMA_CODEX_TEST_LEGACY_BINARY="$(find "$RUNNER_TEMP/cma/api/crates/layer4-runtime/image/desktop-provider/node_modules/@openai" -path '*/bin/codex' -type f -print -quit)"
+          test -x "$CMA_CODEX_TEST_BINARY"
+          test -x "$CMA_CODEX_TEST_LEGACY_BINARY"
+          test "$("$CMA_CODEX_TEST_BINARY" --version)" = 'codex-cli 0.165.0'
+          node --test .github/scripts/cma-native-seal.test.cjs | tee "$RUNNER_TEMP/candidate/native-tests.log"
+          sha256sum "$CMA_CODEX_TEST_BINARY" >> "$RUNNER_TEMP/candidate/native-tests.log"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: cma-native-seal-${{ matrix.target }}
+          path: ${{ runner.temp }}/candidate/
+          if-no-files-found: error
+          retention-days: 7
